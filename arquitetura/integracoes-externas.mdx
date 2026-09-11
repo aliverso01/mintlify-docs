@@ -1,0 +1,94 @@
+---
+title: "Integrações externas"
+description: "Provedores de terceiros usados pela plataforma, para que servem e onde o código vive."
+icon: "share-2"
+---
+
+Todas as integrações externas são feitas pelo **backend-miggo**, com exceção da OpenAI, consumida pelo **miggoai**. O frontend não fala com terceiros, salvo o login social do Google.
+
+<Warning>
+  Nenhuma chave aparece nesta documentação. As tabelas listam apenas o **nome** da variável de ambiente; os valores ficam no `.env` de cada ambiente e nunca são versionados.
+</Warning>
+
+## Mapa das integrações
+
+| Provedor | Para que serve | Onde fica o código | Variáveis |
+| --- | --- | --- | --- |
+| **Stripe** | Cobrança e assinaturas (gateway principal) | `app/subscription/`, webhook em `app/webhooks/views.py` | `STRIPE_API_KEY`, `STRIPE_PROD_API_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_TRIAL_DAYS` |
+| **Asaas** | Gateway de cobrança alternativo | `app/subscription/asaas_gateway.py` | `ASAAS_API_KEY`, `ASAAS_BASE_URL` |
+| **Zernio** (antigo late.dev) | Publicação nas redes e analytics dos posts | `app/post/zernio.py`, webhook em `app/webhooks/views.py` | `LATE_API_KEY` |
+| **ManyChat** | Conversas por WhatsApp, aprovação de conteúdo e Dynamic Block | `app/conversation/`, `app/onboarding/cron.py`, `app/onboarding/services.py` | `MANYCHAT_API_KEY`, `MANYCHAT_WEBHOOK_TOKEN`, `CONTENT_APPROVATION_FLOW_ID`, `DYNAMIC_FLOW_STARTER_FLOW_ID`, `GRID_APPROVAL_FLOW_ID` |
+| **MiggoAI** | Geração de título, imagem, legenda e hashtags | `app/onboarding/miggoai.py` | `MIGGOAI_API_URL`, `MIGGOAI_USERNAME`, `MIGGOAI_PASSWORD` |
+| **OpenAI** | Modelos de texto e imagem (chamada direta do backend e do MiggoAI) | `miggoai_v2/modules/openai.py` | `OPENAI_API_KEY`, `OPENAI_API_URL`, `OPENAI_MODEL`, `OPENAI_IMAGE_MODEL`, `MEDIA_ANALYSIS_MODEL` |
+| **Apify** | Coleta do perfil do Instagram no onboarding | `app/client/instagram.py`, `app/onboarding/services.py` | `APIFY_TOKEN` |
+| **HTML/CSS to Image (hcti.io)** | Renderiza capas de destaques e banner do LinkedIn a partir de HTML | `app/onboarding/services.py` | `HTMLTOCSSIMAGE_ID`, `HTMLTOCSSIMAGE_API_KEY` |
+| **Google Identity** | Login social (verificação do ID token) | `app/account/views.py` | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_AUTH_CLOCK_SKEW` |
+| **Jira** | Abertura automática de chamados a partir do produto | `app/account/jira_service.py` | `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_PROJECT_KEY`, `JIRA_ISSUE_TYPE` |
+| **AWS S3** | Armazenamento de mídia quando `USE_S3` está ligado | `core/settings.py` (`STORAGES`) | `USE_S3`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_STORAGE_BUCKET_NAME`, `AWS_S3_REGION_NAME`, `AWS_S3_CUSTOM_DOMAIN`, `AWS_S3_PROJECT_FOLDER` |
+| **SMTP** | Envio de e-mails transacionais e de marketing | `app/emailmarketing/`, `core/settings.py` | `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD`, `EMAIL_USE_TLS`, `EMAIL_USE_SSL` |
+
+## Detalhes por provedor
+
+<AccordionGroup>
+  <Accordion title="Zernio — publicação e analytics">
+    Base da API: `https://zernio.com/api/v1`. O módulo `app/post/zernio.py` documenta os endpoints consumidos:
+
+    | Endpoint | O que traz |
+    | --- | --- |
+    | `GET /v1/analytics?profileId=&source=all&page=&limit=` | Lista paginada de posts e métricas |
+    | `GET /v1/analytics/post-timeline?postId=` | Série diária por post |
+    | `GET /v1/analytics/daily-metrics?profileId=` | Métricas agregadas por dia |
+    | `GET /v1/accounts/follower-stats?profileId=` | Histórico de seguidores |
+
+    O helper `zernio_get(path, params=None, timeout=30)` faz o GET autenticado e retorna a tupla `(status_code, json|None)`.
+
+    <Note>
+      O token em `LATE_API_KEY` já inclui o prefixo `Bearer ` — o código o usa cru no header `Authorization`, sem concatenar nada.
+    </Note>
+
+    O serviço extrai tanto os posts publicados via Zernio (`late`) quanto os publicados diretamente na rede (`external`), e mantém histórico local em `PostInsightsSnapshot`. Veja [Post](/backend/apps/post).
+  </Accordion>
+
+  <Accordion title="Apify — coleta do Instagram">
+    Task usada: `aliverso~instagram-profile-scraper`, chamada de forma síncrona em
+    `https://api.apify.com/v2/actor-tasks/{task}/run-sync-get-dataset-items` com timeout de 180 s (`app/client/instagram.py`).
+
+    O token é resolvido por `_apify_token()`, que tenta `APIFY_TOKEN` via `decouple` e cai para `os.environ`. Sem token, a função levanta `ApifyUnavailable`. Os resultados são cacheados por handle (`instagram:apify_profile:<handle>`) e a chamada é auditada com o serviço `apify_instagram_scraper`.
+  </Accordion>
+
+  <Accordion title="HTML/CSS to Image — geração de artes por HTML">
+    `POST https://hcti.io/v1/image` com autenticação básica (`HTMLTOCSSIMAGE_ID` / `HTMLTOCSSIMAGE_API_KEY`). Duas funções em `app/onboarding/services.py`:
+
+    - `generate_highlight_covers_hcti(texts_and_icons, default_bg_color, default_outline_color)` — capas de destaques do Instagram.
+    - `generate_linkedin_banner_hcti(content, subject, logo_url, bg_color)` — banner do LinkedIn.
+
+    Ambas registram a chamada via `_audit_external` (serviços `hcti_highlights` e `hcti_banner`).
+  </Accordion>
+
+  <Accordion title="Google Identity — login social">
+    `app/account/views.py` verifica o ID token recebido do frontend contra `settings.GOOGLE_CLIENT_ID`, com tolerância de relógio configurável em `GOOGLE_AUTH_CLOCK_SKEW`.
+
+    <Tip>
+      Se o login social falhar, o primeiro suspeito é divergência entre o `VITE_GOOGLE_CLIENT_ID` do frontend e o `GOOGLE_CLIENT_ID` do backend — o código já registra essa comparação no log.
+    </Tip>
+  </Accordion>
+
+  <Accordion title="Armazenamento de mídia">
+    `core/settings.py` alterna o backend de storage conforme `USE_S3`: quando ligado, usa `storages.backends.s3boto3.S3Boto3Storage`; quando desligado, usa o storage local com os arquivos servidos por `MEDIA_ROOT`. Em produção sem Nginx há um fallback que serve `/media/` pelo próprio Django (`re_path` em `core/urls.py`).
+  </Accordion>
+</AccordionGroup>
+
+## Auditoria de chamadas
+
+As integrações registram requisição e resposta na tabela `Integration` (app `app.integration`), guardando cliente, serviço, path, método, payload, resposta e status HTTP. É a primeira parada ao investigar "o provedor X não respondeu". Veja [Integration](/backend/apps/integration).
+
+## Relacionados
+
+<Columns cols={2}>
+  <Card title="Fluxos principais" icon="git-branch" href="/arquitetura/fluxos">
+    Onde cada integração entra no ciclo de vida de um post.
+  </Card>
+  <Card title="Configuração do backend" icon="settings" href="/backend/configuracao">
+    Tabela completa de variáveis de ambiente.
+  </Card>
+</Columns>

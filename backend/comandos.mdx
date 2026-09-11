@@ -1,0 +1,287 @@
+---
+title: "Management commands"
+description: "Todos os comandos `manage.py` do backend-miggo, por app, com argumentos e exemplos"
+icon: "terminal"
+---
+
+O `backend-miggo` não tem worker nem fila separada: todo processamento assíncrono ou agendado é um **management command** do Django (`python manage.py <comando>`), disparado por um schedule do Dokploy em produção ou rodado à mão sob demanda. Esta página lista os **19 comandos customizados** encontrados em `app/**/management/commands/*.py`, agrupados por app, e os comandos padrão do Django mais usados no dia a dia deste projeto.
+
+<Note>
+Em Windows, com a venv ativa, use sempre `./venv/Scripts/python.exe manage.py <comando>` a partir da raiz de `backend-miggo/`. Em Linux/macOS (e no container do Dokploy) é `python manage.py <comando>`.
+</Note>
+
+## Cobrança e assinaturas — `app/subscription`
+
+Comandos finos que delegam a lógica para `app/subscription/cron.py`; cada um imprime um resumo em dict ao final.
+
+| Comando | Arquivo | Agendado (sugestão do repo) | O que faz |
+|---|---|---|---|
+| `check_invoices` | `app/subscription/management/commands/check_invoices.py:1` | `15 0 * * *` | Marca como `OVERDUE` faturas em aberto vencidas e notifica o cliente. Não tenta cobrar — quem tenta o cartão é a Stripe. |
+| `check_subscriptions` | `app/subscription/management/commands/check_subscriptions.py:1` | `30 0 * * *` | Corta acesso de quem passou da carência (`BILLING_GRACE_DAYS`, default 5, `core/settings.py:325`): `UNPAID` fora da carência e `ACTIVE` com `expires_at` no passado viram `EXPIRED`. |
+| `expire_trials` | `app/subscription/management/commands/expire_trials.py:1` | `5 0 * * *` | Encerra trials vencidos que não converteram em assinatura paga; confere antes se a Stripe já converteu. |
+| `notify_trial_ending` | `app/subscription/management/commands/notify_trial_ending.py:1` | `0 12 * * *` | Avisa clientes a 3 e a 1 dia do fim do trial local para converter em pago. |
+| `sync_stripe_billing` | `app/subscription/management/commands/sync_stripe_billing.py:1` | `0 */6 * * *` | Reconciliação: relê da Stripe as assinaturas vinculadas e reespelha status/faturas — cobre webhook perdido. |
+| `sync_asaas_billing` | `app/subscription/management/commands/sync_asaas_billing.py:1` | `30 */6 * * *` (comentário no próprio arquivo) | Reconciliação com o Asaas. Diferente da Stripe, o Asaas não avisa por webhook: este comando é o único caminho automático que atualiza uma cobrança já existente. |
+| `restore_lost_trials` | `app/subscription/management/commands/restore_lost_trials.py:1` | Não agendado — script de correção pontual | Recria 6 trials perdidos no incidente de 26→27/08/2026 (dados hardcoded no próprio arquivo, `MAPA_PLAN_PRICE` e `TRIALS`). Idempotente: pula cliente que já tem assinatura. |
+
+Nenhum desses comandos aceita argumentos (`add_arguments` não está definido, exceto `restore_lost_trials`).
+
+<Accordion title="restore_lost_trials — único deste grupo com flag">
+```bash
+# só mostra o que seria criado
+./venv/Scripts/python.exe manage.py restore_lost_trials --dry-run
+
+# recria de fato (pula clientes já com assinatura)
+./venv/Scripts/python.exe manage.py restore_lost_trials
+```
+Antes de escrever, o comando valida `MAPA_PLAN_PRICE` contra o banco (`app/subscription/management/commands/restore_lost_trials.py:114-131`) e levanta `CommandError` se os preços mudaram desde a investigação original. Não mexe em `Invoice` nem `PlanPrice`, só recria a linha de `Subscription` com `trial=True`, `status='TRIAL'`.
+</Accordion>
+
+```bash
+./venv/Scripts/python.exe manage.py expire_trials
+./venv/Scripts/python.exe manage.py sync_stripe_billing
+```
+
+## Onboarding e grid — `app/onboarding`
+
+| Comando | Arquivo | Agendado | O que faz |
+|---|---|---|---|
+| `generate_pending_grids` | `app/onboarding/management/commands/generate_pending_grids.py:1` | Periódico no Dokploy — intervalo não fixado no repositório | Gera a imagem personalizada do grid (recria a referência escolhida com cores/logo da marca) das sessões com `data.grid.generation_status='pending'`. Delega para `services.generate_pending_grids` (`app/onboarding/services.py:4151`). |
+| `send_grid_approval_reminders` | `app/onboarding/management/commands/send_grid_approval_reminders.py:1` | `*/5 * * * *` | Cobra pelo ManyChat a aprovação do grid ainda pendente. Respeita `GRID_APPROVAL_REMINDER_INTERVAL_HOURS` (default 24h, `app/onboarding/cron.py:50`) e para após `GRID_APPROVAL_MAX_REMINDERS` (default 3, `app/onboarding/cron.py:53`) lembretes. |
+
+```bash
+# gerar grids pendentes (lote maior)
+./venv/Scripts/python.exe manage.py generate_pending_grids --limit 50
+
+# cobrar aprovação de grid
+./venv/Scripts/python.exe manage.py send_grid_approval_reminders
+```
+
+`generate_pending_grids` aceita `--limit` (inteiro, default 20 — `app/onboarding/management/commands/generate_pending_grids.py:24-29`). `send_grid_approval_reminders` não tem argumentos.
+
+## Galeria de mídia — `app/media`
+
+| Comando | Arquivo | Agendado | O que faz |
+|---|---|---|---|
+| `analyze_media_library` | `app/media/management/commands/analyze_media_library.py:1` | `*/15 * * * *` | Lê por IA (`OPENAI_API_KEY`, modelo `MEDIA_ANALYSIS_MODEL` default `gpt-4o-mini` — `app/media/analysis.py:109,114`) as imagens da galeria sem descrição e grava `ai_description`/`ai_keywords` em `Media`. Sem isso o MiggoAI nunca escolhe foto do cliente como referência de imagem (busca lá é textual). |
+
+Argumentos (`app/media/management/commands/analyze_media_library.py:26-46`):
+
+| Flag | Tipo | Default | Efeito |
+|---|---|---|---|
+| `--limit` | int | `cron.DEFAULT_LIMIT` = 50 (`app/media/cron.py:31`) | Teto de imagens analisadas nesta execução. `0` remove o teto (cuidado: 1 chamada de IA por imagem). |
+| `--client-id` | int | `None` | Restringe a um cliente. |
+| `--force` | flag | `False` | Reanalisa também o que já tem análise. |
+| `--dry-run` | flag | `False` | Só conta o que seria analisado, sem chamar IA nem gravar. |
+| `--report` | flag | `False` | Só diagnostica o estado da galeria (fila, falhas anteriores), não chama IA nem grava. |
+
+```bash
+# quanto há na fila, sem gastar chamada de IA
+./venv/Scripts/python.exe manage.py analyze_media_library --dry-run
+
+# lote maior num catch-up
+./venv/Scripts/python.exe manage.py analyze_media_library --limit 300
+
+# reprocessar um cliente específico, inclusive o que já foi analisado
+./venv/Scripts/python.exe manage.py analyze_media_library --client-id 42 --force
+
+# diagnóstico: por que a fila está vazia (ou travada)?
+./venv/Scripts/python.exe manage.py analyze_media_library --report
+```
+
+## Conteúdo e integrações de rede social — `app/post`
+
+| Comando | Arquivo | Agendado | O que faz |
+|---|---|---|---|
+| `backfill_post_status_events` | `app/post/management/commands/backfill_post_status_events.py:1` | Sob demanda | Reconstrói `PostStatusEvent` a partir dos snapshots (`field_snapshot['status']`) gravados em `History`. Idempotente — não duplica eventos já existentes; cobertura limitada ao período em que o `History` registrou posts. |
+| `repair_platform_integrations` | `app/post/management/commands/repair_platform_integrations.py:1` | Sob demanda (correção do incidente MIG-185) | Realinha `PlatformIntegration` com as contas realmente conectadas no Zernio (`GET /v1/accounts?profileId=`) — conserta o embaralhamento causado por um webhook antigo que casava a integração só por `profileId` do cliente. |
+
+Argumentos:
+- `backfill_post_status_events`: `--dry-run` (flag) — só relata quantos eventos seriam criados (`app/post/management/commands/backfill_post_status_events.py:20-25`).
+- `repair_platform_integrations`: `--apply` (flag, sem ela só relata) e `--client <id>` (int, limita a um cliente) — `app/post/management/commands/repair_platform_integrations.py:26-36`.
+
+```bash
+# reconstrução histórica, em modo simulação
+./venv/Scripts/python.exe manage.py backfill_post_status_events --dry-run
+
+# aplica de fato
+./venv/Scripts/python.exe manage.py backfill_post_status_events
+
+# relatório de integrações desalinhadas de um cliente
+./venv/Scripts/python.exe manage.py repair_platform_integrations --client 42
+
+# corrige de fato
+./venv/Scripts/python.exe manage.py repair_platform_integrations --client 42 --apply
+```
+
+<Note>
+`send_scheduled_reviews` (`app/post/cron.py:10`) também é do app `post`, mas **não é um management command** — é uma função Python chamada direto pelo `django-crontab` via `settings.CRONJOBS`. Ver [Tarefas agendadas](/backend/tarefas-agendadas).
+</Note>
+
+## Onboarding de clientes — `app/client`
+
+| Comando | Arquivo | Agendado | O que faz |
+|---|---|---|---|
+| `fix_active_onboarding` | `app/client/management/commands/fix_active_onboarding.py:1` | Sob demanda (correção pontual de produção) | Marca `onboarding_step=5` (e fecha `OnboardingSession`, quando existe) para clientes `active=True`, destravando o acesso sem depender de etapas novas do fluxo. |
+| `check_trials` | `app/client/management/commands/check_trials.py:1` | ⚠️ Legado — não usar | Bloqueia conta 7 dias após criação por uma regra de trial que não vale mais. Quem decide hoje é `expire_trials` (`app/subscription`). |
+
+Argumentos de `fix_active_onboarding` (`app/client/management/commands/fix_active_onboarding.py:51-81`):
+
+| Flag | Tipo | Default | Efeito |
+|---|---|---|---|
+| `--apply` | flag | `False` | Grava as alterações. Sem a flag roda em dry-run (padrão). |
+| `--email` | str, repetível | `[]` | Restringe a um ou mais e-mails. |
+| `--client-id` | int, repetível | `[]` | Restringe a um ou mais IDs de `Client`. |
+| `--created-before` | `YYYY-MM-DD` | — | Só clientes criados antes desta data. |
+| `--with-subscription` | flag | `False` | Só clientes com `Subscription` `ACTIVE` ou `TRIAL`. |
+| `--mark-skipped` | flag | `False` | Também marca `onboarding_skipped=True`. |
+| `--batch-size` | int | `200` | Clientes por transação. |
+
+```bash
+# sempre confira antes — não escreve nada
+./venv/Scripts/python.exe manage.py fix_active_onboarding
+
+# recorte recomendado: só quem já existia antes do deploy do onboarding
+./venv/Scripts/python.exe manage.py fix_active_onboarding --created-before 2026-07-01 --apply
+
+# caso pontual
+./venv/Scripts/python.exe manage.py fix_active_onboarding --email fulano@empresa.com --apply
+```
+
+`check_trials` não tem argumentos.
+
+## Conversas e ManyChat — `app/conversation`
+
+| Comando | Arquivo | Agendado | O que faz |
+|---|---|---|---|
+| `sync_conversations` | `app/conversation/management/commands/sync_conversations.py:1` | Sob demanda (rodar 1x após o deploy do módulo, ou quando faltar conversa no admin) | Cria a `Conversation` de todo cliente que já tem WhatsApp conectado, via `services.sync_conversations_from_integrations()` (`app/conversation/services.py:426`). A partir da conexão, o signal do app cria sozinho — o comando é só para o backlog inicial. |
+| `trigger_manychat_webhook` | `app/conversation/management/commands/trigger_manychat_webhook.py:1` | Sob demanda (ferramenta de teste manual) | Simula uma chamada do ManyChat para o backend local, sem precisar do ManyChat de verdade nem montar `curl` com token na mão. Bate na URL real (`--base-url`, default `http://127.0.0.1:8000`) autenticado com `MANYCHAT_WEBHOOK_TOKEN`. |
+
+Argumentos de `trigger_manychat_webhook` (`app/conversation/management/commands/trigger_manychat_webhook.py:29-47`):
+
+| Flag | Obrigatória | Efeito |
+|---|---|---|
+| `--subscriber-id` | Sim | `manychat_id` da conversa (ex.: `36064711`). Cria a conversa se não existir. |
+| `--text` | Não | O que o "cliente" escreveu (webhook padrão, sem `--continue`). |
+| `--name` | Não | Nome do contato — só importa na primeira chamada. |
+| `--phone` | Não | Telefone do WhatsApp (`whatsapp_phone`). |
+| `--continue` (`continue_block`) | Não | Chama `/dynamic-block/continue/` em vez do webhook padrão — simula o flow "casca" chamando de volta. |
+| `--option` | Não | Com `--continue`: simula o toque num botão de decisão. |
+| `--base-url` | Não | Onde o backend local está escutando (default `http://127.0.0.1:8000`). |
+
+```bash
+# sincronizar conversas após deploy do módulo
+./venv/Scripts/python.exe manage.py sync_conversations
+
+# simular o cliente escrevendo no WhatsApp
+./venv/Scripts/python.exe manage.py trigger_manychat_webhook --subscriber-id 36064711 --text "Oi"
+
+# simular o toque em um botão de decisão do flow "casca"
+./venv/Scripts/python.exe manage.py trigger_manychat_webhook --subscriber-id 36064711 --continue --option "Sim"
+```
+
+<Warning>
+`trigger_manychat_webhook` exige `MANYCHAT_WEBHOOK_TOKEN` configurado no ambiente (`app/conversation/management/commands/trigger_manychat_webhook.py:50-55`) — sem ele o comando levanta `CommandError` antes de tentar a chamada.
+</Warning>
+
+## Histórico de atividade — `app/history`
+
+| Comando | Arquivo | Agendado | O que faz |
+|---|---|---|---|
+| `purge_non_client_history` | `app/history/management/commands/purge_non_client_history.py:1` | Sob demanda | Apaga do `History` tudo que não é ação de um cliente (`user__role != 'client'`) — equipe, automação e registros sem autor. **Destrutivo e sem volta.** Apaga em lotes para não segurar uma transação gigante. |
+
+Argumentos (`app/history/management/commands/purge_non_client_history.py:18-34`):
+
+| Flag | Tipo | Default | Efeito |
+|---|---|---|---|
+| `--dry-run` | flag | comportamento padrão sem `--yes` | Só relata o que seria apagado. |
+| `--yes` | flag | `False` | Confirma a exclusão de fato. |
+| `--batch-size` | int | `5000` | Linhas por lote de exclusão. |
+
+```bash
+# padrão: relatório sem apagar nada
+./venv/Scripts/python.exe manage.py purge_non_client_history
+
+# execução real
+./venv/Scripts/python.exe manage.py purge_non_client_history --yes --batch-size 2000
+```
+
+## E-mail marketing — `app/emailmarketing`
+
+| Comando | Arquivo | Agendado | O que faz |
+|---|---|---|---|
+| `seed_marketing_emails` | `app/emailmarketing/management/commands/seed_marketing_emails.py:1` | Sob demanda (setup/atualização de conteúdo) | Cria/atualiza a régua de e-mails do trial (MIG-264): 8 campanhas fixas (`CAMPANHAS`, `app/emailmarketing/management/commands/seed_marketing_emails.py:17-157`) via `update_or_create` por `name` — idempotente, rodar de novo atualiza texto sem duplicar. |
+| `send_marketing_emails` | `app/emailmarketing/management/commands/send_marketing_emails.py:1` | 1x/dia no Dokploy | Dispara as campanhas ativas elegíveis hoje. Cada campanha resolve seu público (evento do ciclo de vida + `delay_days`) e envia para quem ainda não recebeu; a trava contra duplicidade é o `EmailDispatch`. Delega para `services.enviar_campanha`/`enviar_campanhas_ativas` (`app/emailmarketing/services.py:259,323`). |
+
+Argumentos de `send_marketing_emails` (`app/emailmarketing/management/commands/send_marketing_emails.py:21-29`):
+
+| Flag | Tipo | Efeito |
+|---|---|---|
+| `--dry-run` | flag | Só conta quem receberia, sem enviar nem gravar. |
+| `--campaign` | int | ID de uma campanha específica, em vez de todas as ativas. |
+
+```bash
+# aplicar/atualizar a régua de e-mails do trial
+./venv/Scripts/python.exe manage.py seed_marketing_emails
+
+# ver quem receberia hoje, sem enviar
+./venv/Scripts/python.exe manage.py send_marketing_emails --dry-run
+
+# disparar só uma campanha específica
+./venv/Scripts/python.exe manage.py send_marketing_emails --campaign 3
+```
+
+`seed_marketing_emails` não tem argumentos.
+
+## Comandos padrão do Django usados no projeto
+
+Não são customizados, mas fazem parte do fluxo diário do `backend-miggo`.
+
+<AccordionGroup>
+  <Accordion title="check — valida o projeto sem tocar no banco">
+    ```bash
+    ./venv/Scripts/python.exe manage.py check
+    ```
+    É o comando de validação mínima citado no `CLAUDE.md` do monorepo — rode sempre após alterar `models.py`, `settings.py` ou qualquer configuração antes de dar uma tarefa por concluída.
+  </Accordion>
+  <Accordion title="makemigrations + migrate — toda alteração de modelo">
+    ```bash
+    ./venv/Scripts/python.exe manage.py makemigrations
+    ./venv/Scripts/python.exe manage.py migrate
+    ```
+    Toda alteração em `models.py` precisa gerar migration e ser aplicada antes de considerar a mudança pronta.
+  </Accordion>
+  <Accordion title="collectstatic — antes de servir estáticos em produção">
+    ```bash
+    ./venv/Scripts/python.exe manage.py collectstatic --noinput
+    ```
+  </Accordion>
+  <Accordion title="createsuperuser — criar acesso de admin">
+    ```bash
+    ./venv/Scripts/python.exe manage.py createsuperuser
+    ```
+  </Accordion>
+  <Accordion title="shell — investigação/depuração pontual">
+    ```bash
+    ./venv/Scripts/python.exe manage.py shell
+    ```
+    Útil para inspecionar `Client`, `Subscription` ou `PlatformIntegration` diretamente via ORM sem escrever um script solto (o `CLAUDE.md` do repo pede para não criar `fix_*.py`/`check_*.py` soltos na raiz — prefira `shell` ou um management command de verdade).
+  </Accordion>
+</AccordionGroup>
+
+## Sob demanda — nunca agende
+
+Resumo dos comandos destrutivos/corretivos deste levantamento que não devem entrar em schedule algum:
+
+| Comando | Por quê |
+|---|---|
+| `fix_active_onboarding` | Correção pontual de produção; grava só com `--apply` explícito. |
+| `purge_non_client_history` | Apaga dados sem volta; grava só com `--yes` explícito. |
+| `repair_platform_integrations` | Corrige o estrago de um incidente específico (webhook antigo, MIG-185). |
+| `restore_lost_trials` | Dados hardcoded de um incidente pontual (26-27/08/2026); não faz sentido repetir. |
+| `check_trials` | Legado — a regra que ele aplica não é mais a vigente. |
+| `trigger_manychat_webhook` | Ferramenta de teste manual, não uma rotina de produção. |
+
+## Fora do escopo desta página
+
+`testes/populate_all.py` aparece referenciado em `docs/comandos.md` como o script que popula o banco com dados-base na configuração inicial do projeto — mas **não é** um management command (`python manage.py populate_all` não existe). Roda-se como script solto: `python testes/populate_all.py`. Não foi revisado em detalhe aqui por estar fora do escopo de "management commands" desta página.

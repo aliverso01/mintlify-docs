@@ -1,0 +1,216 @@
+---
+title: "Configuração"
+description: "Settings do Django (apps, middleware, banco, DRF, JWT, CORS/CSRF, estáticos, logging) do backend MiggoAI"
+icon: "sliders"
+---
+
+Toda a configuração do backend está em `backend/core/settings.py`. As variáveis vêm de `.env` via `python-decouple`.
+
+## Apps instalados
+
+`backend/core/settings.py:38-56`:
+
+```python
+INSTALLED_APPS = [
+    'django.contrib.admin',
+    'django.contrib.auth',
+    'django.contrib.contenttypes',
+    'django.contrib.sessions',
+    'django.contrib.messages',
+    'django.contrib.staticfiles',
+
+    # Django REST Framework
+    'rest_framework',
+    'corsheaders',
+    'drf_spectacular',
+
+    # Apps do projeto
+    'apps.clients',
+    'apps.posts',
+    'apps.prompts',
+    'apps.generations',
+]
+```
+
+| App | Responsabilidade |
+|---|---|
+| `apps.clients` | Proxy de clientes do `backend-miggo` + modelo local `ClientVariableValue`/`ClientPostHistory`. |
+| `apps.posts` | Proxy de posts (cards)/formatos/status do `backend-miggo`. |
+| `apps.prompts` | CMS de prompts/workflows/variáveis, versionamento. |
+| `apps.generations` | Execução dos workflows de IA e registro de auditoria (`Generation`). |
+| `apps.common` | Módulo compartilhado (`miggo_client.py`) sem app Django próprio — não está em `INSTALLED_APPS` porque não define models. |
+
+## Middleware
+
+`backend/core/settings.py:58-68`, na ordem declarada:
+
+```python
+MIDDLEWARE = [
+    'corsheaders.middleware.CorsMiddleware',
+    'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
+    'django.contrib.sessions.middleware.SessionMiddleware',
+    'django.middleware.common.CommonMiddleware',
+    'django.middleware.csrf.CsrfViewMiddleware',
+    'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'django.contrib.messages.middleware.MessageMiddleware',
+    'django.middleware.clickjacking.XFrameOptionsMiddleware',
+]
+```
+
+`CorsMiddleware` vem primeiro (padrão exigido pelo `django-cors-headers`) e `WhiteNoiseMiddleware` logo após `SecurityMiddleware`, para servir estáticos comprimidos (admin, drf-spectacular) sem depender de servidor de arquivos externo.
+
+## Banco de dados
+
+`backend/core/settings.py:93-102` — exclusivamente PostgreSQL, sem fallback:
+
+```python
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': config('DB_NAME'),
+        'USER': config('DB_USER'),
+        'PASSWORD': config('DB_PASSWORD'),
+        'HOST': config('DB_HOST'),
+        'PORT': config('DB_PORT'),
+    }
+}
+```
+
+## Django REST Framework
+
+`backend/core/settings.py:105-113`:
+
+```python
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': [
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
+    ],
+    'DEFAULT_PERMISSION_CLASSES': [
+        'rest_framework.permissions.IsAuthenticated',
+    ],
+    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
+}
+```
+
+Toda view é autenticada por padrão (JWT via header `Authorization: Bearer <token>`) — não há classe de permissão diferenciada por view nos apps documentados; nenhuma view usa `AllowAny` ou `permission_classes` customizado.
+
+## JWT (SimpleJWT)
+
+`backend/core/settings.py:115-121`:
+
+```python
+SIMPLE_JWT = {
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=30),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
+    'ROTATE_REFRESH_TOKENS': True,
+    'BLACKLIST_AFTER_ROTATION': False,
+    'AUTH_HEADER_TYPES': ('Bearer',),
+}
+```
+
+- Access token expira em 30 minutos, refresh em 7 dias.
+- `ROTATE_REFRESH_TOKENS: True` — cada refresh emite um novo refresh token, mas `BLACKLIST_AFTER_ROTATION: False` significa que o token antigo **não** é invalidado (não há blacklist app instalado).
+- Endpoints: `POST /api/token/` (obtenção) e `POST /api/token/refresh/` (renovação) — `backend/core/urls.py:12-13`.
+
+## CORS e CSRF
+
+`backend/core/settings.py:17-33`:
+
+```python
+def _get_csv(key, default=''):
+    val = config(key, default=default)
+    if not val:
+        return []
+    return [x.strip() for x in val.split(',') if x.strip()]
+
+ALLOWED_HOSTS = _get_csv('ALLOWED_HOSTS')
+CORS_ALLOWED_ORIGINS = _get_csv('CORS_ALLOWED_ORIGINS')
+CSRF_TRUSTED_ORIGINS = _get_csv('CSRF_TRUSTED_ORIGINS')
+```
+
+`_get_csv` é um helper local que transforma uma variável de ambiente CSV (`"http://a.com,http://b.com"`) em lista, descartando vazios — usado para as três variáveis de host/origem, evitando repetir o parsing em cada uma.
+
+## Estáticos e mídia
+
+`backend/core/settings.py:154-172`:
+
+```python
+STATIC_URL = 'static/'
+STATIC_ROOT = BASE_DIR / 'static'
+
+STORAGES = {
+    'default': {
+        'BACKEND': 'django.core.files.storage.FileSystemStorage',
+    },
+    'staticfiles': {
+        'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage',
+    },
+}
+
+MEDIA_URL = '/media/'
+MEDIA_ROOT = BASE_DIR / 'media'
+```
+
+- Estáticos (admin, drf-spectacular) são comprimidos e versionados por hash via WhiteNoise, servidos mesmo com `DEBUG=False`.
+- Mídia (imagens geradas por IA, salvas por `apps/generations/services/runner.py`) usa o storage padrão de sistema de arquivos — em dev, servida via `static(settings.MEDIA_URL, ...)` quando `DEBUG=True` (`backend/core/urls.py:20-21`); em produção, ver <a href="/miggoai/deploy">Deploy</a>.
+
+## drf-spectacular
+
+`backend/core/settings.py:123-128`:
+
+```python
+SPECTACULAR_SETTINGS = {
+    'TITLE': 'Miggo AI Studio API',
+    'DESCRIPTION': 'Ferramenta interna para geração de conteúdo IA (título, imagem, legenda, hashtags).',
+    'VERSION': '1.0.0',
+    'SERVE_INCLUDE_SCHEMA': False,
+}
+```
+
+`SERVE_INCLUDE_SCHEMA: False` — o schema OpenAPI não é servido automaticamente numa rota própria (não há `path` para `/api/schema/` em `core/urls.py`); o drf-spectacular está instalado como `DEFAULT_SCHEMA_CLASS` mas sem endpoint de schema/Swagger exposto nas URLs documentadas.
+
+## Logging
+
+Não há bloco `LOGGING` customizado em `backend/core/settings.py` — o projeto usa o logging padrão do Django (saída no console via `logger = logging.getLogger(__name__)` em módulos como `context_builder.py:15`, `media_classifier.py:26`, `openai_service.py:14`), sem handlers/formatters próprios configurados nas settings.
+
+## Internacionalização e fuso
+
+`backend/core/settings.py:145-151`:
+
+```python
+LANGUAGE_CODE = 'pt-br'
+TIME_ZONE = 'America/Sao_Paulo'
+USE_I18N = True
+USE_TZ = True
+```
+
+## Integração com o backend-miggo
+
+`backend/core/settings.py:177-182` — únicas settings específicas do domínio (fora do padrão Django/DRF):
+
+```python
+MIGGO_API_KEY = config('MIGGO_API_KEY')
+MIGGO_API_BASE_URL = config('MIGGO_API_BASE_URL')
+OPENAI_API_KEY = config('OPENAI_API_KEY', default='')
+```
+
+Consumidas por `apps/common/miggo_client.py` e `apps/generations/services/openai_service.py` — ver <a href="/miggoai/arquitetura">Arquitetura</a>.
+
+## Tabela consolidada de variáveis
+
+| Variável | Setting | Obrigatória |
+|---|---|---|
+| `SECRET_KEY` | `SECRET_KEY` | Sim |
+| `DEBUG` | `DEBUG` | Sim |
+| `ALLOWED_HOSTS` | `ALLOWED_HOSTS` | Não |
+| `DB_NAME` / `DB_USER` / `DB_PASSWORD` / `DB_HOST` / `DB_PORT` | `DATABASES` | Sim |
+| `MIGGO_API_KEY` / `MIGGO_API_BASE_URL` | `MIGGO_API_KEY` / `MIGGO_API_BASE_URL` | Sim |
+| `OPENAI_API_KEY` | `OPENAI_API_KEY` | Não (`default=''`) |
+| `CORS_ALLOWED_ORIGINS` | `CORS_ALLOWED_ORIGINS` | Não |
+| `CSRF_TRUSTED_ORIGINS` | `CSRF_TRUSTED_ORIGINS` | Não |
+
+<Columns cols={2}>
+  <Card title="Instalação" icon="download" href="/miggoai/instalacao">Passo a passo de setup local.</Card>
+  <Card title="Arquitetura" icon="sitemap" href="/miggoai/arquitetura">Como as peças se conectam.</Card>
+</Columns>

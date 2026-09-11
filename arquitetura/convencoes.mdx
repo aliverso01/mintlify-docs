@@ -1,0 +1,97 @@
+---
+title: "Convenções de código"
+description: "Regras que valem para os três repositórios: estilo, migrations, lint, encoding, segredos e fluxo de trabalho."
+icon: "ruler"
+---
+
+## Princípios gerais
+
+<Columns cols={2}>
+  <Card title="Mudança mínima" icon="scissors">
+    Resolva o problema pedido. Nada de refatoração oportunista fora do escopo — ela esconde a mudança real na revisão.
+  </Card>
+  <Card title="Siga o vizinho" icon="copy">
+    Combine o estilo do arquivo ao redor: nomes, densidade de comentários e idioma. Comentários e mensagens ao usuário em **pt-BR**.
+  </Card>
+  <Card title="Sem segredos no código" icon="key-round">
+    Nunca commite `.env`, chaves ou dumps de dados. Toda credencial entra por variável de ambiente.
+  </Card>
+  <Card title="Nada de script solto na raiz" icon="file-x">
+    Não crie `fix_*.py` / `check_*.py` na raiz dos repositórios. Prefira management commands ou testes.
+  </Card>
+</Columns>
+
+## Encoding
+
+Os repositórios têm histórico de **mojibake** (`Ã§`, `Ã£` no lugar de `ç`, `ã`). Grave sempre em **UTF-8 sem BOM** e confira o resultado, especialmente em serializers, views e qualquer texto exibido ao usuário.
+
+## Backend e MiggoAI (Django)
+
+| Regra | Detalhe |
+| --- | --- |
+| Migrations | Toda alteração de model exige `makemigrations` + `migrate`. Não edite migrations já aplicadas em produção. |
+| Verificação antes de concluir | `./venv/Scripts/python.exe manage.py check` precisa passar. |
+| Testes | O banco de teste pode falhar por permissão no Postgres local. Quando `manage.py test` não conseguir criar o banco, valide com `manage.py check` mais um import isolado do módulo alterado. Veja [Testes](/backend/testes). |
+| Organização do app | Siga a anatomia já usada pelos apps existentes (models, serializers, views, urls, services). Veja [Estrutura](/backend/estrutura). |
+| Auditoria de chamadas externas | Toda chamada a terceiro deve registrar em `Integration`, de forma *best-effort* — falhar a auditoria nunca pode derrubar o fluxo real. |
+
+## Frontend (React 19 + TypeScript)
+
+| Regra | Detalhe |
+| --- | --- |
+| TypeScript estrito | Nenhum `any` novo. Tipos explícitos em props, retornos de hooks e respostas de API. |
+| Lint obrigatório | `npm run lint` sem erros antes de concluir. |
+| Build verifica tipos | `npm run build` roda `tsc -b` antes do Vite — um build verde é a garantia de tipagem. |
+| Componentes | Funcionais com hooks. Reaproveite os componentes existentes antes de criar novos. |
+| Rotas por papel | Respeite a separação `/app` (cliente) e `/admin` (equipe). Veja [Roteamento](/frontend/roteamento). |
+
+## Checklist antes de considerar pronto
+
+<Steps>
+  <Step title="Entender">
+    Localize o código relevante e leia só o necessário.
+  </Step>
+  <Step title="Implementar">
+    Mudança mínima, no estilo do repositório.
+  </Step>
+  <Step title="Verificar">
+    Rode o check/lint/teste do repositório tocado e relate o resultado real. Se falhou, diga que falhou.
+  </Step>
+  <Step title="Revisar">
+    Para mudanças não triviais, passe uma revisão de código antes de fechar: correção primeiro, depois segurança, regressão, simplicidade e testes.
+  </Step>
+  <Step title="Atualizar o board">
+    Mova o card no Jira e registre um comentário técnico do que foi feito.
+  </Step>
+</Steps>
+
+## Prioridades de revisão de código
+
+Correção antes de estilo. Na ordem:
+
+1. **Correção** — faz o que promete? Casos de borda, `null`/`undefined`, erros silenciados.
+2. **Segurança** — entrada não validada, injeção, dado sensível em log, permissão e autorização.
+3. **Regressão** — quebra algo existente? Atenção especial aos contratos de API entre os três repositórios.
+4. **Simplicidade e reuso** — dá para usar o que já existe? Há duplicação?
+5. **Testes** — o caminho crítico está coberto?
+
+Reporte achados no formato `arquivo:linha` — problema — correção sugerida.
+
+## Contratos entre repositórios
+
+Mudar o formato de uma resposta da API do backend quebra o frontend e possivelmente o MiggoAI. Antes de alterar um serializer ou uma rota:
+
+- Procure os consumidores no `frontend-miggo` (`src/services/`, `src/hooks/`).
+- Verifique se o MiggoAI depende do campo (`modules/miggo.py` no repositório do MiggoAI).
+- Prefira adicionar campos a renomear ou remover; quando remover for inevitável, faça em duas etapas.
+
+## Relacionados
+
+<Columns cols={2}>
+  <Card title="Ambientes" icon="layers" href="/arquitetura/ambientes">
+    Como a mudança chega a homologação e produção.
+  </Card>
+  <Card title="Glossário" icon="book-a" href="/arquitetura/glossario">
+    O vocabulário usado nos nomes de código.
+  </Card>
+</Columns>

@@ -1,0 +1,237 @@
+---
+title: "Media"
+description: "Galeria de mídia dos clientes: upload, thumbnails, análise por IA e limites de armazenamento por plano."
+icon: "image"
+---
+
+## Responsabilidade
+
+O app `app.media` centraliza o armazenamento de arquivos de mídia (fotos e vídeos) enviados pelos clientes: upload direto (multipart) ou por URL, geração automática de thumbnail, listagem paginada da galeria e edição/exclusão de itens.
+
+Ele é consumido em dois cenários:
+- **Galeria do cliente** (`from_media_library=True`): mídia enviada pelo cliente para reuso em posts futuros. O frontend lista via `MediaListView` e o mesmo registro pode depois ser vinculado a um post (`app.post.MediaPost`), o que o tira da listagem da galeria (`media_posts__isnull=True`).
+- **Upload de mídia de post**: usa o mesmo endpoint de criação (`MediaCreateView`); o vínculo `MediaPost` é criado logo em seguida e o `from_media_library` correspondente vira `False`.
+
+A mídia da galeria é também insumo para o serviço de IA (MiggoAI): a análise por IA implementada em `analysis.py` e agendada via `cron.py`/management command grava `ai_description`/`ai_keywords`, usados pelo `media_matcher` do MiggoAI para escolher uma foto do cliente como referência ao compor a imagem de um post (`app/media/analysis.py:1-17`).
+
+## Arquivos
+
+| Arquivo | Conteúdo |
+|---|---|
+| `app/media/models.py` | Model `Media`, funções de resolução de caminho de upload (`get_upload_path`, `get_thumbnail_path`) e geração de thumbnail no `save()`. |
+| `app/media/serializers.py` | `MediaSerializer` — campos expostos, download de mídia por URL, resolução de `client`/`client_hash`/`media_path` na criação. |
+| `app/media/views.py` | Views de criação, listagem, atualização e exclusão; notificação de admins sobre novo upload na galeria. |
+| `app/media/urls.py` | Rotas do app (`create/`, `list/`, `update/<pk>/`, `delete/<pk>/`, `<pk>/`). |
+| `app/media/admin.py` | Registro simples do model `Media` no Django Admin. |
+| `app/media/apps.py` | `AppConfig` padrão do app. |
+| `app/media/analysis.py` | Chamada à Vision (OpenAI) para descrever a imagem, normalização de keywords e montagem do texto de busca (MIG-138). |
+| `app/media/cron.py` | Job em lote `analyze_media_library` que varre a galeria não analisada e grava a análise de IA; `relatorio_galeria` para diagnóstico. |
+| `app/media/limits.py` | Travas de tamanho de upload e contagem de arquivos para clientes em teste grátis (MIG-113). |
+| `app/media/utils.py` | `generate_media_description_async` — geração assíncrona (thread) de descrição textual via OpenAI, grava em `description`. |
+| `app/media/management/commands/analyze_media_library.py` | Management command que expõe `cron.py` via `python manage.py analyze_media_library`, agendado no Dokploy a cada 15 min. |
+
+## Modelos
+
+### Media
+Representa um arquivo de mídia (imagem ou vídeo) pertencente a um usuário/cliente, seja da galeria reutilizável ou anexado a um post. Definido em `app/media/models.py:45`.
+
+| Campo | Tipo | Obrigatório | Default/Choices | Descrição |
+|---|---|---|---|---|
+| `user` | `ForeignKey(CustomUser)` | Sim | — | Dono do registro; `on_delete=CASCADE`. |
+| `client_hash` | `CharField(255)` | Não | `null=True, blank=True` | Hash do cliente, usado para escopar a mídia e montar o caminho de storage. |
+| `media_path` | `CharField(255)` | Não | `null=True, blank=True` | "Pasta" lógica dentro do storage do cliente; agrupa lotes de até 100 itens (ver `MediaSerializer.create`). |
+| `media` | `FileField` | Sim | `upload_to=get_upload_path` | Arquivo em si. |
+| `thumbnail` | `ImageField` | Não | `null=True, blank=True`, `upload_to=get_thumbnail_path` | Miniatura gerada automaticamente no `save()` para imagens. |
+| `description` | `TextField` | Não | `null=True, blank=True` | Descrição editável pelo cliente (ou gerada por `utils.generate_media_description_async`). |
+| `ai_description` | `TextField` | Não | `null=True, blank=True` | Descrição gerada pela análise de IA da galeria (MIG-138). Campo separado de `description` para não sobrescrever o texto do cliente — `app/media/models.py:53-56`. |
+| `ai_keywords` | `JSONField` | Não | `default=list, blank=True` | Lista de palavras-chave normalizadas da análise de IA. |
+| `ai_raw_analysis` | `JSONField` | Não | `null=True, blank=True` | Payload bruto da análise (ou marcador `{'skipped': motivo}` / `{'failures': n, 'last_error': ...}`). |
+| `analyzed` | `BooleanField` | Não | `default=False` | Marca se já passou pelo job de análise (com sucesso ou descarte). |
+| `analyzed_at` | `DateTimeField` | Não | `null=True, blank=True` | Timestamp da análise. |
+| `generated_url` | `URLField` | Não | `null=True, blank=True` | URL de mídia gerada internamente (não vinda de upload de arquivo). |
+| `from_media_library` | `BooleanField` | Não | `default=True` | `True` = item da galeria reutilizável; `False` = mídia específica de um post. |
+| `created_at` | `DateTimeField` | Não | `auto_now_add=True` | — |
+| `updated_at` | `DateTimeField` | Não | `auto_now=True` | — |
+
+**Relacionamentos**
+- `user` → `app.account.CustomUser` (FK, `CASCADE`).
+- Reverso: `media_posts` — de `app.post.MediaPost.media` (`related_name='media_posts'`, `app/post/models.py:93`). Usado em `views.py` (`media_posts__isnull=True` para filtrar a galeria) e em `views.py` (`media.media_posts.exists()` na notificação adiada).
+
+**Métodos**
+- `save(*args, **kwargs)` (`app/media/models.py:66-98`): antes de persistir, decide se precisa (re)gerar thumbnail — quando é criação nova com `media` preenchido, ou quando o arquivo `media` mudou em relação ao registro salvo. Se aplicável e não houver `thumbnail` já setado, abre a imagem com Pillow, aplica `exif_transpose`, redimensiona para no máximo 300x300 (`Image.Resampling.LANCZOS`), converte para RGB quando o formato de saída é JPEG e o modo é `RGBA`/`P`, e salva o resultado em `self.thumbnail` (sem persistir ainda, `save=False`). Só atua em extensões `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`. Qualquer exceção é capturada e apenas logada via `print` — a criação do registro não é bloqueada por falha de thumbnail.
+- `__str__()`: retorna `media_path` ou `f"Media {self.id}"`.
+
+**Funções auxiliares do módulo**
+- `get_upload_path(instance, filename)` (`app/media/models.py:31-36`): monta o caminho de storage como `{client_hash}/{media_path}/{nome_hasheado}`, com fallback `unknown_client`/`general` quando os campos estão vazios. O nome hasheado é resolvido por `_resolved_upload_name`.
+- `get_thumbnail_path(instance, filename)` (`app/media/models.py:38-42`): mesmo padrão, mas dentro de `.../thumbnails/thumb_{nome_hasheado}`.
+- `_uploaded_content_type(file_field)`: lê o `content_type` declarado no upload multipart, se houver.
+- `_sniffed_extension(file_field)`: quando o upload não tem extensão reconhecível, lê os 16 primeiros bytes do arquivo e usa `utils.toolkit.extension_from_magic_bytes` para inferir o formato pelo conteúdo.
+- `_resolved_upload_name(instance, filename)`: gera o nome final via `utils.toolkit.generate_hashed_filename`, complementando com `_sniffed_extension` quando o hash não veio com extensão.
+
+## Endpoints
+
+Prefixo do app: `/api/v1/media/` (`core/urls.py:35`).
+
+| Método | Rota completa | View | Permissão |
+|---|---|---|---|
+| POST | `/api/v1/media/create/` | `MediaCreateView` | `HasAPIKeyOrIsAuthenticated` (default global) |
+| GET | `/api/v1/media/list/` | `MediaListView` | `HasAPIKeyOrIsAuthenticated` (default global) |
+| PATCH/PUT | `/api/v1/media/update/<int:pk>/` | `MediaUpdateView` | `HasAPIKeyOrIsAuthenticated` + escopo por cliente (ver abaixo) |
+| DELETE | `/api/v1/media/delete/<int:pk>/` | `MediaDeleteView` | `HasAPIKeyOrIsAuthenticated` (default global) |
+| DELETE | `/api/v1/media/<int:pk>/` | `MediaDeleteView` | `HasAPIKeyOrIsAuthenticated` (default global) |
+
+Nenhuma view do app declara `permission_classes` ou `authentication_classes` próprios; ambas herdam o default do projeto (`core/settings.py:135-141`): autenticação JWT (`rest_framework_simplejwt`) e permissão `app.account.permissions.HasAPIKeyOrIsAuthenticated` (libera acesso por API key OU usuário autenticado).
+
+<AccordionGroup>
+<Accordion title="POST /api/v1/media/create/ — MediaCreateView">
+Cria um registro de `Media`. Aceita upload multipart (`media` como arquivo) ou, via serializer, uma URL string em `media` (baixada e convertida em `ContentFile`).
+
+Antes de delegar ao `CreateAPIView` padrão, `create()` (`app/media/views.py:74-86`) aplica a trava de teste grátis: se o request trouxe um arquivo real em `request.FILES['media']` e o cliente resolvido (`app/client`, por `client` no body ou pelo usuário autenticado) está em teste grátis (`limits.is_client_on_free_trial`), valida o tamanho contra `limits.file_size_error`. Import feito dentro do método (import tardio). Essa validação **não** se aplica a upload por URL nem a mídia gerada internamente.
+
+Em `perform_create` (`app/media/views.py:88-104`):
+- Salva a mídia via serializer.
+- Se `skip_ai_analysis` não vier como `true`/`1`/`yes` no body, dispara `utils.generate_media_description_async(media_instance.id)` — geração assíncrona (thread) de `description` via OpenAI.
+- Se o usuário autenticado não é admin/superusuário e a mídia é da galeria (`from_media_library=True` com `client_hash` preenchido), agenda uma notificação adiada de 60s para admins (`_notify_media_upload_deferred`) — checa, após o delay, se a mídia continua na galeria e sem post vinculado (`media.media_posts.exists()`), e só então chama `app.notification.utils.notify_admins` com dedupe de 120s por nome de cliente. Qualquer exceção no agendamento é apenas logada via `print`.
+
+<ParamField path="media" type="file | string" required>Arquivo multipart, ou uma URL string (`http...`) que será baixada pelo serializer.</ParamField>
+<ParamField path="client" type="integer">ID do `Client` dono da mídia. Se omitido, usa `request.user` (precisa estar autenticado).</ParamField>
+<ParamField path="description" type="string">Descrição livre, editável pelo cliente.</ParamField>
+<ParamField path="from_media_library" type="boolean" default="true">Marca se o item entra na galeria reutilizável.</ParamField>
+<ParamField path="skip_ai_analysis" type="string">Quando `"true"`/`"1"`/`"yes"`, pula o disparo de `generate_media_description_async`.</ParamField>
+
+<ResponseField name="id" type="integer">ID do registro criado.</ResponseField>
+<ResponseField name="media" type="string">URL do arquivo salvo.</ResponseField>
+<ResponseField name="thumbnail" type="string">URL da thumbnail gerada (quando aplicável).</ResponseField>
+
+Erros: `400` — arquivo excede o limite de tamanho do plano (`{"error": "..."}` fora do formato padrão do DRF), URL de mídia inválida/sem tipo identificável, ou download da URL falhou. `401`/`403` — sem autenticação/API key.
+</Accordion>
+
+<Accordion title="GET /api/v1/media/list/ — MediaListView">
+Lista mídias paginadas (`StandardPagination`: `page_size=10`, `page_size_query_param=page_size`, `max_page_size=100`). Por padrão, retorna **somente mídia da galeria não vinculada a nenhum post** (`media_posts__isnull=True`), ordenada por `-created_at, -id`.
+
+<ParamField path="client_id" type="integer">Filtra pelo cliente (resolve para `client_hash`); se o `Client` não existir, retorna lista vazia.</ParamField>
+<ParamField path="client_hash" type="string">Filtra diretamente pelo hash do cliente (ignorado se `client_id` também resolveu um hash).</ParamField>
+<ParamField path="user_id" type="integer">Filtra por `user` (usado apenas se `client_id`/`client_hash` não estiverem presentes).</ParamField>
+<ParamField path="from_media_library" type="boolean">Quando presente, filtra explicitamente por `true`/`1`/`yes` vs. qualquer outro valor.</ParamField>
+
+<ResponseField name="count" type="integer">Total de itens.</ResponseField>
+<ResponseField name="results" type="array">Lista de objetos `Media` serializados.</ResponseField>
+</Accordion>
+
+<Accordion title="PATCH/PUT /api/v1/media/update/<pk>/ — MediaUpdateView">
+Atualiza campos editáveis de uma mídia (na prática, `description`, `client`, `from_media_library` — os demais são `read_only`).
+
+`get_queryset()` (`app/media/views.py:151-162`) restringe o escopo: se `request.user.role == 'client'`, só pode alterar mídia do próprio `client_hash` (via `user.client`); sem `client` associado, retorna queryset vazio. Usuário admin (qualquer outro `role`) mantém acesso total — **MIG-11**.
+
+<ResponseField name="id" type="integer">ID atualizado.</ResponseField>
+Erros: `404` — pk fora do escopo do cliente ou inexistente.
+</Accordion>
+
+<Accordion title="DELETE /api/v1/media/delete/<pk>/ e /api/v1/media/<pk>/ — MediaDeleteView">
+Exclui o registro (`DestroyAPIView` puro, sem lógica adicional além do queryset completo). As duas rotas apontam para a mesma view.
+</Accordion>
+</AccordionGroup>
+
+## Serializers
+
+### MediaSerializer (`app/media/serializers.py:15`)
+`ModelSerializer` sobre `Media`, `fields = '__all__'`.
+
+**Campos somente-leitura** (`read_only_fields`): `id`, `created_at`, `updated_at`, `client_hash`, `media_path`, `user`, `thumbnail`, `ai_description`, `ai_keywords`, `ai_raw_analysis`, `analyzed`, `analyzed_at`. Comentário no código explicita que a análise de IA (MIG-138) só é escrita pelo job `analyze_media_library` — o cliente só edita `description` livremente.
+
+**Campo extra**: `client` — `IntegerField(write_only=True, required=False)`, aceita o ID do `Client` como input (não é campo do model; é consumido em `create()`).
+
+**`to_internal_value(self, data)`** (`app/media/serializers.py:28-81`): quando `media` vem como string iniciando com `http`, trata como URL para download em vez de arquivo:
+- Faz `requests.get` com headers simulando um navegador (User-Agent, Accept, Referer, etc.), `stream=True`, `timeout=10`.
+- Em caso de sucesso (`200`), deriva o nome do arquivo da URL (fallback `downloaded_media` se muito curto); se não houver extensão, tenta resolvê-la por `content-type` (`extension_from_content_type`) e, na falta, pelos bytes iniciais (`extension_from_magic_bytes`) — se ainda assim não conseguir, levanta `ValidationError`.
+- Substitui `data['media']` por um `ContentFile(response.content, name=filename)`.
+- Erros: status HTTP diferente de 200 ou exceção de rede viram `ValidationError({'media': ...})`.
+
+**`create(self, validated_data)`** (`app/media/serializers.py:83-122`):
+- Extrai `client` (ID) de `validated_data`; se presente, resolve `Client.objects.get(id=client_id)` e usa `client_obj.user` como dono, sobrescrevendo `request.user`. Se o `Client` não existir, ignora silenciosamente e cai no fallback.
+- Se não houver `user` resolvido (nem `client` válido nem usuário autenticado), levanta `ValidationError({'user': ...})`.
+- Resolve `client_hash`: por `user.client.hash` (client), depois `user.hash` (fallback), depois `'unknown'`.
+- Resolve `media_path`: busca a última `Media` do mesmo `client_hash`; se existe e tem menos de 100 itens nesse `media_path`, reaproveita o mesmo path; caso contrário (ou se não há mídia anterior), gera um novo via `utils.toolkit.generate_unique_media_path()`. Efeito: mídias do mesmo cliente são agrupadas em lotes de até 100 por "pasta" lógica.
+
+## Regras de negócio e funções
+
+### `analysis.py` — análise de imagem por Vision (MIG-138)
+
+- **`prepare_image(image_bytes: bytes) -> bytes`** (`app/media/analysis.py:76-94`): normaliza qualquer imagem para JPEG dentro do limite de tamanho (usa só o primeiro quadro de GIF/WEBP animado, converte para RGB, redimensiona para no máximo `MAX_DIMENSION=1024`px no lado maior, qualidade 85). Levanta `MediaAnalysisUnsupported` se a imagem for ilegível (`UnidentifiedImageError`, `OSError`, `ValueError`).
+- **`is_supported_image(name: str) -> bool`**: `True` se o nome termina em `.png/.jpg/.jpeg/.webp/.gif` (`SUPPORTED_EXTENSIONS`).
+- **`analyze_image(image_bytes: bytes) -> dict`** (`app/media/analysis.py:101-167`): monta um payload de chat completions (modelo default `gpt-4o-mini`, configurável via env `MEDIA_ANALYSIS_MODEL`) com um prompt de sistema rígido pedindo JSON com `description`, `keywords`, `subjects`, `setting`, `has_people`, `has_text`, `usable_as_reference`, `unusable_reason`; envia a imagem em base64 com `detail: "low"`. Usa envs `OPENAI_API_KEY` (obrigatória) e `OPENAI_API_URL` (default `https://api.openai.com/v1/`). Trata a resposta:
+  - Erro de rede → `MediaAnalysisError`.
+  - HTTP 4xx (exceto 408/429) → `MediaAnalysisUnsupported` (não adianta repetir).
+  - HTTP 429/5xx → `MediaAnalysisError` (repetir na próxima rodada).
+  - Corpo que não é JSON válido ou não é um objeto → `MediaAnalysisUnsupported`.
+- **`normalize_keywords(raw) -> list`**: normaliza a lista de keywords vinda da IA — minúsculas, sem duplicatas, ignora `None`/dict/list aninhados, limita a 12 termos, preserva ordem de chegada.
+- **`build_search_text(analysis: dict) -> str`**: concatena `description` + keywords normalizadas num único texto de busca (usado pelo matcher léxico do MiggoAI, que compara por Jaccard/difflib, não embedding).
+- Exceções: `MediaAnalysisError` (falha temporária) e `MediaAnalysisUnsupported` (falha definitiva desta imagem), ambas em `app/media/analysis.py:64-73`.
+
+### `cron.py` — job de análise em lote (MIG-138)
+
+- **`analyze_media_library(limit=50, client_id=None, force=False, dry_run=False) -> dict`** (`app/media/cron.py:123-231`): função principal, chamada pelo management command. Busca mídias pendentes via `_pendentes` (galeria, `from_media_library=True`, não analisadas a menos que `force`, ordenadas por `-created_at, -id` — mais recentes primeiro, decisão documentada no código como correção de um bug onde registros mortos antigos consumiam o lote inteiro). Para cada item:
+  - Formato não suportado (vídeo, etc.) → descarta via `_descartar` sem chamar IA.
+  - Arquivo ausente no storage (`FileNotFoundError`) → descarta e registra `Integration` com status 404.
+  - Outra falha de leitura do arquivo (ex.: erro de storage tipo `ClientError` do S3, que não é `FileNotFoundError`) → conta falha via `_contar_falha` e registra `Integration` 500.
+  - `MediaAnalysisUnsupported` → descarta, registra `Integration` 422.
+  - `MediaAnalysisError` → conta falha (mantém na fila), registra `Integration` 502.
+  - Sucesso → grava `ai_description` (via `build_search_text`), `ai_keywords`, `ai_raw_analysis`, `analyzed=True`, `analyzed_at`; registra `Integration` de sucesso.
+  - `limit` conta apenas chamadas de IA (analisadas + falhadas), não linhas varridas; a varredura em si é limitada por `limit * JANELA_POR_LOTE` (20) para não passar a galeria inteira numa execução.
+  - Retorna resumo `{'processed', 'analyzed', 'skipped', 'failed'}`.
+- **`_pendentes(client_id=None, force=False)`**: queryset de mídias candidatas (ver acima).
+- **`_descartar(media, motivo, dry_run=False)`**: marca `analyzed=True`, `analyzed_at=now()`, `ai_raw_analysis={'skipped': motivo}` — tira definitivamente da fila.
+- **`_contar_falha(media, motivo, dry_run=False)`**: incrementa contador de falhas em `ai_raw_analysis['failures']`; ao atingir `MAX_FALHAS=3`, descarta via `_descartar`.
+- **`_log_integration(client, payload, response, status_code=200)`**: registra um `app.integration.Integration` com `service='Miggo/Cron'`, `method='CRON'`, `path='/cron/media/analyze_media_library'`; falha ao gravar é só logada (não derruba o job).
+- **`relatorio_galeria(client_id=None, amostra=10) -> dict`** (`app/media/cron.py:234-281`): função de diagnóstico, sem efeitos colaterais. Retorna contagens (`na_galeria`, `fora_da_galeria`, `analisadas`, `com_descricao`, `descartadas_sem_descricao`, `pendentes`) e amostras (`proximas_da_fila`, `mais_recentes`).
+
+### `management/commands/analyze_media_library.py`
+Expõe `cron.py` como `python manage.py analyze_media_library`, agendado no Dokploy a cada 15 minutos.
+
+Flags: `--limit N` (default `cron.DEFAULT_LIMIT=50`; `0` = sem teto), `--client-id N`, `--force`, `--dry-run`, `--report` (roda `relatorio_galeria` em vez da análise, imprimindo contagens e amostras formatadas no stdout).
+
+### `limits.py` — travas de upload no teste grátis (MIG-113)
+
+- **`is_client_on_free_trial(client) -> bool`** (`app/media/limits.py:16-25`): `True` quando o cliente não tem `app.subscription.Subscription` com `status='ACTIVE'`. Sem `client` resolvido, assume trial (mais restritivo).
+- **`_is_video(uploaded_file) -> bool`**: `content_type` do arquivo começa com `video/`.
+- **`max_size_mb_for(uploaded_file) -> int`**: retorna `settings.UPLOAD_MAX_VIDEO_SIZE_MB` (default `50`) para vídeo, ou `settings.UPLOAD_MAX_IMAGE_SIZE_MB` (default `10`) para os demais tipos.
+- **`file_size_error(uploaded_file)`**: retorna mensagem de erro em pt-BR se `uploaded_file.size` exceder o limite do tipo; `None` se estiver dentro do limite.
+- **`media_limits_info(client=None) -> dict`**: payload informativo para o frontend, com `max_image_mb`, `max_video_mb`, `max_files` (`settings.TRIAL_MEDIA_MAX_FILES`, default `5`) e `free_trial` (booleano ou `None` se `client` não foi passado). Não há endpoint neste app que exponha essa função diretamente — é usada como helper de composição por quem chamar.
+
+Assinante pago (`Subscription.status == 'ACTIVE'`) não sofre nenhuma trava de tamanho.
+
+### `utils.py` — descrição textual assíncrona
+
+- **`generate_media_description_async(media_id)`** (`app/media/utils.py:8-93`): dispara uma `Thread` daemon que, se `OPENAI_API_KEY` estiver configurada e a `Media` ainda não tiver `description`, chama a API OpenAI (`gpt-4o`, `max_tokens=250`) para gerar uma descrição curta:
+  - Imagem (`mime_type.startswith('image/')`): envia base64 da imagem para a chat completion.
+  - Texto simples (`text/plain`, `text/csv`, `application/json`): lê o conteúdo do arquivo (truncado a 5000 caracteres) e pede a descrição em cima do texto.
+  - Outros tipos (PDF, vídeo, áudio): grava uma descrição genérica fixa (`"Arquivo do tipo {mime_type}. Não foi possível extrair a descrição automática do conteúdo."`), sem chamada de IA.
+  - Salva com `media.save(update_fields=['description'])`. Qualquer exceção é só logada via `print`, sem propagar (roda em thread separada, chamada por `MediaCreateView.perform_create` quando `skip_ai_analysis` não é verdadeiro).
+  - Nota: esta é uma via de descrição **diferente** da análise `ai_description`/`ai_keywords` de `analysis.py`/`cron.py` — preenche o campo `description` (o mesmo que o cliente edita manualmente), então só roda se `description` ainda estiver vazio.
+
+## Erros comuns / pontos de atenção
+
+- Upload multipart de cliente em teste grátis acima de `UPLOAD_MAX_IMAGE_SIZE_MB`/`UPLOAD_MAX_VIDEO_SIZE_MB` retorna `400` com `{"error": "..."}` — formato diferente do erro padrão do DRF (`views.py:74-86`).
+- A trava de tamanho **não** se aplica a upload por URL nem a mídia com `generated_url` — só a `request.FILES.get('media')` presente no momento da requisição.
+- `MediaUpdateView` restringe usuários com `role == 'client'` ao próprio `client_hash`; um `client` sem `user.client` associado recebe queryset vazio (404 ao tentar editar qualquer pk).
+- `generate_thumb` em `Media.save()` só cobre extensões de imagem fixas (`.png/.jpg/.jpeg/.gif/.webp`); vídeos e outros formatos nunca recebem thumbnail automática. Qualquer falha na geração é engolida (só `print`), então uma mídia pode ficar sem `thumbnail` silenciosamente.
+- A galeria listada em `MediaListView` exclui mídia já vinculada a um post (`media_posts__isnull=True`); uma mídia da galeria some da listagem assim que é usada em um post, mesmo mantendo `from_media_library=True`.
+- O job `analyze_media_library` descarta definitivamente (sem `ai_description`) imagens cujo arquivo sumiu do storage ou que a Vision recusa de forma não recuperável — reprocessar exige `--force` explicitamente.
+- `generate_media_description_async` e o job de `cron.py`/`analysis.py` são dois mecanismos de IA independentes, escrevendo em campos diferentes (`description` vs. `ai_description`/`ai_keywords`) — não confundir um com o outro ao investigar por que uma mídia "não tem descrição".
+
+## Relacionados
+
+<Columns cols={2}>
+<Card title="Post" icon="file-text" href="/backend/apps/post">
+  `MediaPost` vincula mídias da galeria a posts (`related_name='media_posts'`), determinando o que sai da listagem da galeria.
+</Card>
+<Card title="Client" icon="building" href="/backend/apps/client">
+  Dono lógico da mídia via `client_hash`/`client_id`; resolve assinatura ativa para as travas do teste grátis.
+</Card>
+<Card title="Subscription" icon="credit-card" href="/backend/apps/subscription">
+  Define se o cliente está em teste grátis (`status='ACTIVE'`), usado por `limits.is_client_on_free_trial`.
+</Card>
+<Card title="Integration" icon="plug" href="/backend/apps/integration">
+  Recebe o log de cada execução do job de análise da galeria (`Integration.service='Miggo/Cron'`).
+</Card>
+</Columns>

@@ -1,0 +1,122 @@
+---
+title: "Prompts"
+description: "Como os prompts são armazenados, versionados, renderizados e editados no CMS do MiggoAI"
+icon: "file-code"
+---
+
+O app `apps.prompts` é o CMS que guarda o **conteúdo editável** dos prompts de IA — nome do cliente, briefing, regras de tom de voz, tarefa. A **forma da resposta** (JSON, quais chaves) nunca passa por aqui: é fixa no código (`apps.generations.services.output_contract`, ver <a href="/miggoai/workflows">Workflows</a>).
+
+## Por que a divisão conteúdo/forma
+
+Comentário em `backend/apps/generations/services/output_contract.py:1-23`:
+
+> A divisão é deliberada: o `PromptDefinition` editável no CMS cuida do CONTEÚDO e do CONTEXTO (quem é o cliente, o que dizer, tom de voz, limites editoriais). A FORMA da resposta — "devolva JSON", quais chaves existem, que tipo tem cada uma — nunca passa pelo CMS.
+
+Dois motivos documentados no código:
+1. Quem edita o prompt não deve conseguir quebrar o parsing da geração (um "devolva em JSON" apagado sem querer derrubava o workflow inteiro).
+2. Um exemplo de JSON escrito dentro do prompt enviesava o ESTILO do texto gerado, não só a forma.
+
+## Estrutura de dados
+
+Ver models completos em <a href="/miggoai/modelo-de-dados">Modelo de Dados</a>. Resumo funcional:
+
+- **`Workflow`** — um dos 4 tipos: `title`, `image`, `caption`, `hashtags`. Tem uma `WorkflowConfig` (modelo de IA, temperatura, `max_tokens`).
+- **`PromptDefinition`** — o template em si, identificado por `slug` único. Um workflow pode ter mais de um prompt (o de `title` tem 3: `titulo-story`, `titulo-feed`, `titulo-carrossel`).
+- **`PromptVariable`** — declaração das chaves `{{...}}` aceitas pelo template, com `label`, `default_value` e `required`.
+- **`PromptVersion`** — snapshot do conteúdo anterior, criado automaticamente a cada `PUT` que muda `content`.
+
+## Prompts existentes (seed)
+
+Fonte: `backend/apps/prompts/data/seed_prompts.json`, aplicado por `python manage.py seed_prompts`.
+
+| Slug | Workflow | Variáveis aceitas |
+|---|---|---|
+| `titulo-story` | `title` | `cliente_nome`\*, `briefing_texto`\*, `posts_recentes`, `calendario_assunto`\*, `calendario_objetivo`, `calendario_macro_objetivo`, `calendario_tags`, `calendario_cta` |
+| `titulo-feed` | `title` | mesmas de `titulo-story` |
+| `titulo-carrossel` | `title` | mesmas de `titulo-story` |
+| `imagem-post` | `image` | `largura`\*, `altura`\*, `texto_imagem`\*, `instrucao_marca` |
+| `legenda-post` | `caption` | `cliente_nome`\*, `briefing_texto`\*, `calendario_assunto`, `calendario_tags`, `titulo_selecionado`\*, `texto_imagem`, `legendas_recentes`, `calendario_objetivo`, `calendario_macro_objetivo`, `cta_guard` |
+| `hashtags-post` | `hashtags` | `cliente_nome`\*, `negocio`, `diferenciais`, `publico_alvo`, `calendario_assunto`, `calendario_tags`, `legenda_post`\*, `hashtags_recentes` |
+
+\* = `required: true`.
+
+<Note>
+  `cliente_nome`, `briefing_texto`, `posts_recentes`, `calendario_*`, `negocio`, `diferenciais`, `publico_alvo`,
+  `instagram_handle`, `format_key`, `formato_motivo`, `grid_url`, `cta_required` são preenchidas automaticamente
+  pelo `context_builder` a partir dos dados do cliente/post no backend-miggo — o operador só precisa preencher o que
+  o contexto automático não cobrir. `titulo_selecionado` e `texto_imagem` vêm do encadeamento entre workflows
+  (`_CHAIN_ONLY_KEYS`, ver <a href="/miggoai/arquitetura">Arquitetura</a>).
+</Note>
+
+## Renderização (`apps/prompts/services/rendering.py`)
+
+Módulo puro (sem I/O, sem chamada a IA), usado tanto pela API de preview quanto pelos workflows reais.
+
+### `extract_variables(template: str) -> list[str]`
+
+Devolve as chaves `{{chave}}` do template, na ordem de aparição, sem duplicatas. Regex: `\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}` (`rendering.py:7`).
+
+### `render(template, values, required_keys=None) -> str`
+
+Substitui cada `{{chave}}` pelo valor correspondente em `values`.
+
+- Se `required_keys` é passado, valida que cada chave existe em `values` E, se for string, não é vazia após `strip()` — senão levanta `MissingVariableError(missing_keys)`.
+- Valores não-string "falsy" (`0`, `[]`, `False`) contam como presentes — só strings vazias/ausentes disparam o erro.
+- Chave sem valor correspondente vira string vazia (não levanta erro fora do required).
+
+```python
+render("Olá {{nome}}", {"nome": "Ana"})
+# "Olá Ana"
+
+render("{{a}} {{b}}", {"a": "x"}, required_keys=["b"])
+# levanta MissingVariableError(['b'])
+```
+
+### `diff_variables(template, stored_keys) -> dict`
+
+Compara as chaves do template atual com as `PromptVariable` já cadastradas — usado pelo endpoint `detect-variables`.
+
+```python
+{
+    "new": [...],       # no template, ainda sem PromptVariable
+    "removed": [...],   # PromptVariable cadastrada, sumiu do template
+    "unchanged": [...],
+}
+```
+
+## Como o contrato de saída se conecta ao prompt
+
+`output_contract.CONTRACT_BY_SLUG` (`backend/apps/generations/services/output_contract.py:158-164`) mapeia cada `slug` de prompt a um contrato fixo:
+
+```python
+CONTRACT_BY_SLUG = {
+    'titulo-story': TITULO_TEXTO,
+    'titulo-feed': TITULO_TEXTO,
+    'titulo-carrossel': TITULO_CARDS,
+    'legenda-post': LEGENDA,
+    'hashtags-post': HASHTAGS,
+}
+```
+
+`imagem-post` não tem contrato — a resposta da OpenAI para imagem não é JSON. `output_contract.apply(key, rendered_prompt)` concatena o `content` renderizado do CMS com o bloco de instrução fixo e devolve também o `schema` JSON usado como `response_format` na chamada à OpenAI (structured output, `strict: True`). Ver detalhes em <a href="/miggoai/workflows">Workflows</a>.
+
+## Como editar um prompt
+
+1. **Frontend**: tela `Prompts` (`frontend/src/pages/Prompts.tsx`) lista os prompts por workflow; `PromptEditor` (`frontend/src/pages/PromptEditor.tsx`) edita o conteúdo, com botão de preview (`POST .../preview/`) e detecção de variáveis (`POST .../detect-variables/`).
+2. **API direta**: `PUT /api/prompts/<pk>/` com `{"content": "...", "change_note": "..."}` — versiona automaticamente o conteúdo anterior.
+3. **Seed versionado**: editar `backend/apps/prompts/data/seed_prompts.json` e rodar `python manage.py seed_prompts` — idempotente, casado por chave natural (`slug`/`key`), seguro para rodar em qualquer ambiente.
+
+<Warning>
+  `seed_prompts` nunca apaga variáveis órfãs por padrão — use `--prune-variables` explicitamente se quiser remover do
+  banco variáveis que saíram do seed (`seed_prompts.py:33-37,72-76`). Sem essa flag, variáveis removidas do JSON
+  continuam no banco.
+</Warning>
+
+## Ativação/desativação
+
+`is_active=False` em um `PromptDefinition` faz o workflow correspondente falhar com `PromptDefinition.DoesNotExist` na hora de gerar — os workflows sempre buscam com `is_active=True` (ex.: `title_workflow.py:139`, `image_workflow.py:203`). Use `POST .../activate/` e `POST .../deactivate/` para alternar sem apagar o conteúdo.
+
+<Columns cols={2}>
+  <Card title="Workflows" icon="diagram-project" href="/miggoai/workflows">Onde os prompts são consumidos e o contrato de saída aplicado.</Card>
+  <Card title="Integração OpenAI" icon="brain" href="/miggoai/integracao-openai">Chamadas reais à API da OpenAI.</Card>
+</Columns>

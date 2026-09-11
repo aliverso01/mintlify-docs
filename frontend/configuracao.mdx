@@ -1,0 +1,78 @@
+---
+title: "Configuração"
+description: "Vite, TypeScript, ESLint, Tailwind e o index.html do frontend-miggo"
+icon: "settings"
+---
+
+## Vite (`vite.config.ts`)
+
+```ts
+// vite.config.ts:1-33
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, process.cwd(), "");
+  const target = env.VITE_API_BASE_URL;
+  return {
+    plugins: [react(), svgr({ svgrOptions: { icon: true, exportType: "named", namedExport: "ReactComponent" } })],
+    server: { proxy: { "/api": { target, changeOrigin: true, secure: false, cookieDomainRewrite: "localhost", ... } } },
+  };
+});
+```
+
+- **Plugins**:
+  - `@vitejs/plugin-react` — suporte a React/JSX/Fast Refresh (`vite.config.ts:2,15`).
+  - `vite-plugin-svgr` — transforma arquivos `.svg?react` em componentes React nomeados (`ReactComponent`), usado por todo `src/icons/index.ts` (`vite.config.ts:3,16-23`).
+- **Aliases**: nenhum alias de import configurado — não há bloco `resolve.alias` em `vite.config.ts`. Os imports são todos relativos.
+- **Proxy**: `server.proxy["/api"]` encaminha todas as chamadas a `/api/*` do dev server para `VITE_API_BASE_URL`, reescrevendo `Origin`/`Referer` e o domínio do cookie para `localhost` (`vite.config.ts:19-29`). Isso permite que o frontend sempre chame caminhos relativos (`/api/v1/...`) tanto em dev quanto em produção (onde o Nginx faz o mesmo papel — veja `estrutura.mdx`).
+- **Server**: só a configuração de proxy é definida; não há `server.port`/`server.host` customizados (usa os defaults do Vite).
+
+## TypeScript
+
+Três arquivos de configuração, usando project references:
+
+| Arquivo | Cobre | Pontos-chave |
+|---|---|---|
+| `tsconfig.json` | Raiz — só referencia os outros dois (`"files": []`) | `tsconfig.json:1-6` |
+| `tsconfig.app.json` | Código da aplicação (`include: ["src"]`) | `target: ES2020`, `jsx: react-jsx`, `moduleResolution: bundler`, `strict: true`, `noUnusedLocals`/`noUnusedParameters`/`noFallthroughCasesInSwitch`/`noUncheckedSideEffectImports` ativados (`tsconfig.app.json:1-25`) |
+| `tsconfig.node.json` | Arquivos de config Node (`include: ["vite.config.ts"]`) | `target: ES2022`, `types: ["node"]`, mesmas flags de lint estrito (`tsconfig.node.json:1-25`) |
+
+`npm run build` roda `tsc -b` (build incremental via project references) antes do `vite build` (`package.json:6`).
+
+## ESLint (`eslint.config.js`)
+
+Config flat (`tseslint.config(...)`, `eslint.config.js:6-25`):
+
+- Ignora `dist` (`eslint.config.js:7`).
+- Aplica a `**/*.{ts,tsx}` com `js.configs.recommended` + `tseslint.configs.recommended`.
+- Plugins: `eslint-plugin-react-hooks` (regras recomendadas) e `eslint-plugin-react-refresh` (regra `react-refresh/only-export-components` como warning, com `allowConstantExport: true`).
+- `languageOptions.globals: globals.browser`, `ecmaVersion: 2020`.
+
+## PostCSS e Tailwind 4 (`postcss.config.js`)
+
+```js
+// postcss.config.js
+export default { plugins: { '@tailwindcss/postcss': {} } };
+```
+
+O projeto usa **Tailwind CSS v4** via o plugin oficial do PostCSS (`@tailwindcss/postcss`, `package.json` devDependencies). Não há `tailwind.config.js` tradicional: a configuração de tema (cores da marca, breakpoints, sombras, z-index) fica dentro do bloco `@theme` em `src/index.css:7-183` (import direto de `tailwindcss`, `src/index.css:3`). Veja detalhes de tokens em `layout-e-tema.mdx`.
+
+## `index.html`
+
+`index.html:1-24`:
+
+- `<title>` fixo: "Miggo - sua plataforma de posts por assinatura".
+- Favicon: `/images/logo/logo_dark.svg`.
+- Carrega o Google tag (`gtag.js`, medição `G-V3L43SYRNP`) no `<head>`, com `send_page_view: false` — os page views por rota são disparados pelo hook `useGoogleAnalytics` (`index.html:9-20`, comentário `MIG-182`).
+- `<body class="dark:bg-gray-900">` — o fundo escuro já é aplicado direto no HTML estático para evitar flash de tema claro.
+- Ponto de entrada: `<script type="module" src="/src/main.tsx">` (`index.html:22`).
+
+## Variáveis `import.meta.env` (resumo)
+
+Ver a tabela completa em `instalacao.mdx`. Resumo rápido:
+
+| Variável | Lida em |
+|---|---|
+| `VITE_API_BASE_URL` | `vite.config.ts:8` |
+| `VITE_MIGGO_API_KEY` | `InsightsHistoryCharts.tsx`, `PostTimelineModal.tsx`, `useClientPlatforms.ts` |
+| `VITE_GOOGLE_CLIENT_ID` | `main.tsx`, `SignInForm.tsx`, `SignUpForm.tsx`, `SignupStep.tsx` |
+| `VITE_JWT_OBTAIN_URL` | `AuthContext.tsx:172` |
+| `VITE_JWT_REFRESH_URL` | `jwtAuth.ts:131` |

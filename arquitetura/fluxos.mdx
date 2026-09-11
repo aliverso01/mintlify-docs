@@ -1,0 +1,112 @@
+---
+title: "Fluxos principais"
+description: "Onboarding, geração de conteúdo, aprovação, publicação e cobrança, ponta a ponta."
+icon: "git-branch"
+---
+
+Cinco fluxos explicam a maior parte do sistema. Cada etapa aponta para a página que detalha o código envolvido.
+
+## 1. Onboarding do cliente
+
+É o fluxo mais pesado do backend (`app/onboarding`, o maior app do projeto). Ele transforma um cadastro em um cliente com marca definida e calendário editorial pronto.
+
+```mermaid
+flowchart LR
+    A["Cadastro / login"] --> B["Coleta de dados<br/>frontend: src/pages/Onboarding"]
+    B --> C["Raspagem do Instagram<br/>Apify"]
+    C --> D["Análise da marca<br/>IA"]
+    D --> E["Brandkit gerado<br/>cores, tom, identidade"]
+    E --> F["Grid / calendário editorial"]
+    F --> G["Aprovação via WhatsApp<br/>ManyChat"]
+```
+
+- **Frontend**: passos em `src/pages/Onboarding/Steps/`, orquestrados pelo hook `useOnboarding` e pelo service `onboardingApi.ts`. Veja [Onboarding no frontend](/frontend/onboarding).
+- **Backend**: `app/onboarding/` (services, cron, clientes de API). Veja [Onboarding no backend](/backend/apps/onboarding).
+- **Limites configuráveis**: `ONBOARDING_IG_MIN_POSTS` (mínimo de posts para analisar o perfil), `ONBOARDING_WEBSITE_BUDGET` (orçamento de leitura do site), `ONBOARDING_ANALYSIS_STALL` (detecção de análise travada).
+
+## 2. Geração de conteúdo pelo MiggoAI
+
+```mermaid
+sequenceDiagram
+    participant BE as backend-miggo
+    participant AI as miggoai
+    participant OAI as OpenAI
+
+    BE->>AI: POST /api/token/ (usuário e senha)
+    AI-->>BE: access token JWT
+    BE->>AI: POST /api/generate/clients/sync/
+    BE->>AI: POST /api/generate/clients/workflow/ (enable_workflow)
+    BE->>AI: POST /api/generate/image/ { post_id }
+    AI-->>BE: job criado
+    AI->>BE: lê o card (Post) e os dados do cliente
+    AI->>OAI: título, imagem, legenda, hashtags
+    OAI-->>AI: conteúdo gerado
+    AI->>BE: devolve o post atualizado (status scheduled)
+    loop até success ou failed
+        BE->>AI: GET /api/generate/jobs/{id}/
+    end
+```
+
+O card nasce com status `pending` e volta como `scheduled`. Cliente da integração: `app/onboarding/miggoai.py`; workflows do lado da IA: [Workflows](/miggoai/workflows).
+
+<Warning>
+  O worker do MiggoAI **ignora clientes sem `enable_workflow=True`**. Se a geração "não acontece" para um cliente específico, essa flag é o primeiro lugar a checar.
+</Warning>
+
+## 3. Aprovação de conteúdo pelo WhatsApp
+
+O cliente aprova ou pede ajuste no conteúdo por WhatsApp, através do ManyChat. O backend mantém a máquina de estados em `ConversationFlowState` e usa o **Dynamic Block**: a URL registrada no ManyChat é fixa, e o que será renderizado é decidido pelo estado do fluxo, nunca por parâmetro de URL.
+
+| Peça | Onde fica |
+| --- | --- |
+| Engine do fluxo | `app/conversation/` — veja [Conversation](/backend/apps/conversation) |
+| Webhook de entrada | `POST /webhooks/manychat/` |
+| Continuação do Dynamic Block | `POST /webhooks/manychat/dynamic-block/continue/` |
+| Flows configurados | `CONTENT_APPROVATION_FLOW_ID`, `GRID_APPROVAL_FLOW_ID`, `DYNAMIC_FLOW_STARTER_FLOW_ID` |
+| Reenvio e tolerância a falha | `WHATSAPP_FLOW_RETRY_ATTEMPTS`, `WHATSAPP_FLOW_RETRY_BACKOFF`, `WHATSAPP_SEND_FLOW_DELAY`, `GRID_APPROVAL_MAX_REMINDERS` |
+
+Revisões agendadas são despachadas pelo cron `app.post.cron.send_scheduled_reviews`, que roda a cada minuto.
+
+## 4. Publicação e métricas
+
+A publicação nas redes e a coleta de métricas passam pelo **Zernio**. O backend guarda o histórico localmente em `PostInsightsSnapshot`, de modo que o painel não dependa de disponibilidade do provedor.
+
+```mermaid
+flowchart LR
+    P["Post aprovado"] --> Z["Zernio<br/>publica na rede"]
+    Z --> R["Instagram / LinkedIn / ..."]
+    Z -->|analytics| S["PostInsightsSnapshot"]
+    R -->|"posts externos (source=external)"| S
+    S --> D["Dashboard e Histórico"]
+```
+
+O Zernio também notifica a conexão de contas em `POST /webhooks/zernio/account/`. Detalhes em [Post](/backend/apps/post) e [Webhooks](/backend/apps/webhooks).
+
+## 5. Assinatura e cobrança
+
+```mermaid
+flowchart TD
+    U["Cliente escolhe o plano"] --> CK["Checkout no gateway<br/>Stripe ou Asaas"]
+    CK --> WH["POST /webhooks/ (Stripe)"]
+    WH --> SUB["Subscription atualizada"]
+    SUB --> LIM["Limites por plano aplicados<br/>posts, mídia, recursos"]
+    CRON["Cron a cada 30s<br/>SubscriptionCron / InvoiceCron"] --> SUB
+```
+
+- Gateways: `app/subscription/` (Stripe) e `app/subscription/asaas_gateway.py` (Asaas).
+- Período de teste e carência: `STRIPE_TRIAL_DAYS`, `BILLING_GRACE_DAYS`.
+- Limites durante o teste: `TRIAL_MEDIA_MAX_FILES`, além dos limites por plano.
+- Verificação periódica: `app.subscription.cron.SubscriptionCron.check_subscriptions` e `app.subscription.cron.InvoiceCron.check_invoices`, ambos a cada 30 segundos no runner local.
+
+Detalhes em [Subscription](/backend/apps/subscription) e [Tarefas agendadas](/backend/tarefas-agendadas).
+
+## Relacionados
+
+<Columns cols={2}>
+  <Card title="Visão geral" icon="network" href="/arquitetura/visao-geral">
+    Quem é quem na arquitetura.
+  </Card>
+  <Card title="Integrações externas" icon="share-2" href="/arquitetura/integracoes-externas">
+    O papel de cada provedor citado aqui.
+  </Card>
+</Columns>

@@ -1,0 +1,437 @@
+---
+title: "Brandkit"
+description: "Gestão do kit de identidade visual do cliente: logos, cores, tipografia, assets, grid de rede social e referências de design, com análise automática via GPT Vision."
+icon: "palette"
+---
+
+## Responsabilidade
+
+O app `brandkit` guarda e organiza a identidade visual de cada cliente Miggo: logotipos, paleta de cores, tipografia, assets complementares (padrões, ilustrações, banners, fotos), o mosaico 3x3 de referência de rede social (`SocialNetworkGrid`) e uma biblioteca global de referências de design (`DesignReference`) usada por administradores.
+
+Ao subir um logo ou raspar o site do cliente, o app chama o GPT-4o Vision (`app/brandkit/views.py:41`) para preencher automaticamente tipo de logo, contexto de fundo, paleta de cores detectada e descrição — reduzindo trabalho manual do cliente/admin. O app também expõe a raspagem de site (`app/brandkit/website.py`), reutilizada pelo `app.onboarding` (`app.onboarding.services._run_website_analysis`) para popular o brandkit durante o onboarding. O `SocialNetworkGridRegenerateView` e as views de aprovação do grid (`ClientGridApprovalView`, `ClientGridApproveView`, `ClientGridFeedbackView`) também dependem de `app.onboarding.services` para orquestrar a geração/estado do grid em background.
+
+Consumidores: frontend do cliente (upload/gestão do brandkit e aprovação do grid pós-onboarding), painel administrativo (referências de design, notificações via `app.notification.utils.notify_admins`) e o próprio `app.onboarding` (raspagem de site e geração de grid).
+
+## Arquivos
+
+| Arquivo | Conteúdo |
+|---|---|
+| `app/brandkit/models.py` | Models `Brandkit`, `BrandLogo`, `BrandColor`, `BrandTypography`, `BrandAsset`, `SocialNetworkGrid`, `DesignReference` e choices relacionadas. |
+| `app/brandkit/serializers.py` | Serializers DRF de leitura/escrita para todos os models acima. |
+| `app/brandkit/views.py` | Views REST, integração com GPT-4o Vision (análise de logo e de referência de design) e heurísticas de pós-processamento da análise. |
+| `app/brandkit/urls.py` | Roteamento de todos os endpoints do app, montado sob `/api/v1/brandkit/`. |
+| `app/brandkit/admin.py` | Registro no Django Admin de `Brandkit`, `BrandLogo`, `BrandColor`, `BrandTypography`, `BrandAsset`. |
+| `app/brandkit/apps.py` | Configuração do app Django (`BrandkitConfig`, `name = 'app.brandkit'`). |
+| `app/brandkit/website.py` | Raspagem de site (GET + parse + fallback Playwright), download de assets e escolha do melhor candidato a logo. |
+
+## Modelos
+
+### Brandkit
+Kit de identidade visual de um cliente (`app/brandkit/models.py:61`).
+
+| Campo | Tipo | Obrigatório | Default/Choices | Descrição |
+|---|---|---|---|---|
+| `client` | FK → `app.client.Client` | Sim | — | `on_delete=CASCADE`, `related_name='brandkits'`. |
+| `brand_id` | CharField(64) | Não (auto) | `generate_unique_hash`, `unique=True`, `editable=False` | Identificador único gerado automaticamente. |
+| `name` | CharField(255) | Sim | — | Nome do brandkit. |
+| `description` | TextField | Não | `blank=True, null=True` | Descrição livre. |
+| `status` | CharField(20) | Não | `active`, `draft` (padrão), `archived` | Estado do brandkit. |
+| `version` | CharField(20) | Não | `'1.0.0'` | Versão do kit. |
+| `created_at` | DateTimeField | auto | `auto_now_add=True` | — |
+| `updated_at` | DateTimeField | auto | `auto_now=True` | — |
+
+`Meta.ordering = ['-created_at']`. `__str__` retorna `"{client.name} — {name}"`.
+
+### BrandLogo
+Logotipos vinculados ao brandkit (`app/brandkit/models.py:89`). Ao fazer upload da imagem, a view chama o GPT Vision para preencher automaticamente os campos de metadados.
+
+| Campo | Tipo | Obrigatório | Default/Choices | Descrição |
+|---|---|---|---|---|
+| `brandkit` | FK → `Brandkit` | Sim | — | `on_delete=CASCADE`, `related_name='logos'`. |
+| `file` | ImageField | Não | `null=True, blank=True`, path `brandkit/logos/<hash>` | Arquivo físico do upload. |
+| `url` | URLField(500) | Não | `blank=True, null=True` | URL externa para logo já hospedado. |
+| `format` | CharField(10) | Não | `blank=True, null=True` | Ex.: `svg`, `png`, `jpg`. |
+| `logo_type` | CharField(30) | Não | `primary`, `secondary`, `monochrome_white`, `monochrome_black`, `icon`, `wordmark` | Preenchido pela IA. |
+| `background_context` | CharField(20) | Não | `light`, `dark`, `colorful`, `transparent` | Preenchido pela IA. |
+| `detected_colors` | JSONField | Não | `default=list` | Lista `[{name, hex, category}]` de todas as cores detectadas. |
+| `primary_color_hex` | CharField(7) | Não | `blank=True, null=True` | Atalho para a cor primária, derivado de `detected_colors`. |
+| `secondary_color_hex` | CharField(7) | Não | `blank=True, null=True` | Atalho para a cor secundária. |
+| `ai_description` | TextField | Não | `blank=True, null=True` | Descrição gerada pela IA. |
+| `ai_raw_analysis` | JSONField | Não | `blank=True, null=True` | Resposta bruta da IA (auditoria/debug). |
+| `analyzed` | BooleanField | Não | `default=False` | Se já passou pela análise GPT. |
+| `is_placeholder` | BooleanField | Não | `default=False` | Marca avatar genérico (letra/silhueta), não logo real — ver `app/brandkit/models.py:137`. |
+| `created_at` / `updated_at` | DateTimeField | auto | — | — |
+
+**Propriedade** `image_url` (`app/brandkit/models.py:147-152`): retorna `self.file.url` se houver arquivo local, senão `self.url` ou string vazia.
+
+`__str__`: `"Logo [{logo_type}] — {brandkit.name}"`.
+
+### BrandColor
+Paleta de cores do brandkit (`app/brandkit/models.py:156`).
+
+| Campo | Tipo | Obrigatório | Default/Choices | Descrição |
+|---|---|---|---|---|
+| `brandkit` | FK → `Brandkit` | Sim | — | `on_delete=CASCADE`, `related_name='colors'`. |
+| `name` | CharField(100) | Sim | — | Nome descritivo da cor. |
+| `hex` | CharField(7) | Sim | — | Ex.: `#0052CC`. |
+| `category` | CharField(20) | Não | `primary` (padrão), `secondary`, `neutral`, `accent` | Categoria da cor. |
+| `order` | PositiveIntegerField | Não | `default=0` | Ordem de exibição. |
+| `created_at` | DateTimeField | auto | — | — |
+
+`Meta.ordering = ['category', 'order']`. `__str__`: `"{name} ({hex}) — {category}"`.
+
+### BrandTypography
+Tipografia do brandkit (`app/brandkit/models.py:179`).
+
+| Campo | Tipo | Obrigatório | Default/Choices | Descrição |
+|---|---|---|---|---|
+| `brandkit` | FK → `Brandkit` | Sim | — | `on_delete=CASCADE`, `related_name='typography'`. |
+| `role` | CharField(20) | Não | `headings` (padrão), `body`, `display`, `mono` | Papel da fonte. |
+| `family` | CharField(100) | Sim | — | Nome da família tipográfica. |
+| `weights` | JSONField | Não | `default=list` | Ex.: `[600, 700]`. |
+| `source_url` | URLField(500) | Não | `blank=True, null=True` | URL de origem da fonte. |
+| `created_at` / `updated_at` | DateTimeField | auto | — | — |
+
+`Meta.ordering = ['role']`. `__str__`: `"{family} [{role}] — {brandkit.name}"`.
+
+### BrandAsset
+Ativos visuais complementares — padrões, ilustrações, logo, favicon, banners, fotos (`app/brandkit/models.py:223`). Os campos de proveniência (`source_url`, `origin`, `content_hash`) existem por causa da importação automática do site: sem eles, cada reimportação duplicaria a biblioteca e não haveria como rastrear a origem de cada arquivo.
+
+| Campo | Tipo | Obrigatório | Default/Choices | Descrição |
+|---|---|---|---|---|
+| `brandkit` | FK → `Brandkit` | Sim | — | `on_delete=CASCADE`, `related_name='assets'`. |
+| `asset_type` | CharField(20) | Não | `pattern`, `illustration`, `icon_set`, `background`, `logo`, `favicon`, `banner`, `photo`, `other` (padrão) | Tipo do ativo. |
+| `name` | CharField(255) | Sim | — | Nome do arquivo/asset. |
+| `file` | FileField | Não | `null=True, blank=True`, path `brandkit/assets/<hash>` | Arquivo físico. |
+| `url` | URLField(500) | Não | `blank=True, null=True` | URL externa. |
+| `source_url` | URLField(500) | Não | `blank=True, default=''` | URL original de onde o arquivo foi baixado. |
+| `origin` | CharField(20) | Não | `upload` (padrão), `website`, `instagram`, `ai` | Origem do asset. |
+| `mime_type` | CharField(100) | Não | `blank=True, default=''` | Tipo MIME. |
+| `width` / `height` | PositiveIntegerField | Não | `default=0` | Dimensões em pixels. |
+| `content_hash` | CharField(64) | Não | `blank=True, default=''`, `db_index=True` | SHA-256 do arquivo — evita reimportar a mesma imagem. |
+| `created_at` | DateTimeField | auto | — | — |
+
+`Meta.ordering = ['-created_at']`. **Propriedade** `image_url` (`app/brandkit/models.py:264-269`): `self.file.url` → `self.url` → `self.source_url` → `''`.
+
+### SocialNetworkGrid
+Mosaico de referência 3x3 para redes sociais (`app/brandkit/models.py:272`).
+
+| Campo | Tipo | Obrigatório | Default/Choices | Descrição |
+|---|---|---|---|---|
+| `client` | FK → `app.client.Client` | Não | `null=True, blank=True`, `on_delete=CASCADE` | Cliente dono do grid. |
+| `file` | FileField | Não | `null=True, blank=True`, path `brandkit/grids/<hash>` | Arquivo físico do grid. |
+| `url` | URLField(500) | Não | `blank=True, null=True` | URL externa. |
+| `generated` | BooleanField | Não | `default=False` | `True` = mosaico gerado pela Miggo (onboarding/botão "Regerar"); `False` = referência enviada manualmente pelo usuário — separar evita que uma regeração sobrescreva upload manual. |
+| `created_at` | DateTimeField | auto | — | — |
+
+**Propriedade** `image_url` (`app/brandkit/models.py:286-290`): `self.file.url` → `self.url` → `''`. `__str__` monta `"Grid gerado"` ou `"Grid Reference"` + nome do cliente.
+
+### DesignReference
+Referências de design globais ou isoladas (Grids e Posts), importadas por administradores (`app/brandkit/models.py:298`).
+
+| Campo | Tipo | Obrigatório | Default/Choices | Descrição |
+|---|---|---|---|---|
+| `reference_type` | CharField(10) | Não | `grid`, `post` (padrão) | Tipo da referência. |
+| `file` | ImageField | Não | `null=True, blank=True`, path `design_references/<hash>` | Arquivo físico. |
+| `url` | URLField(500) | Não | `blank=True, null=True` | URL externa. |
+| `ai_technical_description` | TextField | Não | `blank=True, null=True` | Descrição técnica gerada pela IA. |
+| `ai_raw_analysis` | JSONField | Não | `blank=True, null=True` | Resposta bruta da IA. |
+| `analyzed` | BooleanField | Não | `default=False` | Se já foi analisado. |
+| `created_at` / `updated_at` | DateTimeField | auto | — | — |
+
+`Meta.ordering = ['-created_at']`. **Propriedade** `image_url` (`app/brandkit/models.py:318-321`) igual ao padrão dos demais models.
+
+<Note>
+As funções `brandkit_logo_upload_path`, `brandkit_asset_upload_path`, `brandkit_grid_upload_path` e `design_reference_upload_path` (`app/brandkit/models.py:6-19`) definem os caminhos de upload usando `generate_hashed_filename` de `utils.toolkit`, evitando colisão de nomes.
+</Note>
+
+## Endpoints
+
+Prefixo base: `/api/v1/brandkit/` (montado em `core/urls.py:38`). Autenticação/permissão padrão do projeto (quando a view não declara `permission_classes` própria): `rest_framework_simplejwt.authentication.JWTAuthentication` + `app.account.permissions.HasAPIKeyOrIsAuthenticated` (`core/settings.py:136-141`).
+
+| Método | Rota completa | View | Permissão |
+|---|---|---|---|
+| POST | `/api/v1/brandkit/create/` | `BrandkitCreateView` | Padrão do projeto |
+| GET | `/api/v1/brandkit/list/` | `BrandkitListView` | Padrão do projeto |
+| GET | `/api/v1/brandkit/client/<int:client_id>/` | `BrandkitListView` | Padrão do projeto |
+| GET | `/api/v1/brandkit/detail/<int:pk>/` | `BrandkitDetailView` | Padrão do projeto |
+| PUT/PATCH | `/api/v1/brandkit/update/<int:pk>/` | `BrandkitUpdateView` | Padrão do projeto |
+| DELETE | `/api/v1/brandkit/delete/<int:pk>/` | `BrandkitDeleteView` | Padrão do projeto |
+| POST | `/api/v1/brandkit/logo/upload/` | `BrandLogoUploadView` | Padrão do projeto |
+| GET | `/api/v1/brandkit/logo/list/` | `BrandLogoListView` | Padrão do projeto |
+| PUT/PATCH | `/api/v1/brandkit/logo/update/<int:pk>/` | `BrandLogoUpdateView` | Padrão do projeto |
+| DELETE | `/api/v1/brandkit/logo/delete/<int:pk>/` | `BrandLogoDeleteView` | Padrão do projeto |
+| POST | `/api/v1/brandkit/logo/reanalyze/<int:pk>/` | `BrandLogoReanalyzeView` | Padrão do projeto |
+| POST | `/api/v1/brandkit/color/create/` | `BrandColorCreateView` | Padrão do projeto |
+| GET | `/api/v1/brandkit/color/list/` | `BrandColorListView` | Padrão do projeto |
+| PUT/PATCH | `/api/v1/brandkit/color/update/<int:pk>/` | `BrandColorUpdateView` | Padrão do projeto |
+| DELETE | `/api/v1/brandkit/color/delete/<int:pk>/` | `BrandColorDeleteView` | Padrão do projeto |
+| POST | `/api/v1/brandkit/typography/create/` | `BrandTypographyCreateView` | Padrão do projeto |
+| GET | `/api/v1/brandkit/typography/list/` | `BrandTypographyListView` | Padrão do projeto |
+| PUT/PATCH | `/api/v1/brandkit/typography/update/<int:pk>/` | `BrandTypographyUpdateView` | Padrão do projeto |
+| DELETE | `/api/v1/brandkit/typography/delete/<int:pk>/` | `BrandTypographyDeleteView` | Padrão do projeto |
+| POST | `/api/v1/brandkit/asset/create/` | `BrandAssetCreateView` | Padrão do projeto |
+| GET | `/api/v1/brandkit/asset/list/` | `BrandAssetListView` | Padrão do projeto |
+| GET | `/api/v1/brandkit/asset/client/<int:client_id>/` | `BrandAssetListView` | Padrão do projeto |
+| GET | `/api/v1/brandkit/asset/detail/<int:pk>/` | `BrandAssetDetailView` | Padrão do projeto |
+| PUT/PATCH | `/api/v1/brandkit/asset/update/<int:pk>/` | `BrandAssetUpdateView` | Padrão do projeto |
+| DELETE | `/api/v1/brandkit/asset/delete/<int:pk>/` | `BrandAssetDeleteView` | Padrão do projeto |
+| POST | `/api/v1/brandkit/asset/import-website/` | `BrandAssetImportWebsiteView` | Padrão do projeto |
+| POST | `/api/v1/brandkit/grid/create/` | `SocialNetworkGridCreateView` | Padrão do projeto |
+| GET | `/api/v1/brandkit/grid/list/` | `SocialNetworkGridListView` | Padrão do projeto |
+| DELETE | `/api/v1/brandkit/grid/delete/<int:pk>/` | `SocialNetworkGridDeleteView` | Padrão do projeto |
+| POST | `/api/v1/brandkit/grid/regenerate/` | `SocialNetworkGridRegenerateView` | Padrão do projeto |
+| GET | `/api/v1/brandkit/grid/status/` | `SocialNetworkGridStatusView` | Padrão do projeto |
+| GET | `/api/v1/brandkit/grid/approval/` | `ClientGridApprovalView` | Padrão do projeto (resolve cliente pelo usuário autenticado) |
+| POST | `/api/v1/brandkit/grid/approval/approve/` | `ClientGridApproveView` | Padrão do projeto |
+| POST | `/api/v1/brandkit/grid/approval/feedback/` | `ClientGridFeedbackView` | Padrão do projeto |
+| POST | `/api/v1/brandkit/design-reference/upload/` | `DesignReferenceUploadView` | `IsManagementUser` |
+| GET | `/api/v1/brandkit/design-reference/list/` | `DesignReferenceListView` | `IsManagementUser` |
+| DELETE | `/api/v1/brandkit/design-reference/delete/<int:pk>/` | `DesignReferenceDeleteView` | `IsManagementUser` |
+| POST | `/api/v1/brandkit/design-reference/reanalyze/<int:pk>/` | `DesignReferenceAnalyzeView` | `IsManagementUser` |
+
+<AccordionGroup>
+<Accordion title="POST /api/v1/brandkit/create/ — BrandkitCreateView">
+Cria um brandkit. Regra de negócio: **um brandkit por cliente** — se já existir um `Brandkit` para o `client` informado, retorna erro (`app/brandkit/views.py:365-374`).
+
+<ParamField path="client" type="integer" required>ID do cliente.</ParamField>
+<ParamField path="name" type="string" required>Nome do brandkit.</ParamField>
+<ParamField path="description" type="string">Descrição livre.</ParamField>
+<ParamField path="status" type="string">`active`, `draft` ou `archived`.</ParamField>
+<ParamField path="version" type="string">Versão do kit (default `1.0.0`).</ParamField>
+
+**Erros**: `400` se `client` já possuir um brandkit (`{"error": "Este cliente já possui um brand kit. Não é permitido criar mais de um."}`).
+</Accordion>
+
+<Accordion title="GET /api/v1/brandkit/list/ e /client/<int:client_id>/ — BrandkitListView">
+Lista brandkits com `logos`, `colors`, `typography` e `assets` aninhados (via `select_related('client')` + `prefetch_related(...)`, `app/brandkit/views.py:382-384`, evitando N+1). Aceita `client_id` pela URL (`/client/<id>/`) ou por query param `?client_id=`.
+
+<ResponseField name="client_name" type="string">Nome do cliente (via `source='client.name'`).</ResponseField>
+</Accordion>
+
+<Accordion title="PUT/PATCH /api/v1/brandkit/update/<int:pk>/ — BrandkitUpdateView">
+Atualiza um brandkit. Quando o autor não é admin (`request.user.role != 'admin'` e não `is_superuser`), notifica os admins via `notify_admins('brand_info_updated', ...)` com `dedupe_window_seconds=120` e `dedupe_key=client.name` (`app/brandkit/views.py:409-430`). Falha na notificação é capturada e apenas logada — não bloqueia a resposta.
+</Accordion>
+
+<Accordion title="POST /api/v1/brandkit/logo/upload/ — BrandLogoUploadView">
+Faz upload de um logotipo e dispara a análise via GPT-4o Vision para preencher `logo_type`, `background_context`, cores e descrição.
+
+Aceita `multipart/form-data` com `file` OU JSON/form com `url` externa.
+
+<ParamField path="brandkit" type="integer" required>ID do brandkit.</ParamField>
+<ParamField path="file" type="file">Arquivo do logo (PNG, JPG, JPEG, SVG ou WEBP).</ParamField>
+<ParamField path="url" type="string">URL externa do logo (alternativa a `file`).</ParamField>
+<ParamField path="format" type="string">Formato do arquivo; se omitido, é inferido pela extensão do nome/URL.</ParamField>
+
+Validação de formato: extensão em `{png, jpg, jpeg, svg, webp}` ou `content_type` em `{image/png, image/jpeg, image/jpg, image/svg+xml, image/webp}` (`app/brandkit/views.py:460-461, 525-534`).
+
+Se a análise GPT falhar, o logo é salvo mesmo assim (com `ai_raw_analysis={'error': ...}`) e a resposta inclui `gpt_warning`. Quando o autor não é admin, notifica admins (`brandkit_uploaded`).
+
+<ResponseField name="gpt_warning" type="string">Presente apenas quando a análise GPT falhou; explica que o logo foi salvo sem análise.</ResponseField>
+
+**Erros**: `400` se faltar `brandkit`, se faltar `file` e `url`, ou se o formato do arquivo não for suportado. `404` se o `brandkit` não existir.
+</Accordion>
+
+<Accordion title="POST /api/v1/brandkit/logo/reanalyze/<int:pk>/ — BrandLogoReanalyzeView">
+Re-analisa um logo já existente (arquivo ou URL) via GPT Vision, substituindo as cores anteriormente geradas por IA (`replace_colors=True`).
+
+**Erros**: `404` se o logo não existir; `400` se o logo não tiver `file` nem `url`; `502` se a chamada ao GPT falhar.
+</Accordion>
+
+<Accordion title="POST /api/v1/brandkit/color/create/ e /api/v1/brandkit/typography/create/ — Create views">
+Ambas aceitam um objeto único ou uma **lista** de objetos (`many=isinstance(request.data, list)`, `app/brandkit/views.py:666-667` e `735-736`). Ao criar, se o autor não é admin, notifica admins com contagem singular/plural correta (`app/brandkit/views.py:671-688`, `741-757`).
+</Accordion>
+
+<Accordion title="GET /api/v1/brandkit/color/list/ — BrandColorListView">
+Filtros de query: `brandkit_id`, `category`.
+</Accordion>
+
+<Accordion title="GET /api/v1/brandkit/asset/list/ e /api/v1/brandkit/asset/client/<int:client_id>/ — BrandAssetListView">
+Filtros de query: `brandkit_id`, `client_id` (filtra por `brandkit__client_id`, também aceito via path em `/client/<id>/`), `asset_type`, `origin`.
+</Accordion>
+
+<Accordion title="POST /api/v1/brandkit/asset/import-website/ — BrandAssetImportWebsiteView">
+Faz o GET do HTML do site informado, extrai texto e links de imagem, baixa os arquivos e grava como `BrandAsset`. É o mesmo caminho usado pela análise de site do onboarding, exposto aqui para reimportar sem refazer o onboarding (`app/brandkit/views.py:854-869`).
+
+<ParamField path="client_id" type="integer">ID do cliente (alternativa a `brandkit_id`). Se não houver brandkit para o cliente, um é criado com `status='active'`.</ParamField>
+<ParamField path="brandkit_id" type="integer">ID do brandkit (alternativa a `client_id`).</ParamField>
+<ParamField path="url" type="string" required>URL do site a raspar.</ParamField>
+<ParamField path="replace" type="boolean" default="false">Se `true`, apaga os assets já importados deste site antes de reimportar.</ParamField>
+<ParamField path="max_assets" type="integer" default="24">Máximo de assets a importar; limitado internamente entre 1 e 60.</ParamField>
+<ParamField path="set_logo" type="boolean" default="true">Se `true`, promove o melhor candidato do site a `BrandLogo`.</ParamField>
+<ParamField path="allow_browser" type="boolean" default="false">Se `true`, renderiza a página num Chromium (Playwright) quando o GET simples receber 403/bloqueio — mais lento.</ParamField>
+
+<ResponseField name="brandkit_id" type="integer" />
+<ResponseField name="source_url" type="string">URL final após redirecionamentos.</ResponseField>
+<ResponseField name="images_found" type="integer">Total de imagens encontradas no HTML.</ResponseField>
+<ResponseField name="assets_imported" type="integer" />
+<ResponseField name="assets" type="array">Lista serializada dos `BrandAsset` criados.</ResponseField>
+<ResponseField name="logo_id" type="integer">ID do `BrandLogo` promovido, ou `null`.</ResponseField>
+<ResponseField name="text_chars" type="integer">Tamanho do texto extraído da página.</ResponseField>
+<ResponseField name="css_colors" type="array">Cores hex encontradas no CSS.</ResponseField>
+<ResponseField name="css_fonts" type="array">Famílias tipográficas encontradas no CSS.</ResponseField>
+
+**Erros**: `400` se faltar `url` ou (`client_id`/`brandkit_id`), ou se a URL for inválida (`WebsiteScrapeError`). `404` se `brandkit_id`/`client_id` não resolverem para registros existentes.
+</Accordion>
+
+<Accordion title="POST /api/v1/brandkit/grid/regenerate/ — SocialNetworkGridRegenerateView">
+Regera o mosaico 3x3 do cliente, usando o mesmo pipeline do onboarding (`app.onboarding.services.regenerate_grid_for_client`). Responde `202 Accepted`: a geração roda em background e o estado é consultado via `grid/status/` (`app/brandkit/views.py:995-1025`).
+
+<ParamField path="client_id" type="integer" required />
+<ParamField path="feedback" type="string">O que mudar no grid (opcional).</ParamField>
+<ParamField path="new_reference" type="boolean">Sortear outra referência de design.</ParamField>
+
+**Erros**: `400` se faltar `client_id`; `404` se o cliente não existir.
+</Accordion>
+
+<Accordion title="GET /api/v1/brandkit/grid/status/?client_id= — SocialNetworkGridStatusView">
+Retorna o andamento da geração do grid via `app.onboarding.services.get_grid_state_for_client`.
+
+**Erros**: `400` se faltar `client_id`; `404` se o cliente não existir.
+</Accordion>
+
+<Accordion title="GET /api/v1/brandkit/grid/approval/ — ClientGridApprovalView">
+Grid do **cliente logado** para a página de aprovação (link enviado ao usuário, fora do onboarding — referência MIG-165). Resolve o cliente pelo usuário autenticado via `_client_from_request` (`app/brandkit/views.py:1050-1057`). Inclui `next`, o próximo passo do onboarding, quando ainda houver etapa pendente (MIG-208).
+
+<ResponseField name="grid" type="object">Estado do grid (`services.get_grid_state_for_client`).</ResponseField>
+<ResponseField name="next" type="string">Rota do próximo passo (`/onboarding`) ou `null`.</ResponseField>
+
+**Erros**: `404` se não houver cliente vinculado ao usuário autenticado.
+</Accordion>
+
+<Accordion title="POST /api/v1/brandkit/grid/approval/approve/ — ClientGridApproveView">
+Marca o grid como aprovado pelo cliente (só registra, não dispara nada). MIG-185: após aprovar, se ainda houver etapa de onboarding pendente (tipicamente conectar redes), devolve `next` para o front emendar o fluxo sem clique adicional.
+
+**Erros**: `404` se não houver cliente vinculado ao usuário autenticado.
+</Accordion>
+
+<Accordion title="POST /api/v1/brandkit/grid/approval/feedback/ — ClientGridFeedbackView">
+Registra um pedido de ajuste do cliente **sem** regerar na hora — marca o grid como pendente para o cron regerar depois.
+
+<ParamField path="feedback" type="string" required>Descrição do ajuste desejado.</ParamField>
+
+**Erros**: `400` se faltar `feedback` ou cliente não encontrado (`404`); `409` se o grid já estiver aprovado (`ValueError` de `services.register_grid_feedback_for_client`, MIG-165: quem aprovou não pode pedir novo ajuste).
+</Accordion>
+
+<Accordion title="POST /api/v1/brandkit/design-reference/upload/ — DesignReferenceUploadView">
+Restrito a `IsManagementUser`. Cria uma ou mais `DesignReference` a partir de `files` (multipart, lista) e/ou `urls` (lista), com fallback para os campos singulares `file`/`url` caso o cliente não envie listas. Cada referência criada dispara uma **thread** (`threading.Thread(..., daemon=True)`) que roda `_analyze_design_ref_instance_in_background`, analisando a imagem via GPT Vision de forma assíncrona.
+
+<ParamField path="reference_type" type="string" required>`grid` ou `post`.</ParamField>
+<ParamField path="files" type="file[]">Lista de arquivos.</ParamField>
+<ParamField path="urls" type="string[]">Lista de URLs externas.</ParamField>
+
+**Erros**: `400` se não houver `files`/`urls` nem os campos singulares equivalentes.
+</Accordion>
+
+<Accordion title="POST /api/v1/brandkit/design-reference/reanalyze/<int:pk>/ — DesignReferenceAnalyzeView">
+Restrito a `IsManagementUser`. Reseta `analyzed=False` e dispara nova thread de análise em background. Responde `202 Accepted`.
+
+**Erros**: `404` se a referência não existir.
+</Accordion>
+</AccordionGroup>
+
+## Serializers
+
+### BrandLogoSerializer
+Campos: `id`, `brandkit`, `file`, `url`, `format`, `logo_type`, `background_context`, `detected_colors`, `primary_color_hex`, `secondary_color_hex`, `ai_description`, `ai_raw_analysis`, `analyzed`, `image_url`, `created_at`, `updated_at`.
+
+Somente-leitura: todos os campos gerados pela IA (`logo_type`, `background_context`, `detected_colors`, `primary_color_hex`, `secondary_color_hex`, `ai_description`, `ai_raw_analysis`, `analyzed`), além de `id`, `image_url`, `created_at`, `updated_at`. Ou seja: só `brandkit`, `file`, `url` e `format` são graváveis pelo cliente da API.
+
+`image_url` é `SerializerMethodField`: se houver `file`, monta a URL absoluta via `request.build_absolute_uri()` (quando `context['request']` existe) ou retorna a URL relativa; senão, retorna `obj.url` ou string vazia (`app/brandkit/serializers.py:5-21`).
+
+### BrandColorSerializer
+Campos: `id`, `brandkit`, `name`, `hex`, `category`, `order`, `created_at`. Somente-leitura: `id`, `created_at`. Sem validações customizadas.
+
+### BrandTypographySerializer
+Campos: `id`, `brandkit`, `role`, `family`, `weights`, `source_url`, `created_at`, `updated_at`. Somente-leitura: `id`, `created_at`, `updated_at`. Sem validações customizadas.
+
+### BrandAssetSerializer
+Campos: `id`, `brandkit`, `asset_type`, `name`, `file`, `url`, `image_url`, `source_url`, `origin`, `mime_type`, `width`, `height`, `content_hash`, `created_at`. Somente-leitura: `id`, `image_url`, `content_hash`, `created_at`. `image_url` é exposto como `CharField(read_only=True)`, delegando à propriedade do model.
+
+### BrandkitSerializer (leitura, aninhado)
+Campos aninhados **somente-leitura**: `logos` (`BrandLogoSerializer(many=True)`), `colors` (`BrandColorSerializer(many=True)`), `typography` (`BrandTypographySerializer(many=True)`), `assets` (`BrandAssetSerializer(many=True)`), além de `client_name` (`source='client.name'`). Demais campos: `id`, `client`, `brand_id`, `name`, `description`, `status`, `version`, `created_at`, `updated_at`. Somente-leitura: `id`, `brand_id`, `created_at`, `updated_at`.
+
+### BrandkitWriteSerializer (escrita, sem aninhados)
+Campos: `id`, `client`, `brand_id`, `name`, `description`, `status`, `version`, `created_at`, `updated_at`. Somente-leitura: `id`, `brand_id`, `created_at`, `updated_at`. Usado nas views de create/update/delete de `Brandkit`.
+
+### SocialNetworkGridSerializer
+Campos: `id`, `client`, `file`, `url`, `image_url`, `created_at`. Somente-leitura: `id`, `image_url`, `created_at`. `image_url` segue o mesmo padrão de `BrandLogoSerializer` (URL absoluta via `request.build_absolute_uri()`).
+
+### DesignReferenceSerializer
+Campos: `id`, `reference_type`, `file`, `url`, `ai_technical_description`, `ai_raw_analysis`, `analyzed`, `image_url`, `created_at`, `updated_at`. Somente-leitura: `id`, `ai_technical_description`, `ai_raw_analysis`, `analyzed`, `image_url`, `created_at`, `updated_at` — na prática, só `reference_type`, `file` e `url` são graváveis.
+
+Nenhum dos serializers acima define métodos `create`/`update` customizados; o comportamento é o padrão do `ModelSerializer` do DRF.
+
+## Regras de negócio e funções
+
+### `_analyze_logo_with_gpt(image_source: str | bytes, is_url: bool = True) -> dict`
+`app/brandkit/views.py:41`. Envia a imagem (por URL pública ou bytes base64) ao modelo `gpt-4o` (chat completions, `temperature=0.1`, `max_tokens=800`), usando as credenciais `OPENAI_API_KEY`/`OPENAI_API_URL` (via `decouple.config`). O prompt de sistema pede um JSON estrito com `is_placeholder`, `placeholder_reason`, `logo_type`, `background_context`, `colors` (lista de `{name, hex, category}`, ignorando cores de FUNDO) e `description`. Remove blocos de código markdown da resposta antes de desserializar; se o JSON vier inválido, retorna `{"description": raw_text}` como fallback.
+
+### `_analyze_design_reference_with_gpt(image_source, is_url=True) -> dict`
+`app/brandkit/views.py:291`. Mesmo padrão da função acima, mas com prompt focado em descrever elementos técnicos de design (layout, cores, tipografia, espaçamento) de uma imagem de referência, usando `detail: "low"` (menor custo/resolução) e `temperature=0.3`. Retorna `{"technical_description": ...}`.
+
+### `_hex_to_rgb(hex_val: str)` e `_is_neutral_hex(hex_val: str) -> bool`
+`app/brandkit/views.py:158-183`. Convertem hex em RGB e determinam se a cor é neutra (branco/preto/cinza) por saturação HSV baixa (`NEUTRAL_SATURATION_THRESHOLD = 0.18`). Usadas para reclassificar como `neutral` qualquer cor que a Vision tenha rotulado errado — o fundo da imagem não deve virar "cor da marca".
+
+### `_looks_like_placeholder(analysis: dict) -> bool`
+`app/brandkit/views.py:186-200`. Veredito final sobre se a imagem é um avatar genérico (não um logo real). Confia no campo `is_placeholder` retornado pela IA, mas também relê `description`/`placeholder_reason` em busca de marcadores textuais (`'silhueta'`, `'inicial do nome'`, `'letra isolada'` etc.) — porque o modelo às vezes descreve corretamente o avatar mas responde `is_placeholder: false`.
+
+### `_normalize_colors(raw_colors) -> list`
+`app/brandkit/views.py:203-230`. Valida hexadecimais (`#RGB`/`#RRGGBB`), remove duplicatas, corrige `category` inválida para `primary`, e reclassifica como `neutral` qualquer cor que `_is_neutral_hex` identifique como cinza/fundo, independente do que a IA tenha dito.
+
+### `_apply_analysis_to_logo(logo, analysis: dict, replace_colors: bool = False) -> None`
+`app/brandkit/views.py:233-289`. Aplica os resultados da análise ao `BrandLogo` (`logo_type`, `background_context`, `ai_description`, `ai_raw_analysis`, `analyzed=True`).
+
+- Se `_looks_like_placeholder` for `True`: zera `detected_colors`, `primary_color_hex` e `secondary_color_hex` (avatar de letra não tem paleta de marca — propagar contaminaria posts/capas/banners com a cor de fundo sorteada pelo gerador de avatar) e salva, retornando sem criar `BrandColor`.
+- Caso contrário: grava `detected_colors`, calcula `primary_color_hex`/`secondary_color_hex` a partir das cores não-neutras (`branded`), e cria/atualiza `BrandColor` via `get_or_create(brandkit=..., hex=...)` para cada cor da paleta final. Neutros só entram na paleta quando a marca tem menos de 2 cores próprias (efetivamente monocromática) — do contrário o branco do fundo viraria "cor da marca".
+
+`replace_colors` está declarado na assinatura mas **não é usado no corpo da função** — a distinção real entre criação e reanálise fica por conta do `get_or_create`, que não duplica cores já existentes.
+
+### `_client_from_request(request)`
+`app/brandkit/views.py:1050-1057`. Resolve o `Client` do usuário autenticado (`Client.objects.filter(user=user).first()`); retorna `None` se não houver usuário autenticado.
+
+### `_proximo_passo_do_onboarding(client)`
+`app/brandkit/views.py:1085-1099`. Retorna `/onboarding` se houver uma `OnboardingSession` para o cliente com etapas pendentes (`app.onboarding.services.pending_onboarding_steps`), senão `None`. Não decide qual é o `resume_step` — só sinaliza se há para onde ir.
+
+### `_analyze_design_ref_instance_in_background(ref_id)`
+`app/brandkit/views.py:1164-1190`. Função alvo de thread daemon: carrega a `DesignReference`, roda `_analyze_design_reference_with_gpt` sobre o arquivo ou URL, grava `ai_technical_description`, `ai_raw_analysis`, `analyzed=True`. Em caso de exceção, grava `{'error': str(exc)}` em `ai_raw_analysis` e loga via `print`. Sempre fecha a conexão de banco no `finally` (`db_conn.close()`) — necessário porque roda fora do ciclo request/response do Django.
+
+### Website scraping (`app/brandkit/website.py`)
+
+Usado pelo onboarding (`app.onboarding.services._run_website_analysis`) e por `BrandAssetImportWebsiteView`.
+
+- **`normalize_website_url(value: str) -> str`** — prefixa `https://` quando a URL não tem esquema.
+- **`fetch_html(url: str, timeout=30) -> tuple[str, str]`** — GET simples (com `stream=True`, limitado a `MAX_HTML_BYTES = 3 MiB`), retorna `(html, url_final)`. Levanta `WebsiteBlockedError` para status em `BLOCKED_STATUSES = (401, 403, 405, 406, 409, 429, 503)` — sinal para cair no navegador. Levanta `WebsiteScrapeError` para outros erros ≥400 ou falha de rede.
+- **`render_html(url: str) -> tuple[str, str]`** — último recurso: renderiza a página com Playwright/Chromium headless (`timeout=45000ms` para navegação, `8000ms` para "networkidle"). Levanta `WebsiteScrapeError` se o Playwright não estiver instalado.
+- **`parse_website(html: str, base_url: str) -> dict`** — extrai `title`, `description`, `site_name`, `lang`, `headings` (até 60), `text` (até `MAX_TEXT_CHARS = 60000` chars), `images` (lista de `{url, hint}`), `links` (até 80), `social_links` (Instagram/Facebook/LinkedIn/YouTube/TikTok/X/WhatsApp), `stylesheets` (até `MAX_STYLESHEETS = 5`), `css_colors` (até 40) e `css_fonts` (até 12).
+- **`_collect_images(soup, base_url) -> list`** — coleta `<link rel="icon">` (hint `favicon`), meta `og:image`/`twitter:image`/`og:logo`/`msapplication-TileImage` (hint `social`), `<img>` (com hint `logo` se `alt`/`id`/classe/caminho casarem com `_LOGO_HINT_RE`, sem considerar o host da URL), `<source>` e `background-image` em `style`/`<style>` (hint `background`).
+- **`_colors_and_fonts_from_css(css_blob) -> tuple`** — extrai cores hex (normalizando `#abc`→`#aabbcc`) e famílias de fonte via regex, ignorando variáveis não resolvidas (`var(...)`, `$sass`, `--token`).
+- **`_enrich_from_stylesheets(parsed) -> dict`** — baixa as folhas de estilo externas (até `MAX_STYLESHEETS`, `CSS_TIMEOUT=15s`, `MAX_CSS_BYTES=1 MiB`) e completa `css_colors`, `css_fonts` e `images` (background-images do CSS). Falha em uma folha não interrompe o processo.
+- **`scrape_website(url, allow_browser=True, on_browser_fallback=None) -> dict`** — orquestra `fetch_html` → (se bloqueado e `allow_browser`) `render_html` → `parse_website` → `_enrich_from_stylesheets`. Marca `parsed['rendered_with_browser']`. Chama `on_browser_fallback()` antes de abrir o navegador, para avisar quem está esperando na tela.
+- **`download_image(url, timeout=20) -> dict`** — baixa uma imagem (ou decodifica `data:` URI), valida `Content-Type`/tamanho (`MAX_ASSET_BYTES = 8 MiB`) e descarta imagens menores que `MIN_ASSET_PIXELS = 32px` (spacers/pixels de tracking). Retorna `{content, content_type, width, height, filename}` ou `{}`.
+- **`_guess_asset_type(image, downloaded) -> str`** — infere `asset_type` a partir do `hint` da imagem e das dimensões: `favicon`/`logo`/`background` por hint; senão, por proporção/tamanho: `banner` (largura ≥1200px e ≥2x a altura), `icon_set` (máx. dimensão ≤128px), `photo` (demais casos com dimensão conhecida) ou `other`.
+- **`_import_order(images) -> list`** — reordena imagens por prioridade (`logo` > sem hint > `background` > `social` > `favicon`, via `_IMPORT_PRIORITY`), para que favicons não esgotem a cota de `max_assets` antes do logotipo.
+- **`import_website_assets(brandkit, parsed, max_assets=24, replace=False, deadline=None) -> list[BrandAsset]`** — baixa as imagens (na ordem de `_import_order`) e cria `BrandAsset`. Idempotente por `source_url` + `content_hash` (SHA-256) — reimportar o mesmo site não duplica assets. Com `replace=True`, remove antes os assets com `origin='website'` do brandkit. Respeita `deadline` (via `_out_of_time`) para não estourar o orçamento de tempo da fase.
+- **`logo_candidates(parsed, limit=4) -> list`** — ordena as imagens da página por `_logo_score` (pontua hint `logo` +100, caminho menciona "logo" +60, hint `social` +30, hint `favicon` +20, extensão `.svg` +15) e retorna as top `limit`.
+- **`ensure_logo_from_website(client, parsed, deadline=None) -> BrandLogo | None`** — promove o melhor candidato a `BrandLogo`, reaproveitando `_analyze_logo_with_gpt`/`_apply_analysis_to_logo`. **Não sobrescreve** um logo real já existente (`BrandLogo.objects.filter(brandkit__client=client, is_placeholder=False).exists()`). SVGs são pulados (Vision não lê, e o resto do sistema precisa de raster). Se o candidato escolhido resultar `is_placeholder=True`, o `BrandLogo` é deletado e o próximo candidato é tentado.
+
+## Erros comuns / pontos de atenção
+
+- `BrandkitCreateView` bloqueia mais de um brandkit por cliente (`400`), mas `BrandAssetImportWebsiteView` cria um brandkit automaticamente quando `client_id` não tem nenhum — verificar essa diferença de comportamento ao integrar.
+- Em `BrandLogoUploadView` e `BrandLogoReanalyzeView`, falha na chamada ao GPT Vision **não impede** o salvamento do logo: o erro fica registrado em `ai_raw_analysis` (`upload`) ou retorna `502` (`reanalyze`) — comportamento diferente entre os dois endpoints.
+- `_apply_analysis_to_logo` recebe o parâmetro `replace_colors` mas não o utiliza no corpo da função (`app/brandkit/views.py:233`); o efeito de "substituir cores" na reanálise acontece só via `get_or_create` por hex, não por uma limpeza explícita.
+- `DesignReferenceUploadView` e `DesignReferenceAnalyzeView` disparam análise via `threading.Thread(daemon=True)` — processamento assíncrono simples, sem fila/worker dedicado; erros na thread só aparecem via `print` no log do processo.
+- `BrandAssetImportWebsiteView` roda a raspagem de forma **síncrona** dentro da request; `allow_browser=True` pode levar a resposta a demorar dezenas de segundos a minutos (Playwright é último recurso, só para sites que bloqueiam o GET simples).
+- Vários blocos `try/except: pass` silenciam falhas de notificação a admins (`BrandColorCreateView`, `BrandTypographyCreateView`, `BrandLogoUploadView`) — uma falha em `notify_admins` não é visível na resposta da API.
+- `SocialNetworkGridRegenerateView`, `SocialNetworkGridStatusView`, `ClientGridApprovalView`, `ClientGridApproveView` e `ClientGridFeedbackView` dependem inteiramente de `app.onboarding.services` (não documentado neste arquivo) para a lógica de estado/geração do grid.
+
+## Relacionados
+
+<Columns cols={2}>
+  <Card title="Client" icon="building" href="/backend/apps/client">
+    Model `Client`, referenciado por `Brandkit`, `SocialNetworkGrid` e usado para notificações e resolução de brandkit por cliente.
+  </Card>
+  <Card title="Onboarding" icon="rocket" href="/backend/apps/onboarding">
+    Orquestra a raspagem de site e a geração/aprovação do grid de rede social consumidos pelas views de Grid deste app.
+  </Card>
+</Columns>

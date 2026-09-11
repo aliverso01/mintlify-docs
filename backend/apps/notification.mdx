@@ -1,0 +1,282 @@
+---
+title: "Notification"
+description: "Notificações internas da plataforma — criação, listagem, histórico e marcação de leitura"
+icon: "bell"
+---
+
+## Responsabilidade
+
+O app `app.notification` guarda e expõe as notificações in-app da Miggo: eventos como novo post, aprovação de conteúdo, cobrança, onboarding etc. viram registros de `Notification` associados a um `CustomUser` (`app/notification/models.py:47`). Não há disparo por push/e-mail aqui — é só persistência e leitura; quem decide **quando** notificar é o código de outros apps, que chama as funções utilitárias expostas em `app/notification/utils.py`.
+
+O app está registrado em `INSTALLED_APPS` como `app.notification.apps.NotificationConfig` (`core/settings.py:128`) e montado em `core/urls.py:40` sob o prefixo:
+
+```
+/api/v1/notification/
+```
+
+<Note>
+Este app não tem `admin.py` — não há registro no Django Admin para o model `Notification`.
+</Note>
+
+## Arquivos
+
+| Arquivo | Conteúdo |
+|---|---|
+| `app/notification/models.py` | Model `Notification` e a lista de `NOTIFICATION_TYPES` (choices) |
+| `app/notification/views.py` | 4 `APIView` para listar, ver histórico paginado, marcar como lida (uma ou todas) |
+| `app/notification/serializers.py` | `NotificationSerializer` |
+| `app/notification/urls.py` | Roteamento das 4 views |
+| `app/notification/utils.py` | `notify()` e `notify_admins()` — funções públicas chamadas por outros apps para criar notificações |
+| `app/notification/apps.py` | `NotificationConfig` (`AppConfig`) |
+
+## Modelos
+
+### Notification
+
+`app/notification/models.py:47-66`
+
+| Campo | Tipo | Obrigatório | Default / Choices | Descrição |
+|---|---|---|---|---|
+| `recipient` | `ForeignKey(CustomUser, related_name='notifications')` | Sim | — | Destinatário da notificação; `on_delete=CASCADE` |
+| `notification_type` | `CharField(max_length=50)` | Sim | `choices=NOTIFICATION_TYPES` (`models.py:4-45`) | Tipo/categoria do evento — ver tabela abaixo |
+| `title` | `CharField(max_length=255)` | Sim | — | Título curto exibido na notificação |
+| `message` | `TextField` | Sim | — | Corpo/descrição da notificação |
+| `is_read` | `BooleanField` | Não | `False` | Se já foi lida |
+| `link` | `CharField(max_length=500)` | Não | `blank=True, null=True` | Rota/URL para onde a notificação deve levar ao ser clicada |
+| `created_at` | `DateTimeField` | Auto | `auto_now_add=True` | Data/hora de criação |
+
+**Relações:** `recipient` → `app.account.models.CustomUser` (muitos-para-um; cascade delete).
+
+**Meta** (`models.py:60-63`): `ordering = ['-created_at']`; `verbose_name = 'Notificação'` / `verbose_name_plural = 'Notificações'`.
+
+**Métodos:** `__str__` (`models.py:65-66`) retorna `"[{notification_type}] {title} → {recipient.email}"`.
+
+#### NOTIFICATION_TYPES (choices)
+
+Definida em `app/notification/models.py:4-45`, agrupada por comentários no próprio código em blocos "Admin", "Client" e "Atividades cliente ↔ equipe":
+
+| Valor | Rótulo |
+|---|---|
+| `new_client` | Novo cliente cadastrado |
+| `new_post` | Novo post criado |
+| `post_published` | Post publicado |
+| `post_scheduled` | Post agendado |
+| `post_canceled` | Post cancelado |
+| `social_connected` | Rede social conectada |
+| `social_disconnected` | Rede social desconectada |
+| `subscription_started` | Assinatura iniciada |
+| `subscription_canceled` | Assinatura cancelada |
+| `brandkit_uploaded` | Brandkit enviado |
+| `logo_upload` | Logo adicionado |
+| `color_added` | Cor adicionada |
+| `post_ready_review` | Post pronto para revisão |
+| `post_approved` | Post aprovado |
+| `content_published` | Conteúdo publicado com sucesso |
+| `billing_alert` | Alerta de cobrança |
+| `social_network_connected` | Rede social conectada com sucesso |
+| `post_scheduled_client` | Post agendado com sucesso |
+| `post_error` | Erro ao publicar post |
+| `support_response` | Suporte respondeu |
+| `grid_ready` | Grid visual gerado |
+| `payment_failed` | Falha no pagamento |
+| `payment_succeeded` | Pagamento confirmado |
+| `subscription_activated` | Assinatura ativada |
+| `subscription_expired` | Assinatura suspensa por falta de pagamento |
+| `trial_ending` | Teste grátis acabando |
+| `trial_expired` | Teste grátis encerrado |
+| `content_sent_client` | Conteúdo enviado para o cliente |
+| `content_approved` | Cliente aprovou conteúdo |
+| `content_rejected` | Cliente reprovou conteúdo |
+| `agenda_suggestion_created` | Cliente sugeriu pauta |
+| `agenda_suggestion_approved` | Sugestão de pauta aprovada |
+| `media_uploaded` | Cliente enviou mídia |
+| `trial_onboarding_complete` | Lead concluiu o onboarding |
+| `brand_info_updated` | Cliente alterou informações da marca |
+
+## Endpoints
+
+Todas as rotas exigem autenticação (`DEFAULT_AUTHENTICATION_CLASSES` = JWT e `DEFAULT_PERMISSION_CLASSES` = `HasAPIKeyOrIsAuthenticated`, `core/settings.py:136-141`) — nenhuma view do app declara `permission_classes`/`authentication_classes` próprios, então usam o default global.
+
+| Método | Rota completa | View | Permissão |
+|---|---|---|---|
+| GET | `/api/v1/notification/list/` | `NotificationListView` | Autenticado (default global) |
+| GET | `/api/v1/notification/history/` | `NotificationHistoryView` | Autenticado (default global) |
+| PATCH | `/api/v1/notification/<id>/read/` | `NotificationMarkReadView` | Autenticado (default global) |
+| PATCH | `/api/v1/notification/mark-all-read/` | `NotificationMarkAllReadView` | Autenticado (default global) |
+
+<AccordionGroup>
+  <Accordion title="GET /api/v1/notification/list/">
+    `app/notification/views.py:14-45`. Retorna as últimas 50 notificações do usuário (ou só as não lidas), pensado para o dropdown de notificações.
+
+    <ParamField query="user_id" type="integer" required>
+      Id do `CustomUser` destinatário.
+    </ParamField>
+    <ParamField query="unread_only" type="string" default="false">
+      `"true"` filtra apenas notificações com `is_read=False`. Qualquer outro valor é tratado como `false`.
+    </ParamField>
+
+    Se `user_id` não vier: `400` com `{'error': 'user_id é obrigatório.'}` (`views.py:28`).
+    Se o usuário não existir: `404` com `{'error': 'Usuário não encontrado.'}` (`views.py:33`).
+
+    <ResponseField name="notifications" type="array">
+      Lista de notificações serializadas (`NotificationSerializer`), ordenadas por `-created_at`, limitada a 50.
+    </ResponseField>
+    <ResponseField name="unread_count" type="integer">
+      Total de notificações não lidas do usuário (contagem independente do filtro `unread_only`).
+    </ResponseField>
+  </Accordion>
+
+  <Accordion title="GET /api/v1/notification/history/">
+    `app/notification/views.py:49-109`. Histórico completo com paginação (via `django.core.paginator.Paginator`) e filtros combináveis.
+
+    <ParamField query="user_id" type="integer" required>
+      Id do `CustomUser` destinatário.
+    </ParamField>
+    <ParamField query="page" type="integer" default="1">
+      Página atual.
+    </ParamField>
+    <ParamField query="page_size" type="integer" default="20">
+      Itens por página.
+    </ParamField>
+    <ParamField query="notification_type" type="string">
+      Filtra por um dos valores de `NOTIFICATION_TYPES`.
+    </ParamField>
+    <ParamField query="client_id" type="integer">
+      Filtra notificações cujo `message` ou `link` contenham `client_id=<id>` (`Q(message__icontains=...) | Q(link__icontains=...)`, `views.py:82-85`). O valor `"all"` desativa o filtro.
+    </ParamField>
+    <ParamField query="start_date" type="string">
+      Data mínima (`created_at__date__gte`), formato aceito pelo Django (`YYYY-MM-DD`).
+    </ParamField>
+    <ParamField query="end_date" type="string">
+      Data máxima (`created_at__date__lte`).
+    </ParamField>
+
+    Mesmos erros `400`/`404` de `user_id` do endpoint de listagem.
+
+    <ResponseField name="count" type="integer">Total de resultados após os filtros.</ResponseField>
+    <ResponseField name="total_pages" type="integer">Total de páginas.</ResponseField>
+    <ResponseField name="current_page" type="integer">Página atual retornada.</ResponseField>
+    <ResponseField name="page_size" type="integer">Tamanho de página usado.</ResponseField>
+    <ResponseField name="results" type="array">Notificações da página atual, serializadas.</ResponseField>
+    <ResponseField name="unread_count" type="integer">Total de não lidas do usuário (independente dos filtros aplicados).</ResponseField>
+  </Accordion>
+
+  <Accordion title="PATCH /api/v1/notification/<id>/read/">
+    `app/notification/views.py:113-128`. Marca uma notificação específica como lida.
+
+    <ParamField path="id" type="integer" required>
+      Id (pk) da `Notification` na URL.
+    </ParamField>
+
+    <Warning>
+      Não valida que a notificação pertence ao usuário autenticado — busca por `Notification.objects.get(id=pk)` sem filtrar por `recipient` (`views.py:122`). Qualquer usuário autenticado que souber o id pode marcar como lida a notificação de outra pessoa.
+    </Warning>
+
+    Se a notificação não existir: `404` com `{'error': 'Notificação não encontrada.'}`.
+
+    <ResponseField name="success" type="boolean">
+      `true` em caso de sucesso.
+    </ResponseField>
+  </Accordion>
+
+  <Accordion title="PATCH /api/v1/notification/mark-all-read/">
+    `app/notification/views.py:132-145`. Marca todas as notificações não lidas do usuário como lidas, em um único `update()`.
+
+    <ParamField query="user_id" type="integer" required>
+      Id do `CustomUser`. Se ausente: `400` com `{'error': 'user_id é obrigatório.'}`. Não valida se o usuário existe (diferente das outras views) — um `user_id` inexistente simplesmente atualiza zero linhas.
+    </ParamField>
+
+    <ResponseField name="success" type="boolean">
+      `true` sempre que `user_id` foi informado.
+    </ResponseField>
+  </Accordion>
+</AccordionGroup>
+
+## Serializers
+
+### NotificationSerializer
+
+`app/notification/serializers.py:5-38`
+
+| Campo | Origem | Read-only |
+|---|---|---|
+| `id` | model | Sim (`read_only_fields`) |
+| `notification_type` | model | Não |
+| `notification_type_display` | `get_notification_type_display` (label do choice) | Sim |
+| `title` | model | Não |
+| `message` | model | Não |
+| `is_read` | model | Não |
+| `link` | model | Não |
+| `created_at` | model | Sim (`read_only_fields`) |
+| `created_at_relative` | `SerializerMethodField` | Sim |
+
+**`get_created_at_relative(obj)`** (`serializers.py:19-37`): calcula o tempo relativo até `timezone.now()` e retorna string em pt-BR:
+- `< 1 min` → `"Agora"`
+- `< 1 hora` → `"há {N} min"`
+- `< 1 dia` → `"há {N}h"`
+- `< 7 dias` → `"há {N} dia(s)"`
+- `>= 7 dias` → data formatada `%d/%m/%Y`
+
+Não há `validate()` nem `create`/`update` customizados — o serializer é usado apenas para leitura (as views não fazem POST/PUT via este serializer).
+
+## Regras de negócio e funções
+
+`app/notification/utils.py` concentra as duas funções públicas usadas por **outros apps** para gerar notificações. Não há signals no app — a criação é sempre uma chamada explícita a uma destas funções.
+
+### `notify(recipient, notification_type, title, message, link=None)`
+
+`app/notification/utils.py:5-25`
+
+- **Assinatura:** `recipient: CustomUser`, `notification_type: str`, `title: str`, `message: str`, `link: str = None`.
+- **Efeito colateral:** cria um único `Notification` via `Notification.objects.create(...)` (`utils.py:19-25`).
+- **Retorno:** nenhum (retorno implícito `None`).
+- **Uso documentado no próprio docstring:**
+  ```python
+  from app.notification.utils import notify
+  notify(user, 'new_post', 'Novo post', 'Um post foi criado para...', '/content')
+  ```
+
+### `notify_admins(notification_type, title, message, link=None, dedupe_window_seconds=0, dedupe_key=None)`
+
+`app/notification/utils.py:28-66`
+
+- **Assinatura:** `notification_type: str`, `title: str`, `message: str`, `link: str = None`, `dedupe_window_seconds: int = 0`, `dedupe_key: str = None`.
+- **Efeito colateral:** cria uma `Notification` para **todos** os `CustomUser` com `role='admin'` e `is_active=True` (`utils.py:55`), em lote via `Notification.objects.bulk_create(...)` (`utils.py:66`).
+- **Deduplicação opcional:** se `dedupe_window_seconds > 0` e `dedupe_key` for informado, antes de criar verifica se já existe uma `Notification` do mesmo `notification_type` cujo `message` contenha `dedupe_key` dentro da janela `now() - dedupe_window_seconds`; se existir, a função retorna sem criar nada (`utils.py:43-53`). Serve para não gerar uma notificação por admin a cada upload de um lote de mídias, por exemplo.
+- **Retorno:** nenhum (`None`).
+
+<Note>
+As buscas em `app/notification` e `app/account` não localizaram nenhum outro ponto do próprio app que chame `notify`/`notify_admins` — os chamadores ficam em outros apps (post, media, subscription, conversation, etc.), fora do escopo desta página.
+</Note>
+
+## Erros comuns / pontos de atenção
+
+<Warning>
+`NotificationMarkReadView.patch` (`views.py:120-128`) não verifica se a notificação pertence ao `user_id`/usuário autenticado — apenas busca por `pk`. Qualquer chamada autenticada com um id válido marca a notificação como lida, mesmo que seja de outro usuário.
+</Warning>
+
+<Warning>
+`NotificationMarkAllReadView.patch` não valida se `user_id` corresponde a um usuário existente — um id inválido simplesmente atualiza zero linhas e responde `{'success': true}` do mesmo jeito, sem sinalizar o problema ao cliente.
+</Warning>
+
+<Warning>
+O filtro `client_id` em `NotificationHistoryView` (`views.py:80-85`) depende de o `client_id=<id>` aparecer como texto dentro de `message` ou `link` — não há uma FK direta de `Notification` para `Client`. Se o texto da notificação for escrito sem esse padrão, o filtro simplesmente não encontra o registro.
+</Warning>
+
+<Note>
+Nenhuma view pagina/filtra por `notification_type` inválido de forma diferenciada — um valor fora de `NOTIFICATION_TYPES` apenas resulta em zero resultados, sem erro.
+</Note>
+
+## Relacionados
+
+<Columns cols={2}>
+  <Card title="Account" icon="user" href="/backend/apps/account">
+    `CustomUser` é o destinatário de toda notificação, e é dele que vem `role='admin'` usado por `notify_admins`.
+  </Card>
+  <Card title="Client" icon="briefcase" href="/backend/apps/client">
+    Vários `notification_type` (ex.: `new_client`, `content_approved`) referenciam eventos do ciclo de vida do cliente.
+  </Card>
+  <Card title="Email Marketing" icon="mail" href="/backend/apps/emailmarketing">
+    Canal de comunicação paralelo: enquanto `notification` é in-app, `emailmarketing` dispara e-mails ancorados nos mesmos eventos de ciclo de vida (signup, onboarding, trial).
+  </Card>
+</Columns>

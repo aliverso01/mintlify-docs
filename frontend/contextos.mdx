@@ -1,0 +1,89 @@
+---
+title: "Contextos"
+description: "Providers de estado global do frontend-miggo: o que guardam e onde são montados"
+icon: "box"
+---
+
+O app usa cinco React Contexts. A árvore de providers é montada em dois pontos: os globais (toda a app) em `src/main.tsx`, e os de layout (só dentro da área autenticada) em `src/layout/AppLayout.tsx`.
+
+```
+main.tsx
+└── ThemeProvider
+    └── PreviewProvider
+        └── AuthProvider
+            └── AppWrapper (HelmetProvider)
+                └── App
+                    └── ... (dentro de AppLayout, nas rotas autenticadas)
+                        └── SidebarProvider
+                            └── SearchProvider
+                                └── LayoutContent + PreviewModeBanner
+```
+
+## `ThemeContext` (`src/context/ThemeContext.tsx`)
+
+- **Guarda**: `theme: "light" | "dark"`.
+- **Shape do value** (`ThemeContext.tsx:8-11`):
+  ```ts
+  type ThemeContextType = { theme: Theme; toggleTheme: () => void };
+  ```
+- **Persistência**: lê/grava `theme` em `localStorage` (`ThemeContext.tsx:23,32`) e alterna a classe `dark` em `document.documentElement` (`ThemeContext.tsx:33-37`), que é o gatilho para o `@custom-variant dark` do Tailwind (ver `layout-e-tema.mdx`).
+- **Hook de consumo**: `useTheme()` (`ThemeContext.tsx:52-58`), lança erro se usado fora do provider.
+- **Montado em**: `src/main.tsx:22` — envolve toda a aplicação (nível mais externo).
+
+## `PreviewContext` (`src/context/PreviewContext.tsx`)
+
+- **Guarda**: `isPreviewMode: boolean`, `previewClientId: number | null`, `previewClientName: string` (`PreviewContext.tsx:3-7`).
+- **Shape do value** (`PreviewContext.tsx:9-12`):
+  ```ts
+  interface PreviewContextValue extends PreviewState {
+    startPreview: (clientId: number, clientName: string) => void;
+    stopPreview: () => void;
+  }
+  ```
+- **Persistência**: sincroniza com `localStorage["miggo_preview_mode"]` em todo `setState` (`PreviewContext.tsx:16,49-55`), com validação de shape ao carregar (`loadPreviewState`, `PreviewContext.tsx:19-43`).
+- **Hook de consumo**: `usePreview()` (`PreviewContext.tsx:72-76`).
+- **Montado em**: `src/main.tsx:23` — envolve `AuthProvider`, porque `AuthContext` lê `usePreview()` para calcular o `effectiveUser` (ver `autenticacao.mdx`).
+- **Consumidores notáveis**: `AuthContext` (effectiveUser), `useClient`, `AppHeader` (botão "visualizar como cliente", só para admin), `AppLayout` (checagem de status do cliente).
+
+## `AuthContext` (`src/context/AuthContext.tsx`)
+
+- **Guarda**: `user`, `loading`, `error` + as operações de conta. Detalhado por completo em `autenticacao.mdx`.
+- **Hook de consumo**: `useAuthContext()` (`AuthContext.tsx:414-420`) — a maioria das telas usa o wrapper `useAuth()` (`src/hooks/authHook.ts`), que adiciona navegação.
+- **Montado em**: `src/main.tsx:24` — dentro de `PreviewProvider`, envolve `AppWrapper`/`App`.
+
+## `SearchContext` (`src/context/SearchContext.tsx`)
+
+- **Guarda**: `searchQuery: string`.
+- **Shape do value** (`SearchContext.tsx:3-6`):
+  ```ts
+  interface SearchContextType { searchQuery: string; setSearchQuery: (query: string) => void; }
+  ```
+- **Hook de consumo**: `useSearch()` (`SearchContext.tsx:20-26`).
+- **Montado em**: `src/layout/AppLayout.tsx:88` — dentro de `SidebarProvider`, só envolve o conteúdo do layout autenticado (`LayoutContent`).
+
+## `SidebarContext` (`src/context/SidebarContext.tsx`)
+
+- **Guarda**: `isExpanded`, `isMobileOpen`, `isHovered`, `activeItem`, `openSubmenu` (`SidebarContext.tsx:3-14`).
+- **Shape do value** (`SidebarContext.tsx:3-14`):
+  ```ts
+  type SidebarContextType = {
+    isExpanded: boolean; isMobileOpen: boolean; isHovered: boolean;
+    activeItem: string | null; openSubmenu: string | null;
+    toggleSidebar: () => void; toggleMobileSidebar: () => void;
+    setIsHovered: (isHovered: boolean) => void;
+    setActiveItem: (item: string | null) => void; toggleSubmenu: (item: string) => void;
+  };
+  ```
+- **Responsividade embutida**: escuta `resize` e força `isMobileOpen = false` acima de 768px; `isExpanded` reportado no value é sempre `false` em telas mobile, independente do estado interno (`SidebarContext.tsx:36-51,68`).
+- **Hook de consumo**: `useSidebar()` (`SidebarContext.tsx:18-24`).
+- **Montado em**: `src/layout/AppLayout.tsx:87` — nível mais externo dentro de `AppLayout`, envolve `SearchProvider`.
+
+## Resumo — onde cada contexto é montado
+
+| Contexto | Montado em | Escopo |
+|---|---|---|
+| `ThemeContext` | `main.tsx` | App inteira (inclusive telas públicas) |
+| `PreviewContext` | `main.tsx` | App inteira |
+| `AuthContext` | `main.tsx` | App inteira |
+| `SidebarContext` | `layout/AppLayout.tsx` | Só dentro da área autenticada (após os guards) |
+| `SearchContext` | `layout/AppLayout.tsx` | Só dentro da área autenticada |

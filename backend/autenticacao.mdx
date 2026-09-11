@@ -1,0 +1,155 @@
+---
+title: "Autenticação e autorização"
+description: "Modelo de usuário, JWT, permissões, papéis e endpoints de autenticação do backend-miggo"
+icon: "shield-check"
+---
+
+## Modelo de usuário
+
+`AUTH_USER_MODEL = 'account.CustomUser'` (`core/settings.py:302`). Definido em `app/account/models.py:26-51`:
+
+| Campo | Tipo | Observação |
+|---|---|---|
+| `hash` | `CharField(64)`, único | Gerado por `generate_unique_hash` (`utils/toolkit.py`) |
+| `email` | `EmailField`, único | `USERNAME_FIELD` |
+| `name` | `CharField(255)` | `REQUIRED_FIELDS` (usado por `createsuperuser`) |
+| `phone` | `CharField(20)`, opcional | |
+| `role` | `CharField(50)`, default `'client'` | Texto livre, não `choices` — ver seção de papéis abaixo |
+| `is_staff` / `is_active` | `BooleanField` | Requisitos padrão do Django Admin |
+| `google_id` | `CharField(255)`, único, opcional | Preenchido no login social |
+| `avatar_url` | `URLField`, opcional | Foto de perfil do Google |
+| `email_verified` | `BooleanField`, default `False` | |
+| `created_at` | `DateTimeField(auto_now_add=True)` | |
+
+Não há campo `username` — login é sempre por `email`. `CustomUserManager.create_superuser` (`app/account/models.py:18-24`) força `is_staff=True`, `is_superuser=True`, `role='admin'`.
+
+`UserMeta` (`app/account/models.py:53-58`) é um key/value genérico por usuário (`FK CustomUser`), usado por exemplo para guardar o código de reset de senha (`key='password_reset_code'`).
+
+## Papéis (roles)
+
+Não existe um app de RBAC dedicado — a autorização é feita checando `role`, `is_staff` e `is_superuser` diretamente. As funções centrais estão em `app/account/permissions.py:15-34`:
+
+```python
+def is_management_user(user) -> bool:
+    # superuser OU staff OU role in ('admin', 'manager')
+
+def is_admin_user(user) -> bool:
+    # superuser OU staff OU role == 'admin'
+```
+
+Ou seja, há três níveis efetivos: **cliente** (`role='client'`, o padrão), **gestor/management** (`role in ('admin','manager')` ou `is_staff`) e **admin pleno** (`role='admin'` ou `is_staff`/`is_superuser`). `manager` tem acesso de gestão mas não ao nível administrativo pleno (financeiro, planos, time) — só `admin` passa em `IsAdminUser`.
+
+## Classes de permissão
+
+Definidas em `app/account/permissions.py`:
+
+| Classe | Regra | Uso típico |
+|---|---|---|
+| `HasAPIKeyOrIsAuthenticated` | API key válida **ou** usuário autenticado | `DEFAULT_PERMISSION_CLASSES` global (`core/settings.py:139-141`) — toda view herda isso por padrão |
+| `IsManagementUser` | API key válida **ou** `is_management_user(request.user)` | Rotas de gestão (bloqueiam clientes finais) |
+| `IsAdminUser` | API key válida **ou** `is_admin_user(request.user)` | Rotas administrativas plenas (ex.: deletar usuário, planos, financeiro) |
+
+Exemplos de uso real: `ListUsersView`/`CreateTeamMemberView` usam `IsManagementUser`/`IsAdminUser` (`app/account/views.py:77,85,99`); praticamente todas as views de `app/subscription/views.py` (planos, preços, financeiro) usam `permission_classes = [IsAdminUser]`.
+
+## Autenticação: dois mecanismos coexistindo
+
+O projeto mistura **JWT via header** (o padrão de fato para a maioria das rotas) com **sessão Django via cookie** (usada especificamente pelo fluxo de login):
+
+- `DEFAULT_AUTHENTICATION_CLASSES` é `rest_framework_simplejwt.authentication.JWTAuthentication` (`core/settings.py:136-138`) — a maioria das views autentica por `Authorization: Bearer <access_token>`.
+- `LoginView` (`app/account/views.py:231-265`) e `GoogleAuthView` (`app/account/views.py:281-390`) chamam `django.contrib.auth.login(request, user)`, que grava uma **sessão** (cookie) — além disso, `GoogleAuthView` também emite um par de tokens JWT na resposta.
+- `SendVerificationEmailView` usa `IsAuthenticated` puro (sessão ou JWT, dependendo de quem autenticou a request).
+
+<Warning>
+  `app/account/authentication.py` define uma classe `JWTAuthentication(SessionAuthentication)` que desliga a checagem de CSRF (necessária para chamadas via `fetch`/`axios`). `app/account/views.py` importa essa classe na linha 14 e, logo em seguida (linha 15), importa `rest_framework_simplejwt.authentication.JWTAuthentication` com o **mesmo nome**, sobrescrevendo o import anterior — a classe de `app/account/authentication.py` nunca chega a ser usada de fato nessas views. Não foi possível confirmar se isso é intencional; reporto como inconsistência encontrada no código.
+</Warning>
+
+## Endpoints de autenticação
+
+Todos sob o prefixo `/api/v1/account/` (`core/urls.py:30`, `app/account/urls.py`).
+
+<AccordionGroup>
+  <Accordion title="POST /api/v1/account/token/ — obter par de tokens JWT">
+    `TokenObtainPairView` padrão do `rest_framework_simplejwt` (`app/account/urls.py:15`).
+    <ParamField path="email" type="string" required>Autenticação por email (USERNAME_FIELD)</ParamField>
+    <ParamField path="password" type="string" required />
+    <ResponseField name="access" type="string">Token de acesso (30 min)</ResponseField>
+    <ResponseField name="refresh" type="string">Token de refresh (7 dias)</ResponseField>
+  </Accordion>
+
+  <Accordion title="POST /api/v1/account/token/refresh/ — renovar access token">
+    `SafeTokenRefreshView` (`app/account/views.py:224-226`) — variação do `TokenRefreshView` padrão que devolve 401 em vez de 500 quando o usuário do refresh token antigo já foi apagado.
+    <ParamField path="refresh" type="string" required />
+    <ResponseField name="access" type="string" />
+  </Accordion>
+
+  <Accordion title="POST /api/v1/account/create/ e /register/ — criar usuário">
+    `CreateUserView` (`app/account/views.py:51-67`), sem autenticação exigida (`AllowAny`). Loga o usuário automaticamente após criar (`login(request, user)`) para permitir seguir direto para o onboarding.
+    <ResponseField name="user" type="object">Serialização completa do `CustomUser` criado</ResponseField>
+  </Accordion>
+
+  <Accordion title="POST /api/v1/account/login/ — login por email/senha">
+    `LoginView` (`app/account/views.py:231-265`), `AllowAny`, sem verificação de CSRF (`csrf_exempt`).
+
+    <ParamField path="email" type="string" required />
+    <ParamField path="password" type="string" required />
+
+    Regras de negócio:
+    - `role in ('admin','manager')` ou `is_staff`: login sempre permitido (bypass de checagem de cliente ativo).
+    - Demais usuários: exige `user.client.active == True`; se o `Client` não existir e `role == 'client'`, retorna 403 "Perfil cliente não encontrado."
+
+    <ResponseField name="message" type="string" />
+    <ResponseField name="user" type="object">`CustomUserSerializer` (`__all__`, com `is_active`/`is_staff`/`is_superuser`/`groups`/`user_permissions`/`last_login`/`google_id`/`avatar_url` como read-only)</ResponseField>
+
+    Respostas: `200` sucesso · `401` credenciais inválidas · `403` conta/cliente inativo.
+  </Accordion>
+
+  <Accordion title="POST /api/v1/account/logout/">
+    `LogoutView` (`app/account/views.py:268-273`) — `AllowAny`, chama `django.contrib.auth.logout`.
+  </Accordion>
+
+  <Accordion title="POST /api/v1/account/google/ — login/registro social">
+    `GoogleAuthView` (`app/account/views.py:281-390`), `AllowAny`.
+    <ParamField path="credential" type="string" required>ID token do Google (aceita também a chave alternativa `token`)</ParamField>
+
+    Valida o token com `google.oauth2.id_token.verify_oauth2_token` contra `GOOGLE_CLIENT_ID`, com tolerância de relógio `GOOGLE_AUTH_CLOCK_SKEW` (default 10s). Confere `iss` (`accounts.google.com`) e `email_verified`. Cria o `CustomUser` se não existir (email como chave), ou atualiza `google_id`/`avatar_url`/`email_verified` se já existir. Aplica a mesma checagem de `client.active` da `LoginView` para usuários não-management.
+
+    <ResponseField name="user" type="object" />
+    <ResponseField name="access" type="string">Emitido mesmo sendo um fluxo baseado em sessão</ResponseField>
+    <ResponseField name="refresh" type="string" />
+    <ResponseField name="created" type="boolean">Se o usuário foi criado nesta chamada</ResponseField>
+
+    Respostas: `503` se `GOOGLE_CLIENT_ID` não configurado ou falha de rede ao validar · `401` token inválido/issuer inesperado/email não verificado · `403` conta/cliente inativo.
+  </Accordion>
+
+  <Accordion title="POST /api/v1/account/password-reset/request/">
+    `PasswordResetRequestView` (`app/account/views.py:392-441`), `AllowAny`. Gera um código de 6 dígitos (`generate_code`, `utils/toolkit.py`), salva em `UserMeta` (`key='password_reset_code'`, apaga códigos anteriores) e envia por e-mail (template `emails/password_reset.html`).
+    <ParamField path="email" type="string" required />
+    Sempre responde `200` com mensagem genérica, mesmo se o e-mail não existir (evita enumeração de contas) — exceto falha real de envio de e-mail, que retorna `500`.
+  </Accordion>
+
+  <Accordion title="POST /api/v1/account/password-reset/confirm/">
+    `PasswordResetConfirmView` (`app/account/views.py:444-484`), `AllowAny`.
+    <ParamField path="email" type="string" required />
+    <ParamField path="code" type="string" required />
+    <ParamField path="new_password" type="string" required>Mínimo 8 caracteres, ao menos 1 maiúscula e 1 número (validado manualmente na view, não via `AUTH_PASSWORD_VALIDATORS`)</ParamField>
+    Retorna `400` se o código não bater com o último gravado em `UserMeta`.
+  </Accordion>
+
+  <Accordion title="POST /api/v1/account/verify-email/send/ e /verify-email/confirm/">
+    `SendVerificationEmailView` (`IsAuthenticated`) gera um token via `django.contrib.auth.tokens.default_token_generator` e monta um link para `FRONTEND_URL/verify-email?uid=...&token=...`. `ConfirmEmailVerificationView` (`AllowAny`) valida `uid`/`token` e marca `email_verified=True`.
+  </Accordion>
+
+  <Accordion title="Suporte: /support/chat/, /support/ticket/, /support/tickets/...">
+    `SupportChatView` é um proxy autenticado para IA de suporte (a chave OpenAI fica só no servidor, conforme comentário em `app/account/urls.py:46`). `SupportTicketCreateView`/`ListView`/`ReplyView` gerenciam `SupportTicket` (ver [modelo de dados](/backend/modelo-de-dados)), com sincronização opcional para o Jira (`SupportTicketJiraStatusView`, `SupportTicketJiraSyncView`) via `app/account/jira_service.py`.
+  </Accordion>
+</AccordionGroup>
+
+## Como o frontend consome
+
+- Login por e-mail/senha (`/login/`) e Google (`/google/`) resultam em sessão Django (cookie) — o `csrf_exempt` nas views de auth existe justamente porque o frontend chama via `fetch`/`axios` sem token CSRF.
+- A maior parte das demais chamadas autenticadas do frontend usa o header `Authorization: Bearer <access>` obtido em `/token/` (ou no `access` devolvido por `/google/`) e renovado via `/token/refresh/`.
+- `CORS_ALLOWED_ORIGINS`/`CSRF_TRUSTED_ORIGINS` (ver [Configuração](/backend/configuracao)) precisam incluir a origem do frontend para que cookies de sessão funcionem entre domínios diferentes.
+
+<Note>
+  Não foi possível confirmar no código do backend se o frontend efetivamente depende da sessão (cookie) em algum fluxo, ou se usa exclusivamente o Bearer token — isso está fora do escopo deste repositório e cabe à documentação do `frontend-miggo`.
+</Note>

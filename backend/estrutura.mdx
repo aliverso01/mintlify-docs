@@ -1,0 +1,84 @@
+---
+title: "Estrutura do projeto"
+description: "Árvore de diretórios do backend-miggo e a anatomia padrão de um app"
+icon: "folder-tree"
+---
+
+## Árvore de diretórios (raiz)
+
+```
+backend-miggo/
+├── app/                  # Os 15 apps de negócio (ver tabela abaixo)
+├── core/                 # settings.py, urls.py, wsgi.py, asgi.py — configuração global
+├── docs/                 # Documentação interna (arquitetura, comandos, billing, ManyChat)
+├── media/                # Arquivos de mídia em disco (quando USE_S3=False)
+├── static/               # Estáticos coletados (collectstatic)
+├── templates/            # Templates Django (ex.: emails/password_reset.html)
+├── testes/                # Scripts de teste/seed manuais (não são testes automatizados formais)
+├── utils/                # toolkit.py, pagination.py — utilitários compartilhados entre apps
+├── venv/                 # Ambiente virtual Python (não versionado por padrão)
+├── manage.py
+├── dockerfile
+├── docker-compose.yml
+├── requirements.txt      # UTF-16 LE — ver nota em Instalação
+└── README.md
+```
+
+<Warning>
+  A raiz do repositório acumula vários scripts soltos fora do padrão (`check_db.py`, `check_db_details.py`, `fix_encoding.py`, `restore_data.py`, `sync_gateways.py`, `patch_backend.py`, etc.) e arquivos temporários (`tmp_*.py`, `tmp_*.txt`). Não são parte da arquitetura documentada — são ferramentas pontuais de manutenção/migração de dados, fora do escopo desta documentação. Note também `app/post/views.py.bak` e `app/post/views.py.backup`, cópias antigas de `views.py` que não são carregadas pelo Django (apenas `.py` é importado) mas poluem o diretório.
+</Warning>
+
+## `core/`
+
+```
+core/
+├── settings.py   # configuração global — ver /backend/configuracao
+├── urls.py       # roteamento raiz (prefixos /api/v1/*, schema, webhooks) — ver /backend/api-referencia
+├── wsgi.py       # entrypoint WSGI (gunicorn)
+└── asgi.py       # entrypoint ASGI
+```
+
+## Anatomia padrão de um app
+
+Nem todo app tem todos os arquivos, mas o padrão observado em `app/post/`, `app/brandkit/`, `app/onboarding/` e `app/conversation/` é:
+
+| Arquivo/pasta | Papel |
+|---|---|
+| `models.py` | Modelos Django (ORM) |
+| `serializers.py` | Serializers DRF (quando o app usa `ModelSerializer`/`Serializer` — alguns apps simples não têm arquivo próprio) |
+| `views.py` | Views DRF (`APIView`/`generics.*`) — concentra a lógica de negócio na maioria dos apps |
+| `urls.py` | Roteamento do app, incluído em `core/urls.py` sob um prefixo `/api/v1/<app>/` |
+| `admin.py` | Registro no Django Admin |
+| `apps.py` | `AppConfig` (nome usado em `INSTALLED_APPS`) |
+| `signals.py` | Signals Django (ex.: `app/history/signals.py`, `app/post/signals.py`, `app/conversation/signals.py`) |
+| `management/commands/` | Management commands (`python manage.py <nome>`) — presente em `client`, `conversation`, `emailmarketing`, `history`, `media`, `onboarding`, `post`, `subscription` |
+| `migrations/` | Migrations do app |
+| `tests.py` | Testes (cobertura variável entre apps) |
+| `cron.py` | Jobs chamados por `CRONJOBS`/Dokploy/`run_cron.py` (presente em `post`, `onboarding`) |
+| Módulos de domínio específicos | Ex.: `app/post/zernio.py` (integração GetLate/Zernio), `app/post/media_link.py`, `app/post/stalled.py`, `app/brandkit/website.py` (raspagem de site), `app/onboarding/miggoai.py` (cliente HTTP do serviço `miggoai`), `app/onboarding/services.py` (regras de negócio pesadas do onboarding), `app/conversation/engine.py`/`flows.py`/`automations.py`/`actions.py`/`webhooks.py` (motor de conversas ManyChat), `app/account/jira_service.py`/`support_models.py`/`support_views.py` (suporte + Jira), `app/subscription/stripe_gateway.py`/`asaas_gateway.py` (gateways de cobrança) |
+
+O padrão geral: **views concentram a lógica de negócio** (poucos apps isolam regras em `services.py` — notavelmente `onboarding`, `post`, `conversation`); models ficam relativamente enxutos, com `choices` como listas de tuplas no topo do arquivo; a maior parte dos apps não separa uma camada de "repository" — o ORM é usado diretamente nas views.
+
+## Os 15 apps de negócio
+
+| App | Descrição em uma linha |
+|---|---|
+| [account](/backend/apps/account) | Usuários (`CustomUser`), autenticação (JWT/login/Google), times, suporte (chat + tickets), integração com Jira |
+| [client](/backend/apps/client) | Perfil de cliente (`Client`), ativação por código, onboarding legado, assinatura de logo/formato |
+| [onboarding](/backend/apps/onboarding) | Fluxo completo de onboarding novo (verificação WhatsApp, marca, plano, estratégia, calendário, grid, primeiro conteúdo) |
+| [brandkit](/backend/apps/brandkit) | Identidade visual do cliente: logos, cores, tipografia, assets, grid 3x3, referências de design |
+| [post](/backend/apps/post) | Posts, formatos, status, publicação em redes (GetLate/Zernio), insights de performance, integrações de plataforma |
+| [editorial-calendar](/backend/apps/editorial-calendar) | Calendário editorial (dias/formatos/estilos/CTAs) e o catálogo pré-cadastrado que o alimenta |
+| [media](/backend/apps/media) | Biblioteca de mídia do cliente (upload, thumbnail automático, análise por IA) |
+| [agenda](/backend/apps/agenda) | Sugestões de pauta enviadas pelo cliente |
+| [subscription](/backend/apps/subscription) | Planos, preços, assinaturas, faturas, sincronização com Stripe/Asaas |
+| [conversation](/backend/apps/conversation) | Conversas de WhatsApp via ManyChat — histórico, flows dinâmicos, automações |
+| [emailmarketing](/backend/apps/emailmarketing) | Régua de e-mail marketing (campanhas por evento do ciclo de vida do cliente) |
+| [notification](/backend/apps/notification) | Notificações in-app para usuários |
+| [history](/backend/apps/history) | Auditoria (CRUD log) e relatórios/dashboard administrativo |
+| [integration](/backend/apps/integration) | Log genérico de chamadas a serviços externos (auditoria de integrações) |
+| [webhooks](/backend/apps/webhooks) | Recepção de webhooks externos (Stripe, Zernio) — roteados a partir de `core/urls.py`, não de um `urls.py` próprio |
+
+<Note>
+  `webhooks` não tem `app/webhooks/urls.py`: suas views são importadas diretamente em `core/urls.py:23` e registradas como rotas soltas (`/webhooks/...`), fora do padrão `/api/v1/<app>/`.
+</Note>

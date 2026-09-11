@@ -1,0 +1,159 @@
+---
+title: "Build e deploy"
+description: "Como o bundle é gerado, a imagem Docker montada e o Nginx configurado em tempo de execução."
+icon: "cloud-upload"
+---
+
+## O build
+
+```bash
+npm run build   # tsc -b && vite build
+```
+
+O comando roda em duas etapas: `tsc -b` verifica os tipos de todo o projeto e, só se passar, o Vite gera o bundle em `dist/`. A saída contém o `index.html`, os assets com hash e os SVGs processados pelo `vite-plugin-svgr`.
+
+<Warning>
+  Variáveis `VITE_*` são resolvidas **em tempo de build** e ficam gravadas no bundle. Trocar o `.env` sem reconstruir a imagem não muda nada em produção — e qualquer valor colocado ali é **público**, legível por quem abrir o DevTools. Nunca coloque segredo de servidor em `VITE_*`.
+</Warning>
+
+## Imagem Docker
+
+O `dockerfile` usa build em dois estágios:
+
+<Steps>
+  <Step title="Estágio de build — node:20-alpine">
+    ```dockerfile
+    FROM node:20-alpine AS build
+    WORKDIR /app
+    COPY package*.json ./
+    RUN npm install
+    COPY . .
+    ARG VITE_MIGGO_API_KEY
+    ARG VITE_API_BASE_URL
+    ENV VITE_MIGGO_API_KEY=$VITE_MIGGO_API_KEY
+    ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
+    RUN npm run build
+    ```
+    As duas variáveis entram como **build args** justamente porque o Vite as consome na compilação.
+  </Step>
+  <Step title="Estágio final — nginx:stable-alpine">
+    Copia `dist/` para `/usr/share/nginx/html`, o `nginx.conf.template` para `/etc/nginx/`, e o `docker-entrypoint.sh` como entrypoint. Expõe a porta `80`.
+  </Step>
+</Steps>
+
+## Configuração do Nginx em tempo de execução
+
+O `docker-entrypoint.sh` resolve o endereço do backend na subida do container:
+
+```sh
+BACKEND_URL="${VITE_API_BASE_URL}"
+BACKEND_HOST=$(echo "$BACKEND_URL" | sed 's|https\?://||' | cut -d'/' -f1)
+export BACKEND_URL BACKEND_HOST
+envsubst '${BACKEND_URL} ${BACKEND_HOST}' \
+    < /etc/nginx/nginx.conf.template \
+    > /etc/nginx/conf.d/default.conf
+exec nginx -g 'daemon off;'
+```
+
+Ele deriva o host a partir da URL, substitui os dois placeholders no template com `envsubst` e sobe o Nginx em primeiro plano.
+
+<Note>
+  `VITE_API_BASE_URL` é usada **duas vezes e em momentos diferentes**: como build arg, para o bundle, e como variável de runtime, para montar o proxy do Nginx. Precisa estar definida nos dois lugares.
+</Note>
+
+### O que o template configura
+
+`nginx.conf.template`:
+
+| Bloco | Configuração |
+| --- | --- |
+| `listen` | Porta `80` |
+| Upload | `client_max_body_size 50M` — necessário para vídeos e PDFs |
+| SPA | `location /` com `try_files $uri $uri/ /index.html`, para o roteamento client-side do React Router |
+| Proxy da API | `location /api` com `proxy_pass $backend` |
+| Headers | `Host: ${BACKEND_HOST}`, `X-Real-IP`, `X-Forwarded-For`, `X-Forwarded-Proto` |
+| WebSocket | `proxy_http_version 1.1` com `Upgrade` e `Connection: upgrade` |
+| TLS para Cloudflare | `proxy_ssl_server_name on`, `proxy_ssl_name ${BACKEND_HOST}`, `proxy_ssl_session_reuse off`, `proxy_ssl_protocols TLSv1.2 TLSv1.3` |
+| DNS | `resolver 8.8.8.8 8.8.4.4 valid=300s`, `resolver_timeout 5s` |
+| Timeouts | `proxy_connect_timeout`, `proxy_send_timeout` e `proxy_read_timeout` em `120s`, para uploads grandes |
+| Buffer | `proxy_request_buffering off`, para uploads binários grandes |
+| Erros | `error_page 500 502 503 504 /50x.html` |
+
+<Warning>
+  O limite de upload aqui é **50 MB**, enquanto o Traefik do backend permite 100 MB (`maxRequestBodyBytes=104857600`) e o Django recebe `FILE_UPLOAD_MAX_MEMORY_SIZE=104857600`. O gargalo efetivo para quem passa pelo frontend é o `client_max_body_size` de 50M. Se um upload grande falhar só em produção, este é o primeiro número a conferir.
+</Warning>
+
+Existe também um `nginx.conf` no repositório, sem placeholders — o que a imagem usa é o **`.template`** processado pelo entrypoint.
+
+## Compose e Traefik
+
+`docker-compose.yml` define o serviço `miggo-frontend`:
+
+```yaml
+build:
+  context: .
+  args:
+    - VITE_MIGGO_API_KEY
+    - VITE_API_BASE_URL
+env_file: .env
+restart: always
+networks: [root_default]
+```
+
+Rótulos Traefik:
+
+| Rótulo | Valor |
+| --- | --- |
+| Regra de host | `plataforma.miggomkt.com.br` |
+| Entrypoint | `websecure` |
+| Certificado | `letsencrypt` |
+| Porta interna | `80` |
+| Middleware | `frontend-headers`, injetando `X-Forwarded-Proto: https` |
+
+A rede `root_default` é **externa**: precisa existir antes de subir o serviço.
+
+## Passo a passo de subida
+
+<Steps>
+  <Step title="Preencher o .env">
+    Na máquina de deploy, com `VITE_API_BASE_URL`, `VITE_MIGGO_API_KEY`, `VITE_JWT_OBTAIN_URL`, `VITE_JWT_REFRESH_URL` e `VITE_GOOGLE_CLIENT_ID`.
+  </Step>
+  <Step title="Construir com os build args">
+    ```bash
+    docker compose build
+    ```
+    O Compose passa os args a partir do ambiente. Confirme que as variáveis estão exportadas na sessão, não só no `.env`.
+  </Step>
+  <Step title="Subir">
+    ```bash
+    docker compose up -d
+    ```
+  </Step>
+  <Step title="Conferir">
+    O domínio deve responder com o SPA, `/api/*` deve chegar ao backend, e o login deve funcionar. Se a API responder 4xx de origem, verifique `CORS_ALLOWED_ORIGINS` e `CSRF_TRUSTED_ORIGINS` no backend.
+  </Step>
+</Steps>
+
+## Desenvolvimento: o proxy do Vite
+
+Em `npm run dev` o papel do Nginx é feito pelo `vite.config.ts`, que também encaminha `/api` para `VITE_API_BASE_URL`:
+
+| Opção | Valor | Por quê |
+| --- | --- | --- |
+| `target` | `env.VITE_API_BASE_URL` | Backend local ou remoto |
+| `changeOrigin` | `true` | Reescreve o header `Host` |
+| `secure` | `false` | Aceita certificado autoassinado |
+| `cookieDomainRewrite` | `"localhost"` | Faz o cookie de sessão valer no dev server |
+| `configure` | Define `Origin` e `Referer` como o próprio target | Passa pela validação de CSRF/CORS do Django |
+
+<Tip>
+  Essa reescrita de `Origin` e `Referer` é o que permite desenvolver contra um backend remoto sem liberar `localhost` no `CSRF_TRUSTED_ORIGINS` dele.
+</Tip>
+
+## Relacionados
+
+<Columns cols={3}>
+  <Card title="Configuração" icon="settings" href="/frontend/configuracao" />
+  <Card title="Ambientes" icon="layers" href="/arquitetura/ambientes" />
+  <Card title="Deploy do backend" icon="server" href="/backend/deploy" />
+</Columns>

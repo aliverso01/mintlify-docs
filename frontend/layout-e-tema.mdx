@@ -1,0 +1,188 @@
+---
+title: "Layout e tema"
+description: "A casca visual da aplicação, o sistema de tema claro/escuro, tokens de design e ícones."
+icon: "palette"
+---
+
+## A casca: `AppLayout`
+
+`src/layout/AppLayout.tsx` é o componente que envolve **todas** as telas autenticadas. Ele monta os providers de layout e o esqueleto visual:
+
+```
+AppLayout
+├── SidebarProvider          (estado da sidebar)
+│   └── SearchProvider       (busca global)
+│       ├── LayoutContent
+│       │   ├── AppSidebar + Backdrop
+│       │   └── coluna principal
+│       │       ├── AppHeader
+│       │       └── <Outlet />   ← a tela da rota
+│       │   └── SupportChatWidget
+│       └── PreviewModeBanner
+```
+
+| Arquivo | Responsabilidade |
+| --- | --- |
+| `src/layout/AppLayout.tsx` | Providers, esqueleto e a regra de cliente inativo |
+| `src/layout/AppSidebar.tsx` | Menu lateral e navegação |
+| `src/layout/AppHeader.tsx` | Cabeçalho: busca, tema, perfil |
+| `src/layout/Backdrop.tsx` | Fundo escurecido quando a sidebar abre no mobile |
+| `src/layout/SidebarWidget.tsx` | Bloco promocional/informativo no pé da sidebar |
+
+### Deslocamento da coluna principal
+
+A margem esquerda do conteúdo reage ao estado da sidebar, lido de `useSidebar()`:
+
+| Estado | Classe aplicada |
+| --- | --- |
+| `isExpanded` ou `isHovered` | `lg:ml-[290px]` |
+| Recolhida | `lg:ml-[90px]` |
+| `isMobileOpen` | `ml-0` |
+
+A transição é `transition-all duration-300 ease-in-out`, e o conteúdo é limitado por `max-w-(--breakpoint-2xl)` com padding crescente por breakpoint (`p-4 md:p-6 xl:p-8 2xl:p-10`).
+
+### Regra de cliente inativo
+
+`LayoutContent` faz uma verificação global de status sempre que há usuário com `role === 'client'`:
+
+<Steps>
+  <Step title="Descobre o próprio cliente">
+    `GET /api/v1/client/list/` e então `findOwnClient(toClientList(raw), user.id, isPreviewMode)` (`src/utils/clients`).
+  </Step>
+  <Step title="Busca o status real">
+    `GET /api/v1/client/retrieve/{id}/` e guarda `detail.active` em `isClientActive`.
+  </Step>
+  <Step title="Prende o cliente inativo no dashboard">
+    Se `active` for falso, qualquer rota diferente de `homePathFor(user)` redireciona para o próprio início, onde o aviso de bloqueio é exibido.
+  </Step>
+</Steps>
+
+<Note>
+  A checagem roda no layout, não por rota — então vale para toda a área `/app` de uma vez. Falha de rede é engolida com `console.error` e o cliente segue considerado ativo.
+</Note>
+
+## Tema claro e escuro
+
+`src/context/ThemeContext.tsx` implementa o tema com três peças:
+
+| Peça | Comportamento |
+| --- | --- |
+| Estado | `theme: "light" \| "dark"`, começando em `light` |
+| Persistência | `localStorage` na chave `theme`, lida em um `useEffect` no cliente |
+| Aplicação | Adiciona ou remove a classe `dark` em `document.documentElement` |
+
+API exposta:
+
+```tsx
+const { theme, toggleTheme } = useTheme();
+```
+
+- `theme` — tema corrente.
+- `toggleTheme()` — alterna entre claro e escuro.
+- `useTheme()` lança erro se usado fora de `ThemeProvider`.
+
+<Tip>
+  A escrita no `localStorage` só acontece depois de `isInitialized`, para não sobrescrever a preferência salva com o valor padrão no primeiro render.
+</Tip>
+
+No CSS, o modo escuro é declarado como variante customizada do Tailwind 4 (`src/index.css:5`):
+
+```css
+@custom-variant dark (&:is(.dark *));
+```
+
+Ou seja: qualquer utilitário prefixado com `dark:` responde à classe `dark` colocada na raiz pelo `ThemeContext`.
+
+## Tokens de design
+
+`src/index.css` (903 linhas) concentra todo o design system, usando o bloco `@theme` do Tailwind 4.
+
+### Tipografia
+
+Fonte **Outfit**, importada do Google Fonts na camada base, exposta como `--font-outfit`. A diretiva `--font-*: initial` zera as famílias padrão do Tailwind, deixando só as do projeto.
+
+Escala de títulos e textos declarada com altura de linha própria:
+
+| Token | Tamanho / linha |
+| --- | --- |
+| `--text-title-2xl` | 72px / 90px |
+| `--text-title-xl` | 60px / 72px |
+| `--text-title-lg` | 48px / 60px |
+| `--text-title-md` | 36px / 44px |
+| `--text-title-sm` | 30px / 38px |
+| `--text-theme-xl` | 20px / 30px |
+| `--text-theme-sm` | 14px / 20px |
+| `--text-theme-xs` | 12px / 18px |
+
+### Breakpoints
+
+Também com `--breakpoint-*: initial` para substituir os padrões:
+
+| Token | Largura |
+| --- | --- |
+| `--breakpoint-2xsm` | 375px |
+| `--breakpoint-xsm` | 425px |
+| `--breakpoint-sm` | 640px |
+| `--breakpoint-md` | 768px |
+| `--breakpoint-lg` | 1024px |
+| `--breakpoint-xl` | 1280px |
+| `--breakpoint-2xl` | 1536px |
+| `--breakpoint-3xl` | 2000px |
+
+### Cores da marca
+
+A paleta turquesa da Miggo, de `--color-brand-25` a `--color-brand-950`:
+
+| Token | Hex | Token | Hex |
+| --- | --- | --- | --- |
+| `--color-brand-25` | `#f0fafa` | `--color-brand-400` | `#4dccda` |
+| `--color-brand-50` | `#e1f6f8` | `--color-brand-500` | `#34b6c6` |
+| `--color-brand-100` | `#c0eaee` | `--color-brand-600` | `#2a96a4` |
+| `--color-brand-200` | `#93d8de` | `--color-brand-700` | `#237882` |
+| `--color-brand-300` | `#6bc3c1` | `--color-brand-800` | `#1d5f68` |
+| | | `--color-brand-900` | `#174c54` |
+| | | `--color-brand-950` | `#0d2e33` |
+
+Há ainda as famílias de acento em amarelo (`--color-miggo-yellow-*`) e as bases `--color-black: #1d1d1b`, `--color-white`, `--color-current`, `--color-transparent`.
+
+<Warning>
+  Use os tokens, não hex solto no JSX. Cor escrita à mão não acompanha o tema escuro nem uma futura troca de paleta.
+</Warning>
+
+### Utilitários de menu
+
+A partir de `src/index.css:213`, o arquivo declara utilitários próprios com `@utility` para a navegação da sidebar, em pares ativo/inativo:
+
+`menu-item`, `menu-item-active`, `menu-item-inactive`, `menu-item-icon`, `menu-item-icon-active`, `menu-item-icon-inactive`, `menu-item-icon-size`, `menu-item-arrow`, `menu-item-arrow-active`, `menu-item-arrow-inactive`, `menu-dropdown-item`, `menu-dropdown-item-active`, `menu-dropdown-item-inactive`, `menu-dropdown-badge`, `menu-dropdown-badge-active`.
+
+Ao adicionar item de menu, reaproveite esses utilitários em vez de repetir as classes.
+
+## Ícones
+
+`src/icons/` reúne 59 arquivos SVG, importados como componentes React pelo **vite-plugin-svgr** (configurado em `vite.config.ts`). A tipagem dos imports vem de `src/svg.d.ts`.
+
+```tsx
+import AlertIcon from "../icons/alert.svg?react";
+```
+
+Como o SVG vira componente, ele aceita `className` e herda `currentColor` — o que faz o ícone acompanhar o tema sem variante extra.
+
+## Pontos de atenção encontrados
+
+<Warning>
+  Dois problemas de encoding no repositório, que valem correção quando alguém passar por esses arquivos:
+
+  - `src/layout/AppLayout.tsx` começa com **BOM UTF-8**.
+  - `src/index.css` tem **mojibake** nos comentários da paleta (`Miggo Brand Colors � Turquesa`, e o mesmo nos dois blocos de amarelo).
+</Warning>
+
+## Relacionados
+
+<Columns cols={2}>
+  <Card title="Contextos" icon="box" href="/frontend/contextos">
+    `SidebarContext`, `SearchContext`, `PreviewContext` e `ThemeContext` em detalhe.
+  </Card>
+  <Card title="Componentes" icon="component" href="/frontend/componentes">
+    Inventário dos componentes por subpasta.
+  </Card>
+</Columns>

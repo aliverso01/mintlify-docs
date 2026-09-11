@@ -1,0 +1,298 @@
+---
+title: "Editorial Calendar"
+description: "Calendário editorial do cliente — matriz Formato x Estilo, palavras-chave e CTAs de catálogo fechado que alimentam a geração de posts."
+icon: "calendar-days"
+---
+
+## Responsabilidade
+
+O app `editorial_calendar` guarda a grade semanal de conteúdo de cada cliente: para cada dia (`week_day` + `time`), define o assunto (`subject`), os formatos de post, as palavras-chave (`styles`) e os CTAs (`ctas`) que aquele dia deve usar. A escolha de estilos e CTAs **não é texto livre** — só pode vir de um catálogo pré-cadastrado (`ContentStyle`, `CTACategory`, `CTAOption`), e a combinação formato x estilo só é válida se existir uma linha correspondente na matriz `FormatStyleRule`, que também carrega o objetivo específico, o macro-objetivo (lente de funil) e se o CTA é obrigatório para aquela combinação (`app/editorial_calendar/models.py:93-121`).
+
+É consumido em duas pontas: o backend principal expõe os endpoints de CRUD e de catálogo (para telas de gestão/onboarding no `frontend-miggo`), e o serviço `miggoai` lê o detalhe de uma entrada (`EditorialCalendarDetailView`, `app/editorial_calendar/views.py:69-77`) para montar o prompt de geração do card/post. O módulo `selection.py` é a ponte que traduz saída de LLM ou dados legados (texto livre) para a seleção fechada do catálogo, garantindo que nada fora da matriz chegue ao calendário.
+
+## Arquivos
+
+| Arquivo | Conteúdo |
+|---|---|
+| `app/editorial_calendar/models.py` | Models do catálogo (`ContentStyle`, `CTACategory`, `CTAOption`, `FormatStyleRule`) e da entrada de calendário (`EditorialCalendar`), com as regras de validação e sincronização dos espelhos textuais. |
+| `app/editorial_calendar/serializers.py` | Serializers de leitura do catálogo e o serializer de escrita do `EditorialCalendar`, incluindo `create`/`update` transacionais e propagação de mudanças para os `Post` derivados. |
+| `app/editorial_calendar/views.py` | Views REST de CRUD do calendário e de leitura do catálogo (estilos, categorias de CTA, matriz, endpoint agregado `options/`). |
+| `app/editorial_calendar/urls.py` | Rotas do app, incluídas em `core/urls.py` sob o prefixo `api/v1/editorial-calendar/`. |
+| `app/editorial_calendar/admin.py` | Registro no Django Admin dos 5 models do app, com inlines e campos somente-leitura para os espelhos. |
+| `app/editorial_calendar/apps.py` | `AppConfig` padrão (`name = 'app.editorial_calendar'`). |
+| `app/editorial_calendar/catalog.py` | Fonte única de verdade dos dados pré-cadastrados: macro-objetivos, formatos da matriz, estilos, CTAs e a própria matriz Formato x Estilo (`FORMAT_STYLE_RULES`), usada para popular o banco via seed/migração. |
+| `app/editorial_calendar/selection.py` | Funções que casam texto livre (LLM, dados legados) com o catálogo fechado, calculam regras aplicáveis e montam blocos de prompt restritos à matriz. |
+
+## Modelos
+
+### ContentStyle
+`app/editorial_calendar/models.py:27-56` — palavra-chave/tag do calendário editorial. Não é texto livre: o cliente só escolhe entre registros ativos desta tabela, semeados a partir de `catalog.CONTENT_STYLES`.
+
+| Campo | Tipo | Obrigatório | Default/Choices | Descrição |
+|---|---|---|---|---|
+| `slug` | `SlugField(max_length=60)` | sim | — | único |
+| `name` | `CharField(max_length=100)` | sim | — | único |
+| `description` | `TextField` | não | `""` | descrição do estilo |
+| `requires_client_input` | `BooleanField` | não | `False` | depende de material interno do cliente (depoimento real, print de resultado, bastidores); nunca pode ser a única palavra-chave do dia (MIG-200) |
+| `active` | `BooleanField` | não | `True` | se falso, não aparece nas listagens de catálogo nem pode ser selecionado |
+
+**Meta**: `ordering = ('name',)`, `verbose_name = 'Estilo de conteúdo'`.
+
+**Propriedade** `format_keys` (`models.py:51-56`): retorna a lista de `format_key` (colunas da matriz) com os quais este estilo é compatível, via `self.format_rules.values_list('format_key', flat=True).distinct()`.
+
+### CTACategory
+`app/editorial_calendar/models.py:59-71` — objetivo do CTA (Compartilhamento, Salvamento, Comentário etc.).
+
+| Campo | Tipo | Obrigatório | Default | Descrição |
+|---|---|---|---|---|
+| `slug` | `SlugField(max_length=60)` | sim | — | único |
+| `name` | `CharField(max_length=100)` | sim | — | único |
+| `active` | `BooleanField` | não | `True` | — |
+
+**Meta**: `ordering = ('name',)`.
+
+### CTAOption
+`app/editorial_calendar/models.py:74-90` — frase de CTA pré-cadastrada. O calendário editorial referencia estas opções via M2M — nunca um texto digitado livremente.
+
+| Campo | Tipo | Obrigatório | Default | Descrição |
+|---|---|---|---|---|
+| `category` | `ForeignKey(CTACategory, on_delete=CASCADE, related_name='options')` | sim | — | categoria da frase |
+| `text` | `CharField(max_length=255)` | sim | — | texto do CTA |
+| `active` | `BooleanField` | não | `True` | — |
+
+**Meta**: `ordering = ('category__name', 'id')`, `unique_together = ('category', 'text')`.
+
+### FormatStyleRule
+`app/editorial_calendar/models.py:93-121` — uma célula válida da matriz Formato x Estilo. Combinação ausente = combinação proibida.
+
+| Campo | Tipo | Obrigatório | Default/Choices | Descrição |
+|---|---|---|---|---|
+| `format_key` | `CharField(max_length=20, choices=FORMAT_KEY_CHOICES)` | sim | `stories`, `feed`, `carousel`, `reels` | coluna da matriz |
+| `style` | `ForeignKey(ContentStyle, on_delete=CASCADE, related_name='format_rules')` | sim | — | linha da matriz |
+| `objetivo_especifico` | `TextField` | não | `""` | objetivo específico da combinação |
+| `macro_objetivo` | `CharField(max_length=20, choices=MACRO_OBJECTIVE_CHOICES)` | não | `""`; `entreter`, `inspirar`, `educar`, `convencer` | lente de funil |
+| `formatting_instruction` | `TextField` | não | `""` | instrução de formatação/roteiro para a geração |
+| `cta_required` | `BooleanField` | não | `False` | se o CTA é obrigatório nesta combinação |
+| `suggested_cta_category` | `ForeignKey(CTACategory, on_delete=SET_NULL, null=True, blank=True, related_name='format_style_rules')` | não | — | categoria de CTA sugerida |
+| `active` | `BooleanField` | não | `True` | — |
+
+**Meta**: `ordering = ('format_key', 'style__name')`, `unique_together = ('format_key', 'style')`.
+
+### EditorialCalendar
+`app/editorial_calendar/models.py:126-171` — uma entrada (dia) da grade editorial de um cliente.
+
+| Campo | Tipo | Obrigatório | Default/Choices | Descrição |
+|---|---|---|---|---|
+| `client` | `ForeignKey(Client, on_delete=CASCADE, related_name='editorial_calendars')` | sim | — | cliente dono do calendário |
+| `week_day` | `CharField(max_length=20, choices=week_day_choices)` | sim | `Monday`..`Sunday` | dia da semana |
+| `subject` | `TextField` | sim | — | assunto/pauta do dia |
+| `formats` | `ManyToManyField('post.PostFormat', related_name='editorial_calendars')` | não (M2M) | — | formatos de post do dia |
+| `styles` | `ManyToManyField(ContentStyle, related_name='editorial_calendars', blank=True)` | validado em `validate_catalog_selection` (≥1) | — | palavras-chave do dia, restritas ao catálogo e compatíveis com `formats` |
+| `tags_required` | `BooleanField` | não | `True` | indica se as palavras-chave são de aplicação obrigatória na geração do post |
+| `tags` | `JSONField(default=list, blank=True)` | derivado | — | espelho textual (nomes) de `styles`, mantido por `sync_catalog_mirrors()`; consumido pelo miggoai e copiado para os `Post` derivados |
+| `objetivo` | `TextField` | não | `""` | objetivo editorial extenso (ex.: "Construção de autoridade") |
+| `macro_objetivo` | `CharField(max_length=20, choices=MACRO_OBJECTIVE_CHOICES)` | não | `""`; `entreter`, `inspirar`, `educar`, `convencer` | lente de funil do dia |
+| `ctas` | `ManyToManyField(CTAOption, related_name='editorial_calendars', blank=True)` | condicional (ver regra 2) | — | marca o TIPO de CTA — grava todas as frases ativas da categoria, pool de variação da geração (MIG-202) |
+| `cta_required` | `BooleanField` | não | `False` | se o CTA é obrigatório no post; derivado da matriz quando não informado |
+| `cta` | `JSONField(default=list, blank=True)` | derivado | — | espelho textual (frases) de `ctas`, mantido por `sync_catalog_mirrors()` |
+| `time` | `TimeField` | sim | — | horário do post |
+| `active` | `BooleanField` | não | `True` | — |
+| `template_link` | `CharField(max_length=255, null=True, blank=True)` | não | — | campo temporário |
+| `template_page` | `CharField(max_length=50, null=True, blank=True)` | não | — | campo temporário |
+| `created_at` | `DateTimeField(auto_now_add=True)` | auto | — | — |
+| `updated_at` | `DateTimeField(auto_now=True)` | auto | — | — |
+
+**Relacionamentos**: `client` → `Client` (`app.client`); `formats` → `post.PostFormat`; `styles` → `ContentStyle`; `ctas` → `CTAOption`; relação reversa `posts` a partir de `Post.calendar_id` (FK `editorial_calendar.EditorialCalendar`, `related_name='posts'` — `app/post/models.py:36`).
+
+**Métodos**:
+- `format_keys()` (`models.py:175-179`) — retorna o `set` de colunas da matriz cobertas pelos `formats` selecionados, via `format_key_for_post_format`.
+- `cta_category_names()` (`models.py:181-188`) — lista os nomes das categorias de CTA escolhidas para o dia (a unidade de seleção, MIG-202), sem repetir categoria.
+- `matching_rules()` (`models.py:190-197`) — retorna o queryset de `FormatStyleRule` ativas aplicáveis à combinação `formats x styles` do dia.
+- `validate_catalog_selection()` (`models.py:199-261`) — valida as 5 regras obrigatórias do calendário (ver seção Regras de negócio) e levanta `django.core.exceptions.ValidationError` com um dict de erros por campo (`styles`, `ctas`).
+- `sync_catalog_mirrors(save=True)` (`models.py:263-292`) — reprojeta os M2M `styles`/`ctas` nos campos espelho `tags`/`cta`, preenche `macro_objetivo` (moda das regras aplicáveis) e `cta_required` (OR das regras) quando ainda não definidos, e salva com `update_fields=['tags', 'cta', 'macro_objetivo', 'cta_required', 'updated_at']` quando `save=True`. Deve ser chamado sempre que `styles`/`ctas`/`formats` mudarem, pois M2M só existe após o primeiro `save()`.
+
+## Endpoints
+
+Prefixo do app (definido em `core/urls.py:34`): `api/v1/editorial-calendar/`.
+
+| Método | Rota completa | View | Permissão |
+|---|---|---|---|
+| POST | `/api/v1/editorial-calendar/create/` | `EditorialCalendarCreateView` | `IsManagementUser` |
+| PUT/PATCH | `/api/v1/editorial-calendar/update/<int:pk>/` | `EditorialCalendarUpdateView` | `IsManagementUser` |
+| DELETE | `/api/v1/editorial-calendar/delete/<int:pk>/` | `EditorialCalendarDeleteView` | `IsManagementUser` |
+| GET | `/api/v1/editorial-calendar/list/` | `EditorialCalendarListView` | padrão do projeto (`HasAPIKeyOrIsAuthenticated`) |
+| GET | `/api/v1/editorial-calendar/detail/<int:pk>/` | `EditorialCalendarDetailView` | padrão do projeto (`HasAPIKeyOrIsAuthenticated`) |
+| GET | `/api/v1/editorial-calendar/options/` | `EditorialCalendarOptionsView` | padrão do projeto (`HasAPIKeyOrIsAuthenticated`) |
+| GET | `/api/v1/editorial-calendar/content-styles/` | `ContentStyleListView` | padrão do projeto (`HasAPIKeyOrIsAuthenticated`) |
+| GET | `/api/v1/editorial-calendar/cta-categories/` | `CTACategoryListView` | padrão do projeto (`HasAPIKeyOrIsAuthenticated`) |
+| GET | `/api/v1/editorial-calendar/format-style-rules/` | `FormatStyleRuleListView` | padrão do projeto (`HasAPIKeyOrIsAuthenticated`) |
+
+As views sem `permission_classes` explícita usam o default de `DEFAULT_PERMISSION_CLASSES` do projeto: `app.account.permissions.HasAPIKeyOrIsAuthenticated` (`core/settings.py:139-141`). As views de escrita do calendário (`create`, `update`, `delete`) forçam `IsManagementUser` (`app/account/permissions.py:37-49`) — que aceita chamadas com API key de serviço (`HasAPIKey`) ou usuário de gestão (`is_management_user`), bloqueando clientes finais. O comentário no código (`views.py:26-28`, `42-43`, `85-86`) explica que o calendário carrega regra de negócio rígida (matriz Formato x Estilo) e o cliente final só lê, nunca escreve (MIG-229).
+
+<AccordionGroup>
+<Accordion title="POST /api/v1/editorial-calendar/create/">
+`app/editorial_calendar/views.py:22-36`. Cria uma ou várias entradas de calendário. O corpo pode ser um único objeto ou uma lista de objetos — a view detecta via `isinstance(request.data, list)` e ativa `many=True` no serializer nesse caso (`views.py:32`).
+
+<ParamField path="client" type="integer" required>ID do `Client` dono da entrada.</ParamField>
+<ParamField path="week_day" type="string" required>Um de `Monday`, `Tuesday`, `Wednesday`, `Thursday`, `Friday`, `Saturday`, `Sunday`.</ParamField>
+<ParamField path="subject" type="string" required>Assunto/pauta do dia.</ParamField>
+<ParamField path="time" type="string" required>Horário do post (formato `HH:MM:SS`).</ParamField>
+<ParamField path="formats" type="integer[]">IDs de `PostFormat`.</ParamField>
+<ParamField path="styles" type="integer[]">IDs de `ContentStyle` ativos — pelo menos um é exigido pela validação de negócio.</ParamField>
+<ParamField path="ctas" type="integer[]">IDs de `CTAOption` ativos.</ParamField>
+<ParamField path="tags_required" type="boolean" default="true">Se as palavras-chave são de aplicação obrigatória na geração.</ParamField>
+<ParamField path="objetivo" type="string">Objetivo editorial extenso.</ParamField>
+<ParamField path="macro_objetivo" type="string">Um de `entreter`, `inspirar`, `educar`, `convencer`.</ParamField>
+<ParamField path="cta_required" type="boolean" default="false">Sobrescrito pela matriz quando alguma regra aplicável exigir CTA.</ParamField>
+<ParamField path="active" type="boolean" default="true"/>
+
+<ResponseField name="id" type="integer">ID da entrada criada.</ResponseField>
+<ResponseField name="tags" type="string[]">Espelho textual de `styles`, calculado no `create()`.</ResponseField>
+<ResponseField name="cta" type="string[]">Espelho textual de `ctas`, calculado no `create()`.</ResponseField>
+<ResponseField name="styles_detail" type="object[]">Estilos expandidos (via `ContentStyleSerializer`).</ResponseField>
+<ResponseField name="ctas_detail" type="object[]">CTAs expandidos (via `CTAOptionSerializer`).</ResponseField>
+
+**Erros**: `400` se a validação de catálogo falhar (`serializers.py:147-155`, ex.: nenhum estilo selecionado, CTA exigido pela matriz ausente, estilo/CTA inativo, estilo incompatível com os formatos, ou estilo dependente de material do cliente sozinho no dia). `403` fora de `IsManagementUser`.
+</Accordion>
+
+<Accordion title="PUT/PATCH /api/v1/editorial-calendar/update/<int:pk>/">
+`app/editorial_calendar/views.py:38-49`. `get_serializer` força `partial=True` (`views.py:47-49`), então mesmo um PUT se comporta como atualização parcial. Mesmos campos do create, todos opcionais. Se `formats` e/ou `styles`/`ctas` mudarem, a entrada é revalidada e ressincronizada (`serializers.py:139-140`); em seguida, a atualização é propagada para os `Post` derivados ainda não publicados (ver `_propagate_to_posts` em Serializers). `404` se o `pk` não existir. `400`/`403` como no create.
+</Accordion>
+
+<Accordion title="DELETE /api/v1/editorial-calendar/delete/<int:pk>/">
+`app/editorial_calendar/views.py:81-94`. `get_queryset` restringe ao `pk` informado (`views.py:89-90`); `perform_destroy` apaga a instância. `403` fora de `IsManagementUser`, `404` se não existir.
+</Accordion>
+
+<Accordion title="GET /api/v1/editorial-calendar/list/">
+`app/editorial_calendar/views.py:52-64`. Lista com `prefetch_related('formats', 'styles__format_rules', 'ctas__category')` para evitar N+1.
+
+<ParamField query="client_id" type="integer">Filtra as entradas por `client`. Sem o parâmetro, retorna todas.</ParamField>
+</Accordion>
+
+<Accordion title="GET /api/v1/editorial-calendar/detail/<int:pk>/">
+`app/editorial_calendar/views.py:68-77`. Retrieve de uma entrada com a seleção do catálogo expandida (`styles_detail`, `ctas_detail`). Comentário no código indica que é consumida pelo MiggoAI (`get_editorial_calendar`) ao gerar o card.
+</Accordion>
+
+<Accordion title="GET /api/v1/editorial-calendar/options/">
+`app/editorial_calendar/views.py:163-182`. Payload único com tudo que o front precisa para montar os selects do calendário: `formats` (chave/label dos 4 formatos), `macro_objetivos` (chave/label), `styles` (ativos, via `ContentStyleSerializer`), `cta_categories` (via `CTACategorySerializer`, com `options` aninhadas) e `rules` (matriz completa ativa, via `FormatStyleRuleSerializer`).
+</Accordion>
+
+<Accordion title="GET /api/v1/editorial-calendar/content-styles/">
+`app/editorial_calendar/views.py:110-121`. Lista estilos ativos. Sem paginação (`pagination_class = None`).
+
+<ParamField query="format_key" type="string">Filtra os estilos compatíveis com um formato da matriz. Aceita a chave (`stories`|`feed`|`carousel`|`reels`) ou o nome do `PostFormat` (ex.: `"reel"`), resolvido via `format_key_for_name`.</ParamField>
+</Accordion>
+
+<Accordion title="GET /api/v1/editorial-calendar/cta-categories/">
+`app/editorial_calendar/views.py:124-131`. Lista categorias de CTA ativas com suas opções ativas aninhadas (`Prefetch('options', queryset=CTAOption.objects.filter(active=True))`). Sem paginação.
+</Accordion>
+
+<Accordion title="GET /api/v1/editorial-calendar/format-style-rules/">
+`app/editorial_calendar/views.py:134-160`. Lista a matriz de compatibilidade Formato x Estilo ativa. Sem paginação.
+
+<ParamField query="format_key" type="string">Filtra por formato da matriz (chave ou nome de `PostFormat`).</ParamField>
+<ParamField query="style" type="integer">Filtra por ID do `ContentStyle`.</ParamField>
+</Accordion>
+</AccordionGroup>
+
+## Serializers
+
+### ContentStyleSerializer
+`app/editorial_calendar/serializers.py:17-30` — somente leitura (`read_only_fields = fields`). Expõe `id`, `slug`, `name`, `description`, `active`, `requires_client_input`, `format_keys`. `format_keys` é um `SerializerMethodField` (`get_format_keys`, `serializers.py:28-30`) que retorna os `format_key` distintos e ativos de `obj.format_rules.all()`, aproveitando prefetch quando disponível para evitar N+1.
+
+### CTAOptionSerializer
+`app/editorial_calendar/serializers.py:33-40` — somente leitura. Expõe `id`, `text`, `active`, `category` (FK id), `category_slug` e `category_name` (via `source='category.slug'`/`'category.name'`).
+
+### CTACategorySerializer
+`app/editorial_calendar/serializers.py:43-49` — somente leitura. Expõe `id`, `slug`, `name`, `active`, `options` (nested `CTAOptionSerializer(many=True, read_only=True)`).
+
+### FormatStyleRuleSerializer
+`app/editorial_calendar/serializers.py:52-81` — somente leitura. Expõe `id`, `format_key`, `format_label` (`SerializerMethodField` via `FORMAT_KEY_LABELS`), `style`, `style_slug`, `style_name`, `objetivo_especifico`, `macro_objetivo`, `macro_objetivo_label` (via `get_macro_objetivo_display`), `formatting_instruction`, `cta_required`, `suggested_cta_category`, `suggested_cta_category_slug`, `suggested_ctas` e `active`. `get_suggested_ctas` (`serializers.py:76-81`) retorna as opções ativas da categoria sugerida, serializadas com `CTAOptionSerializer`, ou lista vazia se não houver categoria sugerida.
+
+### EditorialCalendarSerializer
+`app/editorial_calendar/serializers.py:86-230` — serializer de escrita/leitura da entrada de calendário.
+
+- **Campos**: `fields = '__all__'`.
+- **Campos somente-leitura**: `id`, `created_at`, `updated_at`, `tags`, `cta` (espelhos derivados dos M2M, não aceitam escrita direta), `styles_detail`, `ctas_detail`, `macro_objetivo_label`.
+- `styles` e `ctas` são `PrimaryKeyRelatedField(many=True, required=False)` restritos a `ContentStyle.objects.filter(active=True)` e `CTAOption.objects.filter(active=True)` — seleção fechada, só IDs do catálogo ativo.
+- `styles_detail` (`ContentStyleSerializer(source='styles', many=True, read_only=True)`) e `ctas_detail` (`CTAOptionSerializer(source='ctas', many=True, read_only=True)`) expandem a seleção para leitura.
+- `macro_objetivo_label` expõe o rótulo humano via `get_macro_objetivo_display`.
+
+**`create(validated_data)`** (`serializers.py:107-122`, `@transaction.atomic`): extrai `styles`, `ctas`, `formats` do payload validado, cria o `EditorialCalendar` com os campos restantes, define os M2M via `.set()` e então chama `_validate_and_sync`. Se a validação falhar, a transação inteira é revertida (comentário explícito: "nada de calendário meio criado").
+
+**`update(instance, validated_data)`** (`serializers.py:124-145`, `@transaction.atomic`): guarda o estado anterior (`subject`, `time`, `tags`, `objetivo`, `macro_objetivo`, `cta`, `cta_required`) antes de aplicar `super().update()`. Revalida/ressincroniza apenas se `formats`, `styles` ou `ctas` estiverem no payload (`formats_changed`/`catalog_changed`). Sempre chama `_propagate_to_posts` ao final, mesmo sem mudança de catálogo (para propagar mudanças de `subject`/`time`/etc.).
+
+**`_validate_and_sync(instance)`** (`serializers.py:147-156`): chama `instance.validate_catalog_selection()`; converte `django.core.exceptions.ValidationError` (`message_dict` ou `messages`) em `rest_framework.serializers.ValidationError` (HTTP 400); em seguida chama `instance.sync_catalog_mirrors()`.
+
+**`_propagate_to_posts(instance, old_subject, old_time, formats_changed, old_tags=None, old_objetivo=None, old_cta=None, old_macro=None, old_cta_required=None)`** (`serializers.py:158-230`): compara o estado novo com o antigo campo a campo (`subject`, `time`, `tags`, `objetivo`, `macro_objetivo`, `cta`, `cta_required`, além de `formats_changed`); se nada mudou, retorna sem tocar nos posts. Caso contrário, itera sobre `instance.posts.exclude(status__name__icontains='published').select_related('status')` (posts derivados deste calendário, exceto já publicados) e, por post:
+  - se `subject` mudou: só sobrescreve `post.content` quando ele ainda é a sugestão automática (`f"Sugestão de pauta: {old_subject}"`), preservando textos editados manualmente; sempre atualiza `post.subject`;
+  - se `time` mudou: atualiza `post.post_time`;
+  - se `tags`/`objetivo`/`macro_objetivo`/`cta`/`cta_required` mudaram: replica o valor no post correspondente;
+  - se `formats` mudou: `post.suggested_formats.set(new_formats)` com os formatos atuais do calendário;
+  - salva só os `update_fields` efetivamente alterados (+ `updated_at`) por post.
+
+## Regras de negócio e funções
+
+### `catalog.py` — catálogo oficial (fonte de verdade dos dados pré-cadastrados)
+
+Fonte declarada no docstring: "Lógica de Calendário Editorial — Miggo" (`Miggo_logica_calendario_editorial_v3`). Define, como constantes Python (não é migration de dados, é o material usado para semear o banco):
+
+- `MACRO_OBJECTIVE_CHOICES` — as 4 lentes de funil: `entreter`, `inspirar`, `educar`, `convencer`.
+- `FORMAT_KEY_CHOICES` — os 4 formatos da matriz: `stories`, `feed`, `carousel`, `reels`.
+- `POST_FORMAT_NAME_TO_KEY` — dicionário de normalização de nomes de `PostFormat` (Instagram e LinkedIn, incl. rótulos do onboarding) para as 4 colunas da matriz (`catalog.py:57-86`).
+- `format_key_for_name(name)` (`catalog.py:89-93`) — resolve um nome de `PostFormat`/rótulo (case-insensitive, trim) para a chave de formato via `POST_FORMAT_NAME_TO_KEY`; retorna `None` se não houver `name` ou não houver match.
+- `format_key_for_post_format(post_format)` (`catalog.py:96-100`) — mesmo resolvedor, mas recebendo o objeto `PostFormat` (usa `post_format.name`); retorna `None` se `post_format` for `None`.
+- `CONTENT_STYLES` — lista de 25 pares `(slug, nome exibido)` dos estilos permitidos (ex.: `frase-citacao`, `dica-rapida`, `storytelling`, `quiz`).
+- `CLIENT_INPUT_STYLE_SLUGS = {'depoimento-feedback'}` — únicos estilos que dependem de material interno do cliente; nunca podem ser a única palavra-chave do dia (MIG-200).
+- `CTA_CATALOG` — 7 categorias de CTA (`compartilhamento`, `salvamento`, `comentario`, `novo-seguidor`, `link-na-bio`, `dm-whatsapp`, `solicitacao-orcamento`), cada uma com uma lista de frases prontas.
+- `FORMAT_STYLE_RULES` — a matriz completa: tuplas `(format_key, style_slug, objetivo_especifico, macro_objetivo, formatting_instruction, cta_required, cta_category_slug|None)`, cobrindo Stories (7 estilos), Feed (17), Carrossel (10) e Reels (10).
+- `STYLES_BY_FORMAT` / `FORMATS_BY_STYLE` (`catalog.py:407-415`) — índices em memória `{format_key: {style_slug,...}}` e o inverso, montados a partir de `FORMAT_STYLE_RULES` no import do módulo, usados em validações rápidas e no prompt de geração sem tocar o banco.
+
+### `selection.py` — ponte entre texto livre e catálogo fechado
+
+- `normalize_key(value)` (`selection.py:23-29`) — chave de comparação tolerante: remove acentos (NFKD + descarte de combining chars), remove tudo que não é `[a-z0-9]`, minúsculas.
+- `format_keys_for_labels(format_labels)` (`selection.py:32-36`) — converte uma lista de rótulos/nomes de formato nas chaves da matriz, via `format_key_for_name`, descartando `None`.
+- `allowed_styles(format_labels)` (`selection.py:39-48`) — `ContentStyle` ativos compatíveis com pelo menos um dos formatos informados; sem `format_labels`, retorna todos os ativos.
+- `resolve_styles(names, format_labels=None)` (`selection.py:51-69`) — casa nomes/slugs livres (normalizados) com `ContentStyle` do pool permitido; entradas sem correspondência são descartadas (comportamento intencional, sem campo livre); no fim, aplica `drop_lonely_client_input`.
+- `drop_lonely_client_input(styles)` (`selection.py:72-82`) — remove estilos com `requires_client_input=True` da lista inteira quando nenhum estilo independente sobra (MIG-200): se depois de filtrar não sobra nenhum estilo independente, a lista inteira é descartada (retorna `[]`), não apenas os dependentes.
+- `resolve_cta_options(texts)` (`selection.py:85-120`) — casa entradas livres com `CTAOption` pré-cadastradas. Se a entrada bate com o nome/slug de uma **categoria**, devolve todas as frases ativas dela (unidade de escolha é o tipo — MIG-202); senão tenta casar como frase exata (normalizada) de uma opção ativa.
+- `rules_for(format_labels, styles)` (`selection.py:123-132`) — `FormatStyleRule` ativas para a combinação de chaves de formato e estilos informados; `[]` se faltar formato ou estilo.
+- `rules_for_post(post, rules_cache=None)` (`selection.py:135-165`) — regras aplicáveis a um `Post`: usa `post.post_format` se já definido, senão `post.suggested_formats.all()`; usa os `styles` do `calendar_id` de origem se houver, senão resolve `post.tags` via `resolve_styles`. `rules_cache` opcional evita reconsultar a tabela (45 linhas) a cada post de uma listagem.
+- `suggested_ctas(rules)` (`selection.py:168-185`) — retorna todas as opções ativas da categoria sugerida pela **primeira** regra que tiver uma; se nenhuma regra sugerir categoria, usa `novo-seguidor` como piso (fallback quando CTA é exigido mas a matriz não indicou tipo).
+- `resolve_macro_objetivo(value)` (`selection.py:188-196`) — aceita chave (`educar`) ou rótulo (`Educar`), normalizado; retorna a chave ou `''`.
+- `dominant_macro(rules)` (`selection.py:199-207`) — macro-objetivo mais frequente entre as regras aplicáveis (desempate por ordem alfabética da chave via `max` com tupla `(contagem, chave)`).
+- `coerce_slot(format_labels, tag_names, cta_texts, macro_objetivo='')` (`selection.py:210-242`) — normaliza um "slot" (dia) inteiro para a seleção fechada: resolve `styles`; se vazio, usa fallback de até 2 estilos compatíveis e sem `requires_client_input`; calcula `cta_required` a partir das regras aplicáveis; resolve `ctas` e, se vazio e `cta_required=True`, preenche com `suggested_ctas` (nunca preenche CTA sozinho se não for exigido — MIG-201); resolve `macro_objetivo` (valor informado ou dominante das regras). Retorna dict `{styles, ctas, macro_objetivo, cta_required}`.
+- `apply_slot_to_entry(entry, format_labels=None)` (`selection.py:245-258`) — recalcula e **grava** `styles`/`ctas`/`macro_objetivo`/`cta_required` de um `EditorialCalendar` já salvo, a partir dos próprios `formats` e dos espelhos textuais (`entry.tags`, `entry.cta`); chama `sync_catalog_mirrors()` ao final. Usado pelo onboarding após criar a entrada.
+- `matrix_prompt_block(format_labels=None)` (`selection.py:263-288`) — monta o texto da matriz Formato x Estilo restrito aos formatos disponíveis (plano do cliente), para uso direto no prompt de geração; marca as linhas de estilos que dependem de material do cliente com o sufixo `"(depende de material do cliente)"`.
+- `client_input_styles_prompt_block()` (`selection.py:291-298`) — nomes dos estilos ativos com `requires_client_input=True`, unidos por vírgula (MIG-200).
+- `cta_prompt_block()` (`selection.py:301-310`) — lista os nomes das categorias de CTA ativas (um por linha), pois o calendário escolhe o tipo — a frase exata fica a critério da geração do post, dentro do tipo.
+
+### Regras obrigatórias de `EditorialCalendar.validate_catalog_selection()` (`models.py:199-261`)
+
+1. Pelo menos uma palavra-chave (`styles`) selecionada; se todas as selecionadas exigem material do cliente, erro em `styles`.
+2. CTA só é exigido quando alguma regra aplicável (`matching_rules()`) marca `cta_required=True`; sem regra aplicável, usa o `cta_required` já setado na instância. Se exigido e `ctas` vazio, erro em `ctas`.
+3. Estilos/CTAs inativos no catálogo geram erro (mesmo se já vinculados).
+4. Cada estilo precisa ser compatível com ao menos um dos formatos selecionados (existir em `FormatStyleRule` ativa para alguma das `format_keys()`); senão, erro em `styles` listando os formatos permitidos.
+5. Estilo que depende de material do cliente não pode ser o único do dia (reforça a regra 1, MIG-200).
+
+## Erros comuns / pontos de atenção
+
+- **`create` aceita lista ou objeto único** (`views.py:31-36`) — o corpo do POST pode ser um array de entradas; a ausência dessa detecção em ferramentas de teste manual pode levar a enviar um objeto quando se queria um lote, ou vice-versa.
+- **`update` é sempre parcial** (`views.py:47-49`) — mesmo um `PUT` se comporta como `PATCH` (`partial=True` forçado), então campos omitidos no payload não são zerados.
+- **Revalidação condicional no `update`** (`serializers.py:134-140`) — a matriz só é revalidada/ressincronizada se `formats`, `styles` ou `ctas` estiverem explicitamente no payload da atualização; mudar apenas `subject`/`time`/`objetivo` não dispara `validate_catalog_selection()`.
+- **Propagação não toca posts publicados** — `_propagate_to_posts` exclui `status__name__icontains='published'` (`serializers.py:181`), então uma correção no calendário depois que o post já foi publicado não é replicada.
+- **`content` do post só é sobrescrito se ainda for a sugestão automática** (`serializers.py:194-197`) — texto editado manualmente pelo usuário é preservado mesmo com mudança de `subject`.
+- **Fallback de estilos em `coerce_slot`** (`selection.py:222-224`) — se nada casar em `resolve_styles`, o fallback pega até 2 estilos compatíveis e sem `requires_client_input`, potencialmente diferentes do que o LLM/dados de origem sugeriam.
+- **`sync_catalog_mirrors` só preenche `macro_objetivo`/`cta_required` se ainda vazios** (`models.py:277-288`) — uma vez definidos manualmente, não são recalculados automaticamente mesmo que `styles`/`formats` mudem depois (a menos que passem por `apply_slot_to_entry`, que sempre recalcula).
+- **Permissão default nas rotas de leitura** — `list/`, `detail/`, `options/`, `content-styles/`, `cta-categories/` e `format-style-rules/` não declaram `permission_classes`, caindo no default do projeto (`HasAPIKeyOrIsAuthenticated`); não há um filtro adicional restringindo por cliente/tenant além do `client_id` opcional em `list/`.
+
+## Relacionados
+
+<Columns cols={2}>
+  <Card title="Post" icon="file-text" href="/backend/apps/post">
+    Model `Post` consome `tags`, `objetivo`, `macro_objetivo`, `cta`, `cta_required` e `suggested_formats` propagados pelo calendário editorial.
+  </Card>
+  <Card title="Client" icon="building" href="/backend/apps/client">
+    Dono de cada entrada de calendário (`EditorialCalendar.client`).
+  </Card>
+</Columns>

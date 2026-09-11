@@ -1,0 +1,72 @@
+---
+title: "Instalação"
+description: "Como preparar o ambiente e rodar o frontend-miggo localmente"
+icon: "download"
+---
+
+O `frontend-miggo` é uma SPA em React 19 + Vite + TypeScript (projeto `tailadmin-react`, `package.json:2`). Esta página cobre pré-requisitos, instalação de dependências, variáveis de ambiente e os scripts disponíveis.
+
+## Pré-requisitos
+
+- **Node.js**: a imagem de produção usa `node:20-alpine` (`dockerfile:1`). O `README.md:51` recomenda "Node.js 18.x or later (recommended to use Node.js 20.x or later)". Não há `engines` declarado em `package.json` nem `.nvmrc` no repositório — use Node 20.x para bater com o build de produção.
+- **npm** (o repo usa `package-lock.json`).
+- Backend da Miggo rodando localmente (ou acessível), pois o dev server faz proxy de `/api` para ele (`vite.config.ts:16-29`).
+
+<Steps>
+  <Step title="Instalar dependências">
+    ```bash
+    cd frontend-miggo
+    npm install
+    ```
+  </Step>
+  <Step title="Criar o arquivo de variáveis de ambiente">
+    Crie um arquivo `.env` na raiz de `frontend-miggo/` (não versionado) com as variáveis listadas abaixo. Nunca copie valores reais em documentação ou commits — use placeholders.
+  </Step>
+  <Step title="Subir o servidor de desenvolvimento">
+    ```bash
+    npm run dev
+    ```
+    O Vite sobe em modo dev com proxy de `/api` para o backend definido em `VITE_API_BASE_URL` (`vite.config.ts:8`).
+  </Step>
+</Steps>
+
+## Variáveis de ambiente
+
+Todas as variáveis lidas via `import.meta.env.*` encontradas em `src/` e nos arquivos de build:
+
+| Variável | Onde é usada | Para que serve | Obrigatória |
+|---|---|---|---|
+| `VITE_API_BASE_URL` | `vite.config.ts:8` (proxy do dev server), `dockerfile:9-11`, `docker-entrypoint.sh:3` (monta o backend do Nginx em produção) | URL base do backend da API que o frontend consome | Sim — sem ela o proxy `/api` do dev server e o Nginx de produção não sabem para onde encaminhar |
+| `VITE_MIGGO_API_KEY` | `src/components/analytics/InsightsHistoryCharts.tsx:38`, `src/components/analytics/PostTimelineModal.tsx:23`, `src/hooks/useClientPlatforms.ts:38` (usada como header `Authorization`); build args em `dockerfile:8-10` | Chave de API usada em alguns endpoints legados que ainda autenticam por `Authorization: <API_KEY>` em vez de JWT | Não obrigatória para o app iniciar, mas necessária para as telas de analytics e para `useClientPlatforms` funcionarem corretamente |
+| `VITE_GOOGLE_CLIENT_ID` | `src/main.tsx:16` (`GoogleOAuthProvider`), `src/components/auth/SignInForm.tsx:23`, `src/components/auth/SignUpForm.tsx:35`, `src/pages/Onboarding/Steps/SignupStep.tsx:75` | Client ID do OAuth do Google (`@react-oauth/google`) — habilita o botão "Entrar com Google" | Não — se ausente, `googleClientId` fica `""` e o app renderiza sem o `GoogleOAuthProvider`; os componentes checam `isGoogleEnabled` e escondem o botão |
+| `VITE_JWT_OBTAIN_URL` | `src/context/AuthContext.tsx:172` | Sobrescreve a rota padrão (`/api/v1/account/token/`) usada como fallback para obter o par de tokens JWT quando o endpoint de login não os retorna direto | Não — tem default hardcoded |
+| `VITE_JWT_REFRESH_URL` | `src/services/jwtAuth.ts:131` | Sobrescreve a rota padrão (`/api/v1/account/token/refresh/`) usada para renovar o access token | Não — tem default hardcoded |
+
+<Note>
+O repo tem um `.env` local (não commitado — ver `.gitignore`); não copie valores reais dele para documentação, código ou mensagens.
+</Note>
+
+## Scripts disponíveis
+
+Definidos em `package.json:5-10`:
+
+| Script | Comando | O que faz |
+|---|---|---|
+| `dev` | `vite` | Sobe o servidor de desenvolvimento com HMR e proxy de `/api` |
+| `build` | `tsc -b && vite build` | Type-check via project references (`tsconfig.json`) e depois build de produção para `dist/` |
+| `lint` | `eslint .` | Roda o ESLint (`eslint.config.js`) sobre todo o projeto |
+| `preview` | `vite preview` | Serve localmente o build de produção gerado em `dist/` |
+
+## Problemas comuns
+
+<Warning>
+Se as chamadas para `/api/...` derem 404/CORS no `npm run dev`, confira se `VITE_API_BASE_URL` aponta para um backend acessível — o proxy de `vite.config.ts:16-29` depende dela para resolver o `target`.
+</Warning>
+
+<Warning>
+Login sem token retornado: `src/context/AuthContext.tsx:170-184` primeiro tenta extrair o token da própria resposta de `/api/v1/account/login/`; se o backend não devolver tokens ali, faz uma segunda chamada ao endpoint em `VITE_JWT_OBTAIN_URL`. Se essa variável estiver mal configurada e a rota padrão não existir no backend, o login falha com "Não foi possível obter o token JWT."
+</Warning>
+
+<Warning>
+Botão do Google ausente: é esperado quando `VITE_GOOGLE_CLIENT_ID` não está definida — os formulários de login/cadastro escondem a opção (`isGoogleEnabled`), não é bug.
+</Warning>

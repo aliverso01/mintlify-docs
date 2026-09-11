@@ -1,0 +1,127 @@
+---
+title: "Qualidade e padrões"
+description: "ESLint, TypeScript estrito, convenções do projeto e o checklist antes de abrir PR."
+icon: "check-check"
+---
+
+## Comandos de verificação
+
+| Comando | O que faz |
+| --- | --- |
+| `npm run lint` | ESLint em todo o projeto (`eslint .`) |
+| `npm run build` | `tsc -b` e depois `vite build` — o build **falha** se a tipagem não passar |
+| `npm run dev` | Servidor de desenvolvimento com HMR |
+| `npm run preview` | Serve o `dist/` gerado, para conferir o build |
+
+<Tip>
+  `npm run build` é a verificação mais forte que existe no repositório: como `tsc -b` roda antes do Vite, um build verde garante que não há erro de tipo em nenhum arquivo de `src/`.
+</Tip>
+
+## ESLint
+
+`eslint.config.js` usa o formato flat config do ESLint 9, montado por `tseslint.config()`:
+
+| Item | Valor |
+| --- | --- |
+| Ignorados | `dist` |
+| Arquivos cobertos | `**/*.{ts,tsx}` |
+| Configs estendidas | `js.configs.recommended` e `tseslint.configs.recommended` |
+| Plugins | `react-hooks`, `react-refresh` |
+| Regras de hooks | `reactHooks.configs.recommended.rules` completo |
+| Regra extra | `react-refresh/only-export-components` como `warn`, com `allowConstantExport: true` |
+| Ambiente | `globals.browser`, `ecmaVersion: 2020` |
+
+As regras de `react-hooks` são as que mais pegam bug real: dependência faltando em `useEffect`, hook chamado condicionalmente, hook fora de componente.
+
+## TypeScript
+
+A configuração é dividida em três arquivos:
+
+| Arquivo | Cobre |
+| --- | --- |
+| `tsconfig.json` | Raiz, referencia os dois abaixo |
+| `tsconfig.app.json` | O código da aplicação (`include: ["src"]`) |
+| `tsconfig.node.json` | Os arquivos de configuração que rodam em Node (ex.: `vite.config.ts`) |
+
+Flags de rigor ativas em `tsconfig.app.json`:
+
+| Flag | Efeito |
+| --- | --- |
+| `strict` | Todo o conjunto estrito, incluindo `strictNullChecks` |
+| `noUnusedLocals` | Variável declarada e não usada é erro |
+| `noUnusedParameters` | Parâmetro não usado é erro |
+| `noFallthroughCasesInSwitch` | `case` sem `break` é erro |
+| `noUncheckedSideEffectImports` | Import de efeito colateral inexistente é erro |
+| `isolatedModules` / `moduleDetection: force` | Cada arquivo é um módulo isolado |
+| `noEmit` | O TypeScript só verifica; quem emite é o Vite |
+
+Modo de bundler: `moduleResolution: "bundler"`, `allowImportingTsExtensions`, `jsx: "react-jsx"`, target `ES2020`.
+
+<Warning>
+  `noUnusedLocals` e `noUnusedParameters` significam que **código morto quebra o build**. Ao comentar um trecho para testar, remova também os imports que ficaram órfãos.
+</Warning>
+
+## Convenções do projeto
+
+| Tema | Convenção |
+| --- | --- |
+| `any` | Proibido introduzir `any` novo. Tipe a resposta da API ou use `unknown` com narrowing |
+| Componentes | Funcionais com hooks. Nome do arquivo em `PascalCase.tsx`, igual ao componente exportado |
+| Hooks | `src/hooks/`, nome começando com `use`, em `camelCase.ts` |
+| Rotas | Nunca escreva `/admin/...` ou `/app/...` no JSX — use `path()` de `useRoleArea` |
+| Chamadas à API | Concentre em `src/services/` ou em um hook; não espalhe `fetch` cru pelas telas |
+| Cores e espaçamento | Use os tokens de `src/index.css`, não hex nem px soltos |
+| Reuso antes de criação | Consulte `design.md` antes de escrever componente novo |
+| Idioma | Comentários e texto de interface em pt-BR |
+| Encoding | UTF-8 sem BOM (o repositório tem histórico de mojibake e de BOM) |
+
+## Documentos de apoio no repositório
+
+Além do código, o repositório carrega documentação própria que continua válida como referência:
+
+| Arquivo | O que cobre |
+| --- | --- |
+| `design.md` | **Design system do frontend** — referência obrigatória antes de criar componente. A regra explícita é nunca reimplementar botão, modal, input, tabela, toast ou skeleton na mão |
+| `WEBHOOK_ZERNIO_CONFIG.md` | Configuração do webhook do Zernio e as alterações implementadas |
+| `WEBHOOK_ACCOUNT_CONNECTED.md` | O webhook de conta conectada: problema original e solução |
+| `docs/arquitetura_pt_br.md` e `docs/architecture.md` / `architecture_en.md` | Documento de arquitetura (BMAD), em pt-BR e en |
+| `docs/Arquitetura_Miggo_BMAD_PT-BR.pdf` e `docs/Miggo_Architecture_BMAD_EN.pdf` | As mesmas versões em PDF |
+| `docs/onboarding-reference/` | Material de referência do fluxo de onboarding |
+
+<Note>
+  Esses arquivos não são gerados automaticamente. Ao mudar o comportamento que eles descrevem, atualize-os junto — ou eles passam a mentir.
+</Note>
+
+## Checklist antes de abrir PR
+
+<Steps>
+  <Step title="Lint limpo">
+    `npm run lint` sem erros. *Warnings* de `react-refresh` merecem olhada, não silenciamento.
+  </Step>
+  <Step title="Build verde">
+    `npm run build` completo, o que inclui a checagem de tipos.
+  </Step>
+  <Step title="As duas áreas">
+    Se tocou em tela compartilhada, confira o comportamento em `/admin` **e** em `/app`.
+  </Step>
+  <Step title="Os dois temas">
+    Confira claro e escuro — utilitário sem variante `dark:` só aparece na revisão visual.
+  </Step>
+  <Step title="Estados da tela">
+    Carregando, vazio e erro. Tela que só foi testada no caminho feliz é meia tela.
+  </Step>
+  <Step title="Contrato com o backend">
+    Se o serializer mudou, confirme que nenhum outro consumidor depende do campo antigo. Veja [Convenções](/arquitetura/convencoes).
+  </Step>
+</Steps>
+
+## Relacionados
+
+<Columns cols={2}>
+  <Card title="Convenções gerais" icon="ruler" href="/arquitetura/convencoes">
+    As regras que valem para os três repositórios.
+  </Card>
+  <Card title="Build e deploy" icon="cloud-upload" href="/frontend/build-e-deploy">
+    O que acontece depois que o PR entra.
+  </Card>
+</Columns>

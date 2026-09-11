@@ -1,0 +1,139 @@
+---
+title: "Roteamento"
+description: "Todas as rotas do app, separação por área (/admin e /app) e os guards"
+icon: "route"
+---
+
+O roteamento inteiro é declarado em `src/App.tsx` com `react-router` (`BrowserRouter`, `Routes`, `Route`). Desde a separação por papel, o app tem **duas áreas simétricas e mutuamente exclusivas**: `/admin/*` (equipe Miggo) e `/app/*` (cliente) — documentado em `src/routes/rolePaths.ts:1-14`.
+
+## Separação por área
+
+- `ADMIN_PREFIX = "/admin"`, `CLIENT_PREFIX = "/app"` (`src/routes/rolePaths.ts:26-27`).
+- `isManagementUser(user)`: `true` se `is_superuser`, `is_staff`, `role === "admin"` ou `role === "manager"` — dá acesso a `/admin/*` (`rolePaths.ts:30-35`).
+- `isFullAdminUser(user)`: `true` se `is_superuser`, `is_staff` ou `role === "admin"` — subconjunto mais restrito, usado só nas rotas financeiras (`rolePaths.ts:38-41`).
+- `isClientUser(user)`: `true` se `role === "client"` (`rolePaths.ts:44-46`).
+- `areaPrefixFor(user)` / `homePathFor(user)` / `pathFor(user, subpath)`: resolvem, respectivamente, o prefixo da área, a rota inicial e um caminho absoluto dentro da área do usuário logado (`rolePaths.ts:49-66`). Telas devem usar esses helpers (ou o hook `useRoleArea`, ver `hooks.mdx`) em vez de escrever `/admin/...` ou `/app/...` fixo no JSX.
+- **Preview mode**: quando um admin ativa o "visualizar como cliente" (`PreviewContext`), o `AuthContext` devolve um `effectiveUser` com `role: 'client'` e `id` trocado pelo `previewClientId` (`src/context/AuthContext.tsx:399-405`). Toda a lógica de área/guards passa a tratar o admin como cliente automaticamente, sem checagem especial.
+
+## Árvore de rotas (`src/App.tsx`)
+
+| Path | Componente | Camada de proteção | Observações |
+|---|---|---|---|
+| `/onboarding` | `OnboardingFlow` | Pública | Etapa 1 é a criação de conta — MIG-109 (`App.tsx:68`) |
+| `/midia/:token` | `MediaDownloadPage` | Pública | Autorização é o token assinado do link, sem login — MIG-235 (`App.tsx:73`) |
+| `/grid/aprovar` | `GridApprovalPage` | `ProtectedRoute` (só login) | Fora dos guards de onboarding/assinatura — MIG-165 (`App.tsx:80`) |
+| `/onboarding/conectado/:platform/:clientId/*` | `SocialConnected` | `ProtectedRoute` | Retorno de OAuth iniciado no onboarding — MIG-185 (`App.tsx:87`) |
+| `/` | `RoleHomeRedirect` | `ProtectedRoute` | Redireciona para `homePathFor(user)` (`App.tsx:90`) |
+| Rotas legadas (`LEGACY_ROOT_PATHS`) | `LegacyPathRedirect` | `ProtectedRoute` | Ver seção abaixo (`App.tsx:94-96`) |
+| `/admin` (index) | `Home` | `ProtectedRoute > OnboardingGuard > SubscriptionGuard > AppLayout > ManagementRoute` | Dashboard da equipe |
+| `/admin/analytics` | `AnalyticsDashboard` | idem | |
+| `/admin/profile` | `UserProfiles` | idem | |
+| `/admin/content` | `ContentKanban` | idem | |
+| `/admin/editorial-calendar` | `EditorialCalendar` | idem | |
+| `/admin/agenda/sugestao` | `AgendaSugestao` | idem | |
+| `/admin/media-library` | `MediaLibrary` | idem | |
+| `/admin/brandkit` | `BrandkitPage` | idem | |
+| `/admin/briefing` | `Briefing` | idem | |
+| `/admin/history` | `HistoryList` | idem | |
+| `/admin/social-networks` | `SocialNetworksPage` | idem | |
+| `/admin/notifications` | `NotificationHistory` | idem | |
+| `/admin/clients` | `ClientsList` | idem | |
+| `/admin/trials` | `TrialsPanel` | idem | MIG-246 |
+| `/admin/content/parados` | `StalledPosts` | idem | Fila de posts parados, fora do Kanban semanal |
+| `/admin/users` | `UsersList` | idem | |
+| `/admin/logs` | `IntegrationLogs` | idem | |
+| `/admin/support` | `AdminSupportPage` | idem | |
+| `/admin/conversations` | `ConversationsPage` | idem | |
+| `/admin/message-flows` | `MessageFlowsPage` | idem | |
+| `/admin/email-marketing` | `EmailMarketingPage` | idem | MIG-264 |
+| `/admin/design-references` | `DesignReferences` | idem | |
+| `/admin/platform-config` | `PlatformProfileConfigPage` | idem | |
+| `/admin/plans` | `PlanManagement` | idem | |
+| `/admin/billing` | `BillingManagement` | ... `> ManagementRoute > AdminRoute` | Admin pleno, gestor não entra |
+| `/admin/financial` | `FinancialDashboard` | idem | |
+| `/admin/team` | `TeamManagement` | idem | |
+| `/app` (index) | `Home` | `ProtectedRoute > OnboardingGuard > SubscriptionGuard > AppLayout > ClientRoute` | Dashboard do cliente (e do admin em preview) |
+| `/app/analytics` | `AnalyticsDashboard` | idem | |
+| `/app/profile` | `UserProfiles` | idem | |
+| `/app/content` | `ContentKanban` | idem | |
+| `/app/editorial-calendar` | `EditorialCalendar` | idem | |
+| `/app/agenda/sugestao` | `AgendaSugestao` | idem | |
+| `/app/media-library` | `MediaLibrary` | idem | |
+| `/app/brandkit` | `BrandkitPage` | idem | |
+| `/app/briefing` | `Briefing` | idem | |
+| `/app/history` | `HistoryList` | idem | |
+| `/app/social-networks` | `SocialNetworksPage` | idem | |
+| `/app/notifications` | `NotificationHistory` | idem | |
+| `/app/plans` | `Plans` | idem | |
+| `/app/billing` | `ClientBilling` | idem | |
+| `/app/subscription/checkout` | `Checkout` | idem | |
+| `/app/subscription/success` | `Success` | idem | |
+| `/app/subscription/cancel` | `Cancel` | idem | |
+| `/app/support` | `SupportPage` | idem | |
+| `/app/instagram/success/:clientId/*` | `InstagramSuccess` | idem | |
+| `/app/linkedin/success/:clientId/*` | `InstagramSuccess` | idem | Reusa o mesmo componente |
+| `/app/whatsapp/success/:clientId/*` | `InstagramSuccess` | idem | Reusa o mesmo componente |
+| `/signin` | `SignIn` | Pública | |
+| `/signup` | `<Navigate to="/onboarding" replace />` | Pública | MIG-154: `/signup` foi substituída pelo onboarding como registro oficial |
+| `/reset-password` | `ResetPassword` | Pública | |
+| `/terms` | `TermsOfUse` | Pública | |
+| `/privacy` | `PrivacyPolicy` | Pública | |
+| `*` | `NotFound` | Pública | Fallback |
+
+## Cadeia de guards (rotas autenticadas)
+
+Ordem exata em `App.tsx:76-184`:
+
+```
+ProtectedRoute
+  └── (rotas soltas: /grid/aprovar, /onboarding/conectado/*, /, legadas)
+  └── OnboardingGuard
+        └── SubscriptionGuard
+              └── AppLayout
+                    ├── ManagementRoute → rotas /admin/*
+                    │     └── AdminRoute → /admin/billing, /admin/financial, /admin/team
+                    └── ClientRoute → rotas /app/*
+```
+
+1. **`ProtectedRoute`** (`src/components/ProtectedRoute.tsx:4-19`): exige `user` autenticado (via `useAuth`). Sem usuário, redireciona para `/signin?next=<path>`, preservando `pathname + search` para retorno pós-login.
+2. **`OnboardingGuard`** (`src/components/OnboardingGuard.tsx:13-76`): só se aplica a `user.role === 'client'`. Libera direto rotas de `allowedPaths` (`/onboarding`, `/plans`, `/subscription/checkout|success|cancel`, `/billing`). Consulta `useClient`, `useSubscription` e `useOnboarding`; se já há assinatura ativa, deixa passar mesmo sem onboarding completo (assinatura pode ter sido criada manualmente pelo admin); senão, redireciona para `/onboarding` quando `!isComplete && !status?.onboarding_skipped`.
+3. **`SubscriptionGuard`** (`src/components/SubscriptionGuard.tsx:10-141`): também só filtra clientes. Permite sempre um conjunto de rotas (`/app/plans`, `/app/billing`, `/app/subscription*`, `/app/profile`, `/app/support`, os equivalentes legados sem prefixo, e `/onboarding`). Sem assinatura ativa fora dessas rotas, renderiza uma tela de bloqueio com CTA para assinar ou (se aplicável) abrir o portal de cobrança da Stripe. Se `subscription.status === 'UNPAID'`, mostra um banner de aviso mas libera o acesso.
+4. **`AppLayout`**: casca visual (sidebar/header) — ver `layout-e-tema.mdx`.
+5. **`ManagementRoute`** (`src/components/ManagementRoute.tsx:12-22`): bloqueia quem não é `isManagementUser`, redirecionando para `homePathFor(user)`.
+6. **`ClientRoute`** (`src/components/ClientRoute.tsx:17-27`): bloqueia quem é `isManagementUser` (checagem por exclusão, não por `role === 'client'`, para não gerar ping-pong de redirect com `ManagementRoute` em roles inesperados), mandando para `/admin`.
+7. **`AdminRoute`** (`src/components/AdminRoute.tsx:10-20`): dentro de `/admin`, restringe ainda mais para `isFullAdminUser` (billing/financial/team) — gestor (`role === 'manager'`) não passa.
+
+Todos os guards de role usam `RouteLoader` como estado de carregamento enquanto `useAuth().loading` é `true`.
+
+## Redirecionamento por papel
+
+- **`RoleHomeRedirect`** (`src/components/RoleRedirect.tsx:11-17`): usado na rota `/`; aguarda `loading` resolver e navega para `homePathFor(user)`.
+- **`LegacyPathRedirect`** (`src/components/RoleRedirect.tsx:24-33`): usado nas rotas de `LEGACY_ROOT_PATHS`; resolve o destino via `resolveLegacyPath(user, location.pathname)` preservando `search` e `hash`.
+
+## Rotas legadas e seus redirecionamentos
+
+`src/routes/legacyPaths.ts:11-34` lista as rotas raiz que existiam **antes** da separação em `/admin` e `/app`. Continuam registradas para não quebrar bookmarks, e-mails do backend e redirect URIs de OAuth:
+
+```
+/analytics, /profile, /content, /editorial-calendar, /agenda/sugestao, /media-library,
+/brandkit, /briefing, /history, /social-networks, /notifications, /support, /plans,
+/billing, /subscription/checkout, /subscription/success, /subscription/cancel,
+/clients, /users, /instagram/success/:clientId/*, /linkedin/success/:clientId/*,
+/whatsapp/success/:clientId/*
+```
+
+A resolução do destino (`resolveLegacyPath`, `src/routes/rolePaths.ts:85-98`) usa um mapa explícito (`LEGACY_ROUTES`, `rolePaths.ts:73-79`) só para os caminhos que **divergem** entre as áreas:
+
+| Rota legada | Destino admin | Destino cliente |
+|---|---|---|
+| `/clients` | `/admin/clients` | não existe → cai no início da área (`homePathFor`) |
+| `/users` | `/admin/users` | não existe → início |
+| `/subscription/checkout` | não existe → início | `/app/subscription/checkout` |
+| `/subscription/success` | não existe → início | `/app/subscription/success` |
+| `/subscription/cancel` | não existe → início | `/app/subscription/cancel` |
+
+Qualquer outra rota legada não mapeada cai no mesmo subpath dentro da área resolvida (ex.: `/brandkit` → `/admin/brandkit` ou `/app/brandkit`).
+
+<Note>
+Regra do código (comentário em `legacyPaths.ts:9`): **não adicionar rota nova aqui** — rota nova já nasce dentro de `/admin` ou `/app`. `LEGACY_ROOT_PATHS` é só para o que existia antes da separação.
+</Note>

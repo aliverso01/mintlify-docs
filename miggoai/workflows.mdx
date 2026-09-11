@@ -1,0 +1,212 @@
+---
+title: "Workflows"
+description: "Os workflows de geração de conteúdo — versão em produção (backend/apps/generations) e o protótipo original (modules/)"
+icon: "diagram-project"
+---
+
+Existem **duas implementações** dos workflows de geração:
+
+- **Em produção**: `backend/apps/generations/services/*` — Django, persiste `Generation`, usa prompts do CMS.
+- **Protótipo original**: `modules/workflow.py` + `main.py` — standalone, sem Django, salva resultado em arquivo de texto.
+
+A lógica é a mesma por construção (o backend foi "portado direto" do protótipo — comentário em `openai_service.py:1-5`). Documentamos as duas.
+
+## Versão em produção (`backend/apps/generations/services/`)
+
+### `runner.py` — ponto único de execução
+
+#### `run_workflow(workflow_key, client_id, post_id, environment, user, variable_overrides=None) -> Generation`
+
+`backend/apps/generations/services/runner.py:54-145`.
+
+**Parâmetros**:
+- `workflow_key` (`str`) — `'title'`, `'image'`, `'caption'` ou `'hashtags'`.
+- `client_id` / `post_id` (`int`) — ids no backend-miggo.
+- `environment` (`str`) — `Generation.ENV_TEST` ou `Generation.ENV_PRODUCTION`.
+- `user` — usuário Django autenticado (ou `None`/anônimo).
+- `variable_overrides` (`dict`, opcional) — valores que sobrescrevem o contexto automático.
+
+**Passo a passo**:
+1. Cria a `Generation` já como `RUNNING` (precisa do `id` para o path das imagens).
+2. Se `variable_overrides` tem `format_key` sem `formato_motivo`, injeta `formato_motivo = 'escolhido manualmente na geração'`.
+3. Salva os overrides "persistíveis" (exclui chaves de encadeamento e voláteis) em `ClientVariableValue`, via `client_services.save_variables`.
+4. Monta o contexto com `context_builder.build_context(client_id, post_id)`.
+5. Sobrepõe respostas já salvas do cliente (exceto voláteis) por cima do contexto fresco.
+6. Despacha para o runner do workflow certo (`_WORKFLOW_RUNNERS[workflow_key]`), passando `context`, `variable_overrides` e um callback `on_stage` que atualiza `Generation.stage` em tempo real (salva imediatamente, não espera o fim — para polling do frontend).
+7. Se o resultado trouxer `images` (lista de `PIL.Image`), salva cada uma em `MEDIA_ROOT/generations/{test|production}/<generation_id>/imagem[_cardN].png` e preenche `image_paths`.
+8. Fecha a `Generation` como `SUCCESS` ou `FAILED` — **sempre**, mesmo se o workflow levantar exceção (`try/except/finally`, nunca deixa a exceção subir sem salvar o estado).
+
+**Efeitos colaterais**: grava em `ClientVariableValue`, cria arquivos PNG em `MEDIA_ROOT`, chama a API da OpenAI (rede), grava `Generation` no banco a cada mudança de estágio.
+
+**Erros possíveis**: qualquer exceção do workflow (`RuntimeError` de prompt ausente, erro de rede da OpenAI, `PromptDefinition.DoesNotExist`) é capturada e vira `Generation.status = FAILED` com `error = str(exc)` — nunca propaga ao chamador HTTP como 500 (a view devolve 502 com o objeto serializado).
+
+#### `run_complete(client_id, post_id, environment, user, variable_overrides=None) -> list[Generation]`
+
+`runner.py:167-215`. Roda os 4 workflows em sequência, encadeando a saída de um no próximo — mesma lógica do protótipo `modules/workflow.py`, agora persistindo cada passo como sua própria `Generation`.
+
+1. Roda `title` — se falhar, devolve `[title_gen]` e para.
+2. Extrai `angle`, `texto_imagem` (lista para carrossel, string para os demais) e o `format_key`/`formato_motivo` sorteados no título.
+3. Roda `image` com `{texto_imagem, titulo_selecionado: angle, format_key, formato_motivo}` — sempre executado, mesmo se falhar, a lista continua.
+4. Roda `caption` com o mesmo `angle`/`format_key`.
+5. Se `caption` teve sucesso e não foi `skipped`, roda `hashtags` com `legenda_post` = a legenda gerada.
+
+Devolve sempre a lista de `Generation`s já criadas (1 a 4 itens), mesmo em falha parcial.
+
+### `context_builder.py` — montagem do contexto
+
+#### `build_context(client_id: int, post_id: int) -> dict`
+
+`backend/apps/generations/services/context_builder.py:251-299`. Busca dados ao vivo no backend-miggo e monta o dict usado para renderizar os prompts.
+
+Passos internos:
+1. `clients_services.get_client_detail` + `get_briefing`.
+2. `_listar_historico` — histórico de posts `published`/`approved`/`sent` na janela `hoje-60d` até `hoje+365d` (`HISTORICO_MAX_DIAS = 60`). Cacheado por dia em `ClientPostHistory` — só consulta o backend-miggo uma vez por cliente por dia; se a consulta falhar e já existir um retrato de dia anterior, usa-o como fallback com log de warning; sem nenhum retrato salvo, propaga o erro (gerar com histórico vazio silenciosamente é considerado pior que falhar).
+3. `posts_services.get_post_detail(post_id)`.
+4. `clients_services.get_client_grid` — grid 3x3 do brandkit.
+5. `_escolher_formato(post_detail)` — resolve `format_key` (`story`/`feed`/`carrossel`/`reel`): usa o `post_format` explícito do card se houver; senão sorteia entre `suggested_formats`; sem nenhum dos dois, cai em `story`.
+
+**Retorna** (chaves principais): `client_id`, `cliente_nome`, `briefing_texto`, `negocio`, `diferenciais`, `publico_alvo`, `posts_recentes` (texto formatado), `calendario_assunto`, `calendario_objetivo`, `calendario_macro_objetivo`, `calendario_tags`, `calendario_cta`, `cta_required`, `grid_url`, `instagram_handle`, `post_format`, `format_key`, `formato_motivo`, e `_raw` (dict com os objetos brutos — removido antes de expor via API).
+
+**Só os campos do briefing em `_BRIEFING_ALLOWED_KEYS`** (`context_builder.py:63-86`) entram no `briefing_texto` — campos técnicos/de integração do client-meta (EAV) nunca vazam para o prompt.
+
+### `output_contract.py` — contrato de saída fixo
+
+Ver detalhes em <a href="/miggoai/prompts">Prompts</a>. Define 4 contratos (`TITULO_TEXTO`, `TITULO_CARDS`, `LEGENDA`, `HASHTAGS`), cada um com um `schema` JSON (`json_schema`, `strict: True`) e uma `instruction` textual anexada ao prompt renderizado. `apply(key, rendered_prompt) -> (prompt_final, schema)`.
+
+### `title_workflow.run(context, variable_overrides=None, on_stage=None) -> dict`
+
+`backend/apps/generations/services/title_workflow.py:128-183`.
+
+1. Resolve `format_key` (de `variable_overrides` ou `context`) e o `slug` do prompt (`titulo-story`/`titulo-feed`/`titulo-carrossel`).
+2. Busca o `PromptDefinition` ativo, renderiza com `context + variable_overrides`, aplica o contrato de saída.
+3. Chama `openai_service.chat_json` (structured output).
+4. `_extrair_microangles` — normaliza a resposta (suporta formato antigo de 3 blocos `abertura/desenvolvimento/fecho`, retrocompatível).
+5. Para carrossel, corta cards acima de `CARDS_MAX = 8` (`_limitar_cards`) — teto reforçado no código porque `strict: True` não aceita `maxItems` no schema.
+6. Se não for carrossel, chama `_select_best_microangle` — um **agente interno** com prompt fixo (não editável no CMS) que escolhe o melhor dos 3 microângulos gerados.
+
+**Retorna**: `{prompt_slug, prompt_version_used, format_key, formato_motivo, microangles, selected_microangle, selection_reason, selection_score}`.
+
+**Erros**: `RuntimeError` se a OpenAI devolver erro ou nenhum microângulo.
+
+### `image_workflow.run(context, variable_overrides=None, on_stage=None) -> dict`
+
+`backend/apps/generations/services/image_workflow.py:145-288`. Não encadeia com o título por si só — recebe `texto_imagem` via `variable_overrides` (o chamador decide).
+
+1. Resolve tamanho (`IMAGE_FORMAT_SIZES`/`IMAGE_GEN_SIZES` de `openai_service`) pelo `format_key`.
+2. Exige `grid_url` no contexto — `RuntimeError` se ausente.
+3. Exige `texto_imagem` (`str` ou `list[str]`, 1 item por card no carrossel) — `RuntimeError` se ausente.
+4. **Sorteio 50/50** (`usar_midia_cliente = random.choice([True, False])`) decide se a galeria de mídia do cliente é CONSULTADA nesta geração (não qual foto — isso é decidido depois).
+5. Se consultada: busca `get_client_media_library`, e por card roda `media_matcher.rankear` (peneira léxica) seguido de `media_classifier.selecionar` (julgamento por IA da descrição). Toda a trilha de decisão (candidatos, score, motivo) é registrada em `midia_cliente` no resultado, para auditoria.
+6. `_resolver_marca` decide logo/assinatura: por padrão consulta a preferência salva no backend-miggo (`get_signature_preference`, MIG-266); `variable_overrides` com `marca_modo`/`assinatura_tipo`/`assinatura_texto` sobrescrevem pontualmente sem persistir.
+7. Para cada texto (1 por card), renderiza o prompt `imagem-post`, chama `openai_service.generate_image` passando o grid + foto do cliente (se aprovada) + logo (se aplicável) como referências, e redimensiona (`redimensionar_para_entrega`) — normalmente um no-op porque o tamanho pedido já é o tamanho final.
+
+**Retorna**: `{prompt_slug: 'imagem-post', prompt_version_used, format_key, formato_motivo, width, height, rendered_prompts, midia_cliente, images}` — `images` é uma lista de objetos `PIL.Image` (o `runner` salva em disco).
+
+**Efeitos colaterais**: chamadas de rede à OpenAI (`images/edits`, timeout 300s por card); nenhuma escrita em disco dentro do próprio workflow (feita pelo `runner`).
+
+### `caption_workflow.run(context, variable_overrides=None, on_stage=None) -> dict`
+
+`backend/apps/generations/services/caption_workflow.py:32-64`.
+
+- **Guard**: se `format_key in {'story'}`, devolve `{'skipped': True, 'reason': 'Stories não usam legenda (formato efêmero).'}` sem chamar IA.
+- Caso contrário, busca `PromptDefinition` `legenda-post`, monta `legendas_recentes` (até 10 legendas do histórico) e `cta_guard` (obrigatório vs. opcional, conforme `cta_required`/`calendario_cta`), renderiza e chama `openai_service.chat_json` com o contrato `LEGENDA`.
+
+**Retorna**: `{prompt_slug: 'legenda-post', prompt_version_used, format_key, caption, cta_used, reason}` (ou o dict `skipped`).
+
+**Erros**: `RuntimeError` se a OpenAI devolver erro.
+
+### `hashtags_workflow.run(context, variable_overrides=None, on_stage=None) -> dict`
+
+`backend/apps/generations/services/hashtags_workflow.py:26-57`. Mesma estrutura do de legenda:
+
+- **Guard**: `format_key in {'story'}` → `{'skipped': True, 'reason': 'Stories não usam hashtags (formato efêmero).'}`.
+- Monta `hashtags_recentes` (até 30 hashtags únicas dos últimos 10 posts do histórico), renderiza `hashtags-post`, chama a OpenAI com o contrato `HASHTAGS`.
+
+**Retorna**: `{prompt_slug: 'hashtags-post', prompt_version_used, format_key, hashtags, reason}` (ou `skipped`).
+
+### `media_matcher.py` — peneira léxica da galeria
+
+Sem chamada de rede/IA — comparação local com `difflib` (stdlib).
+
+- `rankear(texto_busca, media_items, threshold=0.35, limite=None) -> [(item, score), ...]` — só itens elegíveis (`_elegivel`: passaram pela análise do backend `analyze_media_library` E não foram marcados como impróprios para referência), ordenados por score decrescente.
+- `_score(a, b)` — máximo entre containment (quanto do texto do post aparece na descrição), Jaccard e `SequenceMatcher.ratio()`.
+- `find_best_match(texto_busca, media_items, threshold=0.35)` — atalho para o item top-1.
+
+### `media_classifier.py` — julgamento por IA
+
+- `selecionar(pauta, candidatos, model='gpt-4o-mini') -> {'item', 'media_id', 'motivo'}` — envia até `MAX_CANDIDATOS = 5` candidatos (já peneirados pelo `media_matcher`) num prompt fixo pedindo `{"media_id": <id ou null>, "motivo": "..."}`. Qualquer falha (rede, JSON inválido, id inventado/alucinado) resulta em **nenhuma foto** — a geração segue só com o grid, que é considerado o comportamento correto (usar foto é exceção, não caminho crítico).
+
+## Protótipo original (`modules/` + `main.py`)
+
+<Warning>
+  Esta é a implementação **standalone** que precedeu o backend Django. Ainda funciona, mas não persiste `Generation`,
+  não usa o CMS de prompts (prompts ficam hardcoded no próprio `modules/openai.py`), e salva o resultado em arquivo de
+  texto em vez de banco de dados.
+</Warning>
+
+### `modules/miggo.py` — integração com o backend principal
+
+Cliente HTTP simples com `requests`, autenticado via header `Authorization: Api-Key <MIGGO_API_KEY>` (`miggo.py:9-15`).
+
+| Função | Endpoint consumido | Retorno |
+|---|---|---|
+| `get_post(client_id, post_date)` | `post/list/?status=pending&start_date=...&end_date=...&client_id=...` | Primeiro post pendente da data, ou `None`/`{"error": ...}`. |
+| `get_post_formats()` | `post/format/list/` | Mapa `{id: nome}`, cacheado em memória de processo (`_post_formats_cache`). |
+| `resolve_format_name(post_format)` | — | Aceita id, dict ou nome; devolve sempre o nome. |
+| `get_client_grid(client_id)` | `brandkit/grid/list/?client_id=...` | Grid gerado (`generated=True`) prioritário, senão o mais recente. |
+| `get_editorial_calendar(calendar_id)` | `editorial-calendar/detail/<id>/` | Dict do calendário. |
+| `get_client_info(client_id)` | `client/list?user=<id>` | Dict do cliente. |
+| `get_briefing(client_id)` | `client/client-meta/list/?client_id=...` | Dict `{key: value}`. |
+| `show_briefing(client_id)` | — | Imprime o briefing formatado no console, agrupado por seção (`briefing_sections`). |
+| `get_post_history(client_id, include_corrections=False, max_days=60)` | `post/list/` (3 chamadas: `published`, `approved`, `sent`) | Lista de posts na janela, deduplicada e ordenada por data decrescente. |
+| `show_post_history(client_id, include_corrections=False)` | — | Imprime o histórico formatado. |
+| `check_missing_fields(client_id)` | — | Imprime quais campos do briefing (de uma lista fixa de 22 campos) estão preenchidos/faltando. |
+
+`MAX_HISTORY_DAYS = 60` e `_HISTORY_FUTURE_DAYS = 365` (`miggo.py:23,28`) — mesma janela usada depois pelo `context_builder` do backend (`HISTORICO_MAX_DIAS`).
+
+### `modules/openai.py` — geração de conteúdo
+
+Ver detalhes de cada chamada à OpenAI em <a href="/miggoai/integracao-openai">Integração OpenAI</a>. Funções: `generate_microangles`, `select_best_format`, `build_image_prompt`, `generate_post_image`, `generate_caption`, `generate_hashtags`, `select_best_microangle`.
+
+### `modules/workflow.py` — orquestração encadeada
+
+| Função | O que faz | Retorna | Efeitos colaterais |
+|---|---|---|---|
+| `generate_title_workflow(client_id=178, post_date='2026-08-26')` | Busca post → cliente → briefing → histórico → calendário; escolhe formato (`select_best_format`); gera 3 microângulos (ou cards); escolhe o melhor (`select_best_microangle`). | Dict com `context` + `microangles`, `selected_microangle`, `selection_details`. | Salva log em `outputs/resultado_<cliente>_<timestamp>.txt`; imprime tudo no console via `OutputCapture`. |
+| `generate_image_workflow(client_id=178, post_date='2026-08-26')` | Roda `generate_title_workflow`; busca grid do brandkit; gera 1 imagem por texto/card via `generate_post_image`; recorta para o tamanho final (`_cover_crop`). | Dict do título + `format_name`, `grid_url`, `image_paths`. | Salva PNGs em `outputs/imagem_<cliente>_<timestamp>[_cardN].png`; log em `outputs/resultado_imagem_...txt`. |
+| `generate_caption_workflow(client_id=178, post_date='2026-08-26')` | Roda `generate_image_workflow`; gera legenda via `generate_caption`. | Dict da imagem + `image_content`, `caption_result`, `caption`. | Log em `outputs/resultado_legenda_...txt`. |
+| `generate_hashtags_workflow(client_id=178, post_date='2026-08-26')` | Roda `generate_caption_workflow`; gera hashtags via `generate_hashtags`. | Dict da legenda + `hashtags_result`, `hashtags`. | Log em `outputs/resultado_hashtags_...txt`. |
+| `workflow()` | Atalho — chama `generate_title_workflow()` com os defaults. | — | — |
+
+**Funções internas**: `_cover_crop(img, target_w, target_h)` — resize + crop central preservando proporção (equivalente a CSS `background-size: cover`); `_image_content_from(best, format_name)` — extrai o texto que foi usado na imagem, para a legenda não repeti-lo; `_save_output(capture, client_name, prefix)` — grava o log capturado em `outputs/`.
+
+### `main.py` — CLI interativa
+
+`main.py:1-77`. Pede input no console:
+
+1. ID do cliente (padrão `178`).
+2. Data do post (padrão hoje, formato `YYYY-MM-DD`).
+3. Modo:
+   - `1` (padrão) — só título → `generate_title_workflow`.
+   - `2` — título + imagem → `generate_image_workflow`.
+   - `3` — título + legenda → `generate_caption_workflow`.
+   - `4` — título + legenda + hashtags → `generate_hashtags_workflow`.
+
+Imprime o resultado formatado no console (microângulo, imagens, legenda, hashtags conforme o modo) e sinaliza sucesso/falha com base nas chaves do dict retornado.
+
+## `apps.generations` — exposição via API
+
+Sim, o app expõe os workflows via API — ver <a href="/miggoai/api-referencia">Referência de API → apps.generations</a> para os endpoints (`/api/generations/{test,production}/[complete/]`, `/api/generations/context/`, listagem e detalhe).
+
+### Management command: `cleanup_test_generations`
+
+`backend/apps/generations/management/commands/cleanup_test_generations.py`. Apaga `Generation`s de ambiente `TEST` (e seus arquivos em disco) mais antigas que `--hours` horas (default 24):
+
+```bash
+python manage.py cleanup_test_generations --hours 24
+```
+
+<Columns cols={2}>
+  <Card title="Integração OpenAI" icon="brain" href="/miggoai/integracao-openai">Detalhe de cada chamada à API da OpenAI.</Card>
+  <Card title="Arquitetura" icon="sitemap" href="/miggoai/arquitetura">Diagrama do fluxo completo.</Card>
+</Columns>

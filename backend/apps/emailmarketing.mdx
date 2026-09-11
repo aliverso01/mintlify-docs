@@ -1,0 +1,411 @@
+---
+title: "Email Marketing"
+description: "Régua de emails automáticos ancorada no ciclo de vida do cliente (MIG-264)"
+icon: "mail"
+---
+
+## Responsabilidade
+
+O app `app.emailmarketing` implementa a "régua" de e-mails de marketing/trial da Miggo (MIG-264): campanhas escritas pela equipe na área `/admin`, que disparam automaticamente quando um cliente atinge um **evento do ciclo de vida** (cadastro, onboarding concluído, fim do trial) somado a um **deslocamento em dias** — ou, para campanhas avulsas, numa **data marcada**. O disparo em si é feito pelo management command `send_marketing_emails`, agendado externamente (Dokploy); o app não tem cron/scheduler embutido.
+
+O motivo de usar "evento + dias" em vez de "dia N do trial" está documentado no próprio código: as duas versões do "dia 0" (novo cadastro x onboarding concluído) partem de momentos diferentes da vida do cliente (`app/emailmarketing/models.py:10-13`).
+
+Registrado em `INSTALLED_APPS` como `app.emailmarketing.apps.EmailMarketingConfig` (`core/settings.py:131`) e montado em `core/urls.py:43` sob o prefixo:
+
+```
+/api/v1/email-marketing/
+```
+
+## Arquivos
+
+| Arquivo | Conteúdo |
+|---|---|
+| `app/emailmarketing/models.py` | `EmailCampaign`, `EmailDispatch`, `EmailAsset`, `EmailMarketingSettings` (singleton) e a choice `TRIGGER_EVENTS` |
+| `app/emailmarketing/views.py` | Views REST consumidas pela área `/admin`: CRUD de campanhas, preview, cálculo de público, histórico de envios, upload de assets, ajustes da régua e o redirecionador de clique |
+| `app/emailmarketing/serializers.py` | Serializers de `EmailCampaign`, `EmailDispatch`, `EmailMarketingSettings`, `EmailAsset` |
+| `app/emailmarketing/urls.py` | Roteamento de todas as views acima |
+| `app/emailmarketing/admin.py` | Registro dos 4 models no Django Admin |
+| `app/emailmarketing/apps.py` | `EmailMarketingConfig` (`AppConfig`) |
+| `app/emailmarketing/services.py` | Lógica de negócio: resolução de público elegível, assinatura/validação de links rastreados, montagem do HTML final e envio via SMTP com rate limit |
+| `app/emailmarketing/management/commands/seed_marketing_emails.py` | Comando idempotente que cria/atualiza as 7 campanhas padrão da régua de trial |
+| `app/emailmarketing/management/commands/send_marketing_emails.py` | Comando que dispara as campanhas ativas elegíveis no dia (chamado pelo scheduler externo) |
+
+## Modelos
+
+### EmailCampaign
+
+`app/emailmarketing/models.py:42-124` — "Um email da régua: o conteúdo, quando dispara e para quem."
+
+| Campo | Tipo | Obrigatório | Default / Choices | Descrição |
+|---|---|---|---|---|
+| `name` | `CharField(max_length=150)` | Sim | — | Nome interno, só a equipe vê |
+| `subject` | `CharField(max_length=255)` | Sim | — | Assunto do e-mail |
+| `body_html` | `TextField` | Não | `blank=True, default=''` | Corpo em HTML; cabeçalho/rodapé da Miggo são adicionados no envio |
+| `trigger_event` | `CharField(max_length=30)` | Sim | `choices=TRIGGER_EVENTS` (`models.py:28-36`) | Evento âncora — ver tabela abaixo |
+| `delay_days` | `IntegerField` | Não | `default=0` | Dias somados à data do evento; aceita negativo (ex.: `-1` = véspera do fim do trial) |
+| `scheduled_date` | `DateField` | Não | `blank=True, null=True` | Só usado quando `trigger_event='scheduled'` — data fixa do disparo |
+| `audience` | `CharField(max_length=30)` | Não | `choices=AUDIENCE_CHOICES`, `default='all'` | Filtro adicional de público — ver abaixo |
+| `max_ignored_emails` | `PositiveIntegerField` | Não | `blank=True, null=True` | Teto de e-mails seguidos sem clique **desta** campanha; `None` herda o padrão geral de `EmailMarketingSettings`, `0` desliga o limite |
+| `min_interval_hours` | `PositiveIntegerField` | Não | `blank=True, null=True` | Intervalo mínimo (h) desde o último e-mail do cliente, específico desta campanha; mesma regra de herança |
+| `is_active` | `BooleanField` | Não | `default=True` | Se a campanha está no ar |
+| `bypass_limits` | `BooleanField` | Não | `default=False` | Ignora teto de ignorados e intervalo mínimo (usado nos e-mails de última chance de conversão) |
+| `created_at` | `DateTimeField` | Auto | `auto_now_add=True` | — |
+| `updated_at` | `DateTimeField` | Auto | `auto_now=True` | — |
+
+**`TRIGGER_EVENTS`** (`models.py:28-36`):
+
+| Valor | Rótulo |
+|---|---|
+| `signup` | Cadastro criado |
+| `onboarding_completed` | Onboarding concluído |
+| `trial_end` | Fim do trial |
+| `scheduled` | Data marcada (campanha avulsa) |
+
+**`AUDIENCE_CHOICES`** (`models.py:46-53`): `all` (Todos), `onboarding_done` (Somente quem concluiu o onboarding), `onboarding_pending` (Somente quem NÃO concluiu).
+
+**Relações:** nenhuma FK direta neste model; é referenciado por `EmailDispatch.campaign`.
+
+**Meta** (`models.py:103-104`): `ordering = ['trigger_event', 'delay_days', 'id']`.
+
+**Métodos:**
+- `is_scheduled` (`property`, `models.py:106-108`): `True` se `trigger_event == 'scheduled'`.
+- `limite_de_ignorados(padrao)` (`models.py:110-114`): retorna `max_ignored_emails` da campanha, ou `padrao` se for `None` — testa explicitamente contra `None` (não contra falsy) porque `0` é um valor legítimo.
+- `intervalo_minimo(padrao)` (`models.py:116-117`): mesma lógica para `min_interval_hours`.
+- `__str__` (`models.py:119-123`): para campanha `scheduled`, `"{name} (em {scheduled_date ou 'sem data'})"`; caso contrário `"{name} ({evento} {+/-}{delay_days}d)"`.
+
+### EmailDispatch
+
+`app/emailmarketing/models.py:127-165` — registro de envio e trava de idempotência.
+
+| Campo | Tipo | Obrigatório | Default / Choices | Descrição |
+|---|---|---|---|---|
+| `campaign` | `ForeignKey(EmailCampaign, related_name='dispatches')` | Sim | `on_delete=CASCADE` | Campanha enviada |
+| `client` | `ForeignKey(Client, related_name='email_dispatches')` | Sim | `on_delete=CASCADE` | Cliente destinatário |
+| `email` | `EmailField` | Sim | — | Endereço usado no envio, guardado como estava na hora |
+| `status` | `CharField(max_length=10)` | Não | `choices=STATUS_CHOICES`, `default='SENT'` | `PENDING` (Em envio) / `SENT` (Enviado) / `FAILED` (Falhou) |
+| `error` | `TextField` | Não | `blank=True, default=''` | Mensagem de erro truncada em 2000 caracteres, quando `status=FAILED` |
+| `token` | `UUIDField` | Auto | `default=uuid.uuid4, unique=True, editable=False` | Identificador público usado no link rastreado (UUID para não permitir varredura por incremento) |
+| `clicked_at` | `DateTimeField` | Não | `blank=True, null=True` | Primeiro clique em algum link deste e-mail |
+| `click_count` | `PositiveIntegerField` | Não | `default=0` | Total de cliques |
+| `sent_at` | `DateTimeField` | Auto | `auto_now_add=True` | — |
+
+**Relações:** `campaign` → `EmailCampaign`; `client` → `app.client.models.Client`.
+
+**Meta** (`models.py:160-163`): `unique_together = ('campaign', 'client')` — garante que a mesma campanha nunca sai duas vezes para o mesmo cliente, mesmo com o comando rodando em paralelo; `ordering = ['-sent_at']`; `verbose_name_plural = 'email dispatches'`.
+
+**Métodos:** `__str__` (`models.py:165-166`): `"{campaign.name} → {email} ({status})"`.
+
+<Note>
+A linha `FAILED` é mantida de propósito — sem ela uma falha de SMTP desapareceria e ninguém saberia que aquele cliente ficou sem o e-mail (comentário em `models.py:133-134`).
+</Note>
+
+### EmailAsset
+
+`app/emailmarketing/models.py:169-185` — imagem usada no corpo de um e-mail.
+
+| Campo | Tipo | Obrigatório | Default / Choices | Descrição |
+|---|---|---|---|---|
+| `image` | `ImageField` | Sim | `upload_to='email_marketing/'` | Arquivo de imagem |
+| `name` | `CharField(max_length=200)` | Não | `blank=True, default=''` | Nome amigável |
+| `uploaded_at` | `DateTimeField` | Auto | `auto_now_add=True` | — |
+
+**Meta** (`models.py:181-182`): `ordering = ['-uploaded_at']`.
+
+**Métodos:** `__str__` (`models.py:184-185`): `name` ou, se vazio, `image.name`.
+
+Fica em model próprio (e não solto em `MEDIA`) para a equipe reaproveitar imagens entre campanhas e para que apagar o arquivo por fora não quebre e-mails já enviados (`models.py:172-175`).
+
+### EmailMarketingSettings
+
+`app/emailmarketing/models.py:188-227` — ajustes globais da régua, singleton.
+
+| Campo | Tipo | Obrigatório | Default / Choices | Descrição |
+|---|---|---|---|---|
+| `max_ignored_emails` | `PositiveIntegerField` | Não | `default=3` | Depois de quantos e-mails seguidos sem clique o cliente sai da régua; `0` desliga; um clique zera a contagem |
+| `min_interval_hours` | `PositiveIntegerField` | Não | `default=24` | Horas mínimas entre dois e-mails para o mesmo cliente; `0` desliga |
+| `updated_at` | `DateTimeField` | Auto | `auto_now=True` | — |
+
+**Meta** (`models.py:212-213`): `verbose_name`/`verbose_name_plural` = "configuração(ões) de email marketing".
+
+**Métodos:**
+- `save(*args, **kwargs)` (`models.py:219-221`): força `self.pk = 1` antes de salvar — garante que só existe uma linha.
+- `load()` (`classmethod`, `models.py:223-226`): `get_or_create(pk=1)`, criando com os defaults na primeira chamada.
+- `__str__`: `"Configurações de email marketing"`.
+
+## Endpoints
+
+Nenhuma view declara `authentication_classes` própria (herda o default global JWT, `core/settings.py:136-138`), exceto `EmailClickView`, que zera explicitamente `authentication_classes = []` e usa `AllowAny`.
+
+| Método | Rota completa | View | Permissão |
+|---|---|---|---|
+| GET, POST | `/api/v1/email-marketing/campaign/` | `EmailCampaignListCreateView` | `IsManagementUser` |
+| GET | `/api/v1/email-marketing/campaign/options/` | `EmailCampaignOptionsView` | `IsManagementUser` |
+| GET, PUT, PATCH, DELETE | `/api/v1/email-marketing/campaign/<pk>/` | `EmailCampaignDetailView` | `IsManagementUser` |
+| GET | `/api/v1/email-marketing/campaign/<pk>/preview/` | `EmailCampaignPreviewView` | `IsManagementUser` |
+| GET | `/api/v1/email-marketing/campaign/<pk>/audience/` | `EmailCampaignAudienceView` | `IsManagementUser` |
+| GET, POST | `/api/v1/email-marketing/asset/` | `EmailAssetListCreateView` | `IsManagementUser` |
+| GET, PUT, PATCH | `/api/v1/email-marketing/settings/` | `EmailMarketingSettingsView` | `IsManagementUser` |
+| GET | `/api/v1/email-marketing/click/<uuid:token>/` | `EmailClickView` | `AllowAny` (pública, aberta de dentro do e-mail) |
+| GET | `/api/v1/email-marketing/dispatch/` | `EmailDispatchListView` | `IsManagementUser` |
+
+`IsManagementUser` (`app/account/permissions.py:37-49`) bloqueia clientes — só equipe (admin/gestor) acessa, ou uma chamada com API key de serviço válida (`HasAPIKey`).
+
+<AccordionGroup>
+  <Accordion title="GET, POST /api/v1/email-marketing/campaign/">
+    `EmailCampaignListCreateView` (`views.py:26-30`), `ListCreateAPIView` sobre `EmailCampaign.objects.all()` com `EmailCampaignSerializer`.
+
+    <ParamField body="name" type="string" required>Nome interno.</ParamField>
+    <ParamField body="subject" type="string" required>Assunto do e-mail.</ParamField>
+    <ParamField body="body_html" type="string">Corpo em HTML.</ParamField>
+    <ParamField body="trigger_event" type="string" required>Um dos valores de `TRIGGER_EVENTS`.</ParamField>
+    <ParamField body="delay_days" type="integer">Default `0`.</ParamField>
+    <ParamField body="scheduled_date" type="string">Obrigatório (validado) quando `trigger_event='scheduled'`.</ParamField>
+    <ParamField body="audience" type="string">Um dos valores de `AUDIENCE_CHOICES`, default `all`.</ParamField>
+    <ParamField body="max_ignored_emails" type="integer">Vazio herda o padrão geral.</ParamField>
+    <ParamField body="min_interval_hours" type="integer">Vazio herda o padrão geral.</ParamField>
+    <ParamField body="is_active" type="boolean">Default `true`.</ParamField>
+    <ParamField body="bypass_limits" type="boolean">Default `false`.</ParamField>
+
+    <ResponseField name="sent_count" type="integer">Calculado (`get_sent_count`) — total de `EmailDispatch` com `status=SENT` desta campanha.</ResponseField>
+    <ResponseField name="trigger_event_display" type="string">Rótulo legível do evento.</ResponseField>
+    <ResponseField name="audience_display" type="string">Rótulo legível do público.</ResponseField>
+  </Accordion>
+
+  <Accordion title="GET /api/v1/email-marketing/campaign/options/">
+    `EmailCampaignOptionsView` (`views.py:40-49`). Sem parâmetros. Devolve as opções de select da tela, evitando duplicar as choices no frontend.
+
+    <ResponseField name="trigger_events" type="array">Lista de `{value, label}` a partir de `TRIGGER_EVENTS`.</ResponseField>
+    <ResponseField name="audiences" type="array">Lista de `{value, label}` a partir de `EmailCampaign.AUDIENCE_CHOICES`.</ResponseField>
+  </Accordion>
+
+  <Accordion title="GET, PUT, PATCH, DELETE /api/v1/email-marketing/campaign/<pk>/">
+    `EmailCampaignDetailView` (`views.py:33-36`), `RetrieveUpdateDestroyAPIView`. Mesmos campos do endpoint de criação.
+  </Accordion>
+
+  <Accordion title="GET /api/v1/email-marketing/campaign/<pk>/preview/">
+    `EmailCampaignPreviewView` (`views.py:53-64`). Monta o HTML final (cabeçalho + corpo + rodapé) usando um destinatário fictício (`name = 'Fulano'`) via `services.render_email`.
+
+    Se a campanha não existir: `404` com `{'detail': 'Campanha não encontrada.'}`.
+
+    <ResponseField name="html" type="string">HTML completo pronto para renderização no preview da tela.</ResponseField>
+  </Accordion>
+
+  <Accordion title="GET /api/v1/email-marketing/campaign/<pk>/audience/">
+    `EmailCampaignAudienceView` (`views.py:68-81`). Calcula quantos clientes receberiam a campanha **hoje**, sem disparar nada, via `services.destinatarios`.
+
+    Se a campanha não existir: `404` com `{'detail': 'Campanha não encontrada.'}`.
+
+    <ResponseField name="count" type="integer">Total de destinatários elegíveis hoje.</ResponseField>
+    <ResponseField name="sample" type="array">Até 10 registros `{id, name, email}` de exemplo.</ResponseField>
+  </Accordion>
+
+  <Accordion title="GET /api/v1/email-marketing/dispatch/">
+    `EmailDispatchListView` (`views.py:85-98`), `ListAPIView` com `select_related('campaign', 'client')`.
+
+    <ParamField query="campaign" type="integer">Filtra por id da campanha.</ParamField>
+    <ParamField query="status" type="string">Filtra por `PENDING`/`SENT`/`FAILED`.</ParamField>
+
+    Resposta: lista paginada (paginação default do DRF) de `EmailDispatchSerializer`.
+  </Accordion>
+
+  <Accordion title="GET, POST /api/v1/email-marketing/asset/">
+    `EmailAssetListCreateView` (`views.py:102-108`), `ListCreateAPIView`. POST é multipart (`MultiPartParser`, `FormParser`).
+
+    <ParamField body="image" type="file" required>Arquivo de imagem (write-only no serializer).</ParamField>
+    <ParamField body="name" type="string">Nome amigável.</ParamField>
+
+    <ResponseField name="url" type="string">URL absoluta da imagem — é o que o editor de e-mail insere no HTML.</ResponseField>
+  </Accordion>
+
+  <Accordion title="GET, PUT, PATCH /api/v1/email-marketing/settings/">
+    `EmailMarketingSettingsView` (`views.py:112-118`), `RetrieveUpdateAPIView` cujo `get_object()` sempre retorna `EmailMarketingSettings.load()` (singleton) — não há `pk` na URL.
+
+    <ParamField body="max_ignored_emails" type="integer">Teto geral de e-mails ignorados.</ParamField>
+    <ParamField body="min_interval_hours" type="integer">Intervalo mínimo geral, em horas.</ParamField>
+  </Accordion>
+
+  <Accordion title="GET /api/v1/email-marketing/click/<uuid:token>/">
+    `EmailClickView` (`views.py:121-152`). Rota **pública** (`AllowAny`, `authentication_classes=[]`), excluída do schema (`exclude=True`). É o redirecionador clicado de dentro do e-mail: registra o clique e leva ao destino real.
+
+    <ParamField path="token" type="string" required>UUID do `EmailDispatch`.</ParamField>
+    <ParamField query="to" type="string" required>URL de destino final.</ParamField>
+    <ParamField query="s" type="string" required>Assinatura HMAC do destino, gerada por `services.assinar_destino`.</ParamField>
+
+    Se `to` estiver vazio ou a assinatura for inválida (`services.destino_valido`): redireciona para `settings.FRONTEND_URL` (ou `/` se vazio), sem erro visível — "clique inválido não vira erro na cara do cliente" (`views.py:130-132`).
+
+    Se válido: incrementa `click_count` via `F('click_count') + 1` (evita perda de contagem em cliques simultâneos) e grava `clicked_at` só na primeira vez (`envio.clicked_at or timezone.now()`), depois redireciona (`HttpResponseRedirect`) para `to`.
+  </Accordion>
+</AccordionGroup>
+
+## Serializers
+
+### EmailCampaignSerializer
+
+`app/emailmarketing/serializers.py:6-34`
+
+| Campo | Read-only | Observação |
+|---|---|---|
+| `trigger_event_display` | Sim | `source='get_trigger_event_display'` |
+| `audience_display` | Sim | `source='get_audience_display'` |
+| `sent_count` | Sim | `SerializerMethodField` → `get_sent_count` |
+| `created_at`, `updated_at` | Sim | `read_only_fields` |
+| Demais campos do model | Não | — |
+
+**`get_sent_count(obj)`** (`serializers.py:22-23`): `obj.dispatches.filter(status=EmailDispatch.STATUS_SENT).count()`.
+
+**`validate(attrs)`** (`serializers.py:25-34`): se `trigger_event` resolvido (do payload ou da instância) for `EVENT_SCHEDULED` (`'scheduled'`) e não houver `scheduled_date`, levanta `ValidationError({'scheduled_date': 'Informe a data de disparo da campanha.'})` — evita cadastrar uma campanha avulsa que nunca dispararia.
+
+### EmailDispatchSerializer
+
+`app/emailmarketing/serializers.py:37-46`. Campos: todos do model + `campaign_name` (`source='campaign.name'`, read-only) e `client_name` (`source='client.name'`, read-only). Sem `validate`/`create`/`update` customizados — usado só para leitura (histórico).
+
+### EmailMarketingSettingsSerializer
+
+`app/emailmarketing/serializers.py:49-53`. Campos: `max_ignored_emails`, `min_interval_hours`, `updated_at` (read-only).
+
+### EmailAssetSerializer
+
+`app/emailmarketing/serializers.py:56-73`
+
+| Campo | Read-only | Observação |
+|---|---|---|
+| `image` | write-only (`extra_kwargs`) | Recebido no upload, nunca devolvido |
+| `url` | Sim | `SerializerMethodField` |
+| `name`, `id`, `uploaded_at` | — | — |
+
+**`get_url(obj)`** (`serializers.py:64-73`): monta URL **absoluta** da imagem — necessário porque o e-mail é aberto fora do domínio da aplicação, então um caminho relativo não carregaria a imagem em lugar nenhum. Se `obj.image.url` já começa com `http`, devolve direto; senão usa `request.build_absolute_uri(url)` quando há `request` no contexto do serializer.
+
+## Regras de negócio e funções
+
+Toda a lógica de público, rastreio e envio vive em `app/emailmarketing/services.py`; os management commands apenas orquestram e reportam.
+
+### Rastreio de clique
+
+- **`assinar_destino(url)`** (`services.py:60-64`): assinatura HMAC-SHA256 do destino usando `settings.SECRET_KEY`, truncada em 20 caracteres hex. Retorno: `str`.
+- **`destino_valido(url, assinatura)`** (`services.py:67-68`): compara com `hmac.compare_digest` contra `assinar_destino(url)`. Retorno: `bool`.
+- **`_url_de_rastreio(token, destino)`** (`services.py:71-74`, privada): monta `{BACKEND_URL}/api/v1/email-marketing/click/{token}/?to=...&s=...`.
+- **`aplicar_rastreio(html, token)`** (`services.py:77-92`): substitui todo `href="http(s)://..."` do corpo (via regex `_HREF_RE`) pelo link rastreado. Se `settings.BACKEND_URL` não estiver configurado, loga um warning e devolve o HTML **sem** rastreio — preferem perder a métrica a mandar um e-mail com botões quebrados por link relativo.
+
+Sem verificação de assinatura, a rota de clique seria um redirecionador aberto no domínio da Miggo — risco de phishing e de o domínio ser bloqueado (`services.py:53-55`, `views.py:126-129`).
+
+### Limites de frequência (privadas)
+
+- **`_ultimo_envio_por_cliente(client_ids)`** (`services.py:97-108`): dict `{client_id: sent_at}` do envio `SENT` mais recente de cada cliente.
+- **`_ignorados_seguidos_por_cliente(client_ids)`** (`services.py:111-133`): dict `{client_id: contagem}` de e-mails `SENT` seguidos sem clique, contados a partir do envio mais recente até o primeiro que teve clique (um clique zera a sequência, não é penalidade permanente).
+- **`_onboarding_por_cliente(client_ids)`** (`services.py:136-140`): dict `{client_id: OnboardingSession}`.
+- **`_fim_do_trial_por_cliente(client_ids)`** (`services.py:143-153`): dict `{client_id: expires_at}` da assinatura de teste (`Subscription.trial=True`) mais recente de cada cliente.
+
+### `resolve_event_date(evento, client, sessao, fim_do_trial, campanha=None)`
+
+`services.py:156-175`. Retorna a `date` (não `datetime`) em que o evento aconteceu para o cliente, ou `None` se ainda não ocorreu:
+- `scheduled` → `campanha.scheduled_date` (mesma data para todos, vem da campanha).
+- `signup` → data local de `client.created_at`.
+- `onboarding_completed` → `None` se a sessão não existe ou `completed_at` é `None`; senão a data local de `completed_at`.
+- `trial_end` → data local de `fim_do_trial`, ou `None`.
+
+### `_passa_no_publico(campanha, sessao)`
+
+`services.py:178-184`. `True`/`False` conforme `campanha.audience`: `all` sempre passa; `onboarding_done` exige `sessao.is_complete`; `onboarding_pending` exige o contrário.
+
+### `destinatarios(campanha, hoje=None)`
+
+`services.py:187-245`. **Função central de elegibilidade** — retorna a lista de `Client` que devem receber a campanha hoje e ainda não receberam.
+
+1. Exclui clientes que já têm `EmailDispatch` com `status=SENT` para essa campanha, e clientes sem `email`.
+2. Para cada cliente, resolve `data_evento` via `resolve_event_date`; se `None`, pula.
+3. Calcula `data_alvo = data_evento + delay_days` (campanha `scheduled` usa deslocamento `0`).
+4. Só considera elegível se `hoje - JANELA_DE_ATRASO_DIAS <= data_alvo <= hoje` (`JANELA_DE_ATRASO_DIAS = 3`, `services.py:48`) — tolera atraso de até 3 dias (ex.: deploy/manutenção) mas não dispara para toda a base histórica ao ativar uma campanha nova.
+5. Filtra por público (`_passa_no_publico`).
+6. Se `campanha.bypass_limits` for `False`: aplica teto de ignorados (`campanha.limite_de_ignorados`) e intervalo mínimo (`campanha.intervalo_minimo`), herdando de `EmailMarketingSettings.load()` quando a campanha não define valor próprio.
+
+Retorno: `list[Client]`.
+
+<Warning>
+`JANELA_DE_ATRASO_DIAS = 3` é o teto que impede uma campanha recém-ativada de disparar para toda a base histórica de uma vez (todo cliente antigo tem data de cadastro) — comentário explícito em `services.py:40-48`. Ativar uma campanha `signup`/`onboarding_completed`/`trial_end` sem essa proteção "queimaria" a reputação do domínio de envio.
+</Warning>
+
+### `render_email(campanha, client)`
+
+`services.py:248-256`. Monta o HTML final substituindo `{{ nome }}`/`{{nome}}` no `body_html` pelo `client.name`, e renderiza o template `emails/marketing_base.html` com `{subject, body_html, frontend_url}`. Retorno: `str` (HTML completo).
+
+### `enviar_campanha(campanha, hoje=None, dry_run=False)`
+
+`services.py:259-320`. Envia a campanha para quem está elegível hoje.
+
+- Chama `destinatarios(campanha, hoje=hoje)`. Se vazio ou `dry_run=True`, retorna o resumo sem enviar nada.
+- Abre **uma única conexão SMTP** (`get_connection()`) para todo o lote.
+- Aplica rate limit: no máximo `RATE_LIMIT_PER_WINDOW = 50` envios por `RATE_LIMIT_WINDOW_SECONDS = 60` segundos (`services.py:36-37`); ao atingir o teto, dorme o tempo restante da janela antes de continuar.
+- Para cada cliente: cria (ou reaproveita) um `EmailDispatch` via `get_or_create` com `status=PENDING` **antes** de enviar — é dali que sai o `token` dos links rastreados, e o `unique_together` impede dois processos concorrentes de enviarem duplicado. Se já existir um dispatch `SENT`, pula.
+- Renderiza o HTML (`render_email` + `aplicar_rastreio`) e envia via `EmailMultiAlternatives` (corpo texto via `strip_tags`, alternativa HTML anexada).
+- Em caso de exceção no envio: grava `status=FAILED` e `error` (truncado em 2000 chars), loga warning, incrementa `resumo['failed']` — uma falha de e-mail não interrompe o lote.
+- Em caso de sucesso: `status=SENT`, `error=''`, incrementa `resumo['sent']`.
+- Retorno: `dict {'campaign': str, 'eligible': int, 'sent': int, 'failed': int}`.
+
+### `enviar_campanhas_ativas(hoje=None, dry_run=False)`
+
+`services.py:323-327`. Chama `enviar_campanha` para cada `EmailCampaign` com `is_active=True`. Retorno: `list[dict]` (um resumo por campanha).
+
+### Management command: `seed_marketing_emails`
+
+`app/emailmarketing/management/commands/seed_marketing_emails.py`
+
+- **O que faz:** cria/atualiza as 7 campanhas padrão da régua de trial descrita no card MIG-264 (dias 0, 1, 3, 4, 6, 7 e 8), com conteúdo HTML fixo definido no próprio comando (`CAMPANHAS`, `seed_marketing_emails.py:17-157`).
+- **Idempotente:** identifica cada campanha pelo campo `name` e usa `EmailCampaign.objects.update_or_create(name=..., defaults=...)` (`seed_marketing_emails.py:167`) — rodar de novo atualiza o texto sem duplicar. O corpo permanece editável depois via `/admin`.
+- **Argumentos:** nenhum.
+- **Exemplo:**
+  ```bash
+  ./venv/Scripts/python.exe manage.py seed_marketing_emails
+  ```
+- Ao final imprime quantas campanhas foram criadas e quantas atualizadas.
+
+### Management command: `send_marketing_emails`
+
+`app/emailmarketing/management/commands/send_marketing_emails.py`
+
+- **O que faz:** dispara as campanhas de e-mail marketing elegíveis no dia, chamando `services.enviar_campanhas_ativas` (ou `services.enviar_campanha` para uma campanha específica). Pensado para rodar uma vez por dia via schedule externo (Dokploy) — rodar duas vezes no mesmo dia não duplica envio, pois a trava é o `EmailDispatch` (`unique_together`).
+- **Argumentos:**
+  - `--dry-run`: só conta quem receberia, sem enviar nem gravar nada (`store_true`).
+  - `--campaign <id>`: dispara apenas a campanha com esse id, em vez de todas as ativas. Se o id não existir, imprime erro e sai sem lançar exceção.
+- **Exemplos:**
+  ```bash
+  ./venv/Scripts/python.exe manage.py send_marketing_emails
+  ./venv/Scripts/python.exe manage.py send_marketing_emails --dry-run
+  ./venv/Scripts/python.exe manage.py send_marketing_emails --campaign 3
+  ```
+- Ao final imprime, por campanha, elegíveis/enviados/falhos, e um total agregado; usa `self.style.WARNING` se houve alguma falha, `SUCCESS` caso contrário.
+
+<Note>
+Uma régua com 500 destinatários no mesmo dia leva cerca de 10 minutos de execução, dado o rate limit de 50/min — o comando é pensado para rodar sozinho, sem timeout apertado (`services.py:33-35`).
+</Note>
+
+## Erros comuns / pontos de atenção
+
+<Warning>
+Sem `settings.BACKEND_URL` configurado, os e-mails saem **sem rastreio de clique** (silenciosamente, só um warning no log) — `aplicar_rastreio` detecta a ausência e devolve o HTML original (`services.py:85-87`).
+</Warning>
+
+<Warning>
+Ativar uma campanha ancorada em `signup`/`onboarding_completed`/`trial_end` dispara retroativamente para quem passou pelo evento nos últimos `JANELA_DE_ATRASO_DIAS` (3) dias — não para toda a base histórica, graças à janela, mas ainda é um disparo imediato a considerar antes de ativar.
+</Warning>
+
+<Warning>
+`EmailCampaignPreviewView` e `EmailCampaignAudienceView` retornam `404` simples (`{'detail': 'Campanha não encontrada.'}`) quando o `pk` não existe — não há tratamento de permissão adicional por campanha, apenas `IsManagementUser` global.
+</Warning>
+
+<Note>
+O comando `send_marketing_emails --campaign <id>` só existe para permitir reenvio pontual de uma campanha; ele ainda respeita todas as regras de elegibilidade normais (não força envio para quem já recebeu ou não é elegível hoje).
+</Note>
+
+## Relacionados
+
+<Columns cols={2}>
+  <Card title="Client" icon="briefcase" href="/backend/apps/client">
+    `EmailDispatch.client` referencia `app.client.models.Client`, e `destinatarios()` usa `client.created_at`/`client.email` para resolver elegibilidade.
+  </Card>
+  <Card title="Account" icon="user" href="/backend/apps/account">
+    `IsManagementUser` (`app/account/permissions.py`) protege todos os endpoints de gestão da régua.
+  </Card>
+  <Card title="Notification" icon="bell" href="/backend/apps/notification">
+    Canal complementar: notificações in-app cobrem eventos equivalentes de ciclo de vida (cadastro, onboarding, cobrança) dentro do produto.
+  </Card>
+</Columns>

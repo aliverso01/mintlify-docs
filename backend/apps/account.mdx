@@ -1,0 +1,400 @@
+---
+title: "Account"
+description: "Autenticação, gestão de usuários (clientes e equipe), recuperação de senha e suporte (chat com IA e tickets) da plataforma Miggo"
+icon: "user-round"
+---
+
+## Responsabilidade
+
+O app `account` concentra tudo relacionado a identidade e acesso na Miggo: o modelo de usuário customizado (`CustomUser`, sem `username`, login por e-mail), autenticação por sessão e por JWT (`rest_framework_simplejwt`), login social com Google, cadastro/gestão de clientes e de membros da equipe (admin/gestor), recuperação de senha por código, verificação de e-mail e um par de metadados livres por usuário (`UserMeta`, ex.: código de reset de senha).
+
+Também vive aqui o subsistema de **suporte**: um chat com IA (proxy para a OpenAI, com prompt de sistema fixo no servidor) e tickets de suporte humano, com integração unidirecional Miggo → Jira (projeto `MIG`) para abrir e acompanhar issues.
+
+O app é consumido pelo `frontend-miggo` (login, cadastro, perfil, chat de suporte, formulário de contato, painel administrativo de equipe/tickets) e dispara efeitos em outros apps do backend: ao criar um `CustomUser`, um signal cria automaticamente o `Client` correspondente (`app.client.models.Client`); o serviço de e-mail de "post publicado" (`send_post_published_email`) é pensado para ser chamado pelo `app.post`; e as notificações de resposta de suporte usam `app.notification.utils.notify`.
+
+## Arquivos
+
+| Arquivo | Conteúdo |
+|---|---|
+| `app/account/models.py` | `CustomUser`, `CustomUserManager` e `UserMeta` |
+| `app/account/support_models.py` | `SupportConversation`, `SupportMessage`, `SupportTicket` |
+| `app/account/serializers.py` | `CustomUserSerializer`, `TeamMemberSerializer`, `UserMetaSerializer` + geração/validação de senha |
+| `app/account/views.py` | CRUD de usuários/equipe/meta, login/logout, login Google, refresh de token seguro, recuperação de senha, verificação de e-mail |
+| `app/account/support_views.py` | Chat de suporte com IA, CRUD de tickets de suporte, status/sincronização com Jira |
+| `app/account/urls.py` | Rotas do app (montadas sob `/api/v1/account/`) |
+| `app/account/admin.py` | Registro de `CustomUser` (via `UserAdmin` customizado) e `UserMeta` no Django Admin |
+| `app/account/apps.py` | `AccountConfig` — registra os signals no `ready()` |
+| `app/account/authentication.py` | `JWTAuthentication` (nome enganoso — é `SessionAuthentication` sem CSRF) |
+| `app/account/forms.py` | `CustomUserCreationForm` / `CustomUserChangeForm` para o Django Admin |
+| `app/account/jira_service.py` | Integração unidirecional Miggo → Jira (criar issue, atualizar prioridade, consultar status) |
+| `app/account/permissions.py` | `HasAPIKeyOrIsAuthenticated`, `IsManagementUser`, `IsAdminUser` + helpers `is_management_user`/`is_admin_user` |
+| `app/account/signals.py` | `manage_client` — sincroniza `Client` a partir de `CustomUser` |
+| `app/account/tests.py` | Não lido em detalhe (fora do escopo desta página; ver regra de não invenção) |
+
+## Modelos
+
+### CustomUser
+
+Usuário único da plataforma (equipe Miggo e clientes), autenticado por e-mail. Estende `AbstractBaseUser` + `PermissionsMixin`. Definido em `app/account/models.py:26`.
+
+| Campo | Tipo | Obrigatório | Default / choices | Descrição |
+|---|---|---|---|---|
+| `hash` | `CharField(64)` | não editável | `generate_unique_hash` (via `utils.toolkit`) | Identificador único não sequencial, gerado automaticamente |
+| `email` | `EmailField` | sim | — | Único; é o `USERNAME_FIELD` |
+| `name` | `CharField(255)` | sim | — | `REQUIRED_FIELDS` inclui `name` (usado por `createsuperuser`) |
+| `phone` | `CharField(20)` | não | `null=True, blank=True` | Telefone |
+| `role` | `CharField(50)` | não | `'client'` | Papel do usuário: valores usados no código incluem `'client'`, `'manager'`, `'admin'` |
+| `created_at` | `DateTimeField` | — | `auto_now_add=True` | — |
+| `is_staff` | `BooleanField` | — | `False` | Exigido pelo Django Admin |
+| `is_active` | `BooleanField` | — | `True` | — |
+| `google_id` | `CharField(255)` | não | `unique=True, null=True, blank=True` | Preenchido no login social com Google |
+| `avatar_url` | `URLField(500)` | não | `blank=True, null=True` | Avatar vindo do Google |
+| `email_verified` | `BooleanField` | — | `False` | Marcado `True` no login Google ou via fluxo de verificação de e-mail |
+
+**Manager:** `CustomUserManager` (`app/account/models.py:8`)
+- `create_user(email, password=None, **extra_fields)` — normaliza o e-mail, cria a instância, chama `set_password` (hash) e salva. Levanta `ValueError` se `email` vazio.
+- `create_superuser(email, password=None, **extra_fields)` — força `is_staff=True`, `is_superuser=True`, `is_active=True`, `role='admin'` e delega para `create_user`.
+
+**Relacionamentos:** `UserMeta.user` (FK, `related_name='meta'`), `Client.user` (app `client`, criado via signal), `SupportConversation.user`, `SupportTicket.user` (ambos `SET_NULL`).
+
+**Métodos:** `__str__` retorna o `email` (`app/account/models.py:50`).
+
+### UserMeta
+
+Par chave/valor livre associado a um usuário — usado, por exemplo, para armazenar o código de recuperação de senha (`key='password_reset_code'`). Definido em `app/account/models.py:53`.
+
+| Campo | Tipo | Obrigatório | Default | Descrição |
+|---|---|---|---|---|
+| `user` | `ForeignKey(CustomUser)` | sim | — | `on_delete=CASCADE`, `related_name='meta'` |
+| `key` | `CharField(255)` | sim | — | Nome da chave (ex.: `password_reset_code`) |
+| `value` | `TextField` | sim | — | Valor armazenado como texto |
+
+**Métodos:** `__str__` retorna `"{key}: {value}"` (`app/account/models.py:58`).
+
+### SupportConversation
+
+Registra uma conversa do chat de suporte com IA, permitindo à equipe Miggo revisar dúvidas, elogios e sugestões. Definido em `app/account/support_models.py:5`.
+
+| Campo | Tipo | Obrigatório | Default / choices | Descrição |
+|---|---|---|---|---|
+| `user` | `ForeignKey(settings.AUTH_USER_MODEL)` | não | `on_delete=SET_NULL, null=True, blank=True`, `related_name='support_conversations'` | Usuário autenticado (ou `None` se anônimo) |
+| `session_key` | `CharField(64)` | não | `blank=True, null=True` | Não é preenchido pelas views lidas — campo existe no modelo mas não é usado em `support_views.py` |
+| `conversation_type` | `CharField(20)` | — | choices `support`/`compliment`/`suggestion`/`other`, default `support` | Classificação automática da conversa |
+| `summary` | `TextField` | não | `blank=True` | Não é preenchido pelas views lidas |
+| `created_at` | `DateTimeField` | — | `auto_now_add=True` | — |
+| `updated_at` | `DateTimeField` | — | `auto_now=True` | — |
+
+**Meta:** `ordering = ['-created_at']`. **`__str__`**: `"[tipo] usuário — data"` (`app/account/support_models.py:41`).
+
+### SupportMessage
+
+Mensagem individual dentro de uma `SupportConversation`. Definido em `app/account/support_models.py:46`.
+
+| Campo | Tipo | Obrigatório | Default / choices | Descrição |
+|---|---|---|---|---|
+| `conversation` | `ForeignKey(SupportConversation)` | sim | `on_delete=CASCADE`, `related_name='messages'` | — |
+| `role` | `CharField(10)` | sim | choices `user`/`assistant` | Origem da mensagem |
+| `content` | `TextField` | sim | — | Conteúdo da mensagem |
+| `created_at` | `DateTimeField` | — | `auto_now_add=True` | — |
+
+**Meta:** `ordering = ['created_at']`.
+
+### SupportTicket
+
+Ticket de suporte humano enviado pelo formulário de contato — persistido, enviado por e-mail para a equipe e opcionalmente sincronizado com um issue no Jira. Definido em `app/account/support_models.py:73`.
+
+| Campo | Tipo | Obrigatório | Default / choices | Descrição |
+|---|---|---|---|---|
+| `user` | `ForeignKey(settings.AUTH_USER_MODEL)` | não | `on_delete=SET_NULL, null=True, blank=True`, `related_name='support_tickets'` | Preenchido se a requisição estiver autenticada |
+| `ticket_code` | `CharField(20)` | não | `unique=True, blank=True, null=True` | Gerado automaticamente no `save()` (formato `TKT-XXXXXXXX`) se vazio |
+| `name` | `CharField(255)` | sim | — | — |
+| `email` | `EmailField` | sim | — | — |
+| `category` | `CharField(20)` | — | choices `doubt`/`problem`/`billing`/`suggestion`/`compliment`/`other`, default `doubt` | — |
+| `subject` | `CharField(255)` | sim | — | — |
+| `message` | `TextField` | sim | — | — |
+| `status` | `CharField(20)` | — | choices `new`/`read`/`resolved`, default `new` | — |
+| `priority` | `CharField(10)` | — | choices `low`/`medium`/`high`/`urgent`, default `medium` | Sincroniza com a prioridade do issue no Jira |
+| `jira_issue_key` | `CharField(30)` | não | `blank=True, null=True` | Chave do issue criado no Jira (ex.: `MIG-123`) |
+| `jira_issue_url` | `URLField` | não | `blank=True` | URL do issue no Jira |
+| `admin_notes` | `TextField` | não | `blank=True` | Notas internas; também recebe o histórico de respostas enviadas ao cliente |
+| `created_at` | `DateTimeField` | — | `auto_now_add=True` | — |
+| `updated_at` | `DateTimeField` | — | `auto_now=True` | — |
+
+**Meta:** `ordering = ['-created_at']`.
+
+**Métodos:**
+- `save(*args, **kwargs)` (`app/account/support_models.py:126`) — se `ticket_code` estiver vazio, gera um código aleatório `TKT-` + 8 caracteres alfanuméricos maiúsculos, garantindo unicidade com um loop de checagem no banco, antes de chamar o `save()` padrão.
+- `__str__` retorna `"[ticket_code] subject — email"`.
+
+## Endpoints
+
+Todas as rotas abaixo estão sob o prefixo `/api/v1/account/` (definido em `core/urls.py:30`). Por padrão, o projeto usa `DEFAULT_AUTHENTICATION_CLASSES = ['rest_framework_simplejwt.authentication.JWTAuthentication']` e `DEFAULT_PERMISSION_CLASSES = ['app.account.permissions.HasAPIKeyOrIsAuthenticated']` (`core/settings.py:135-141`) — uma view só fica realmente aberta quando declara explicitamente `authentication_classes = []` / `permission_classes = [AllowAny]`, como é o caso das views públicas listadas abaixo.
+
+| Método | Rota completa | View | Permissão |
+|---|---|---|---|
+| POST | `/api/v1/account/token/` | `TokenObtainPairView` (simplejwt) | padrão do projeto |
+| POST | `/api/v1/account/token/refresh/` | `SafeTokenRefreshView` | padrão do projeto |
+| POST | `/api/v1/account/create/` | `CreateUserView` | `AllowAny` |
+| POST | `/api/v1/account/register/` | `CreateUserView` (mesma view, rota alternativa) | `AllowAny` |
+| POST | `/api/v1/account/team/create/` | `CreateTeamMemberView` | `IsAdminUser` |
+| GET | `/api/v1/account/team/list/` | `ListTeamView` | `IsManagementUser` |
+| PUT/PATCH | `/api/v1/account/team/update/<int:pk>/` | `UpdateTeamMemberView` | `IsAdminUser` |
+| PUT/PATCH | `/api/v1/account/update/<int:pk>/` | `UpdateUserView` | padrão do projeto (não declara `permission_classes` própria) |
+| DELETE | `/api/v1/account/delete/<int:pk>/` | `DeleteUserView` | `IsAdminUser` |
+| GET | `/api/v1/account/list/` | `ListUsersView` | `IsManagementUser` |
+| POST | `/api/v1/account/user-meta/create/` | `UserMetaCreateView` | padrão do projeto |
+| PUT/PATCH | `/api/v1/account/user-meta/update/<int:pk>/` | `UpdateUserMetaView` | padrão do projeto |
+| DELETE | `/api/v1/account/user-meta/delete/<int:pk>/` | `DeleteUserMetaView` | padrão do projeto |
+| GET | `/api/v1/account/user-meta/list/` | `ListUserMetaView` | `IsManagementUser` |
+| POST | `/api/v1/account/login/` | `LoginView` | `AllowAny` |
+| POST | `/api/v1/account/logout/` | `LogoutView` | `AllowAny` |
+| POST | `/api/v1/account/google/` | `GoogleAuthView` | `AllowAny` |
+| POST | `/api/v1/account/password-reset/request/` | `PasswordResetRequestView` | `AllowAny` |
+| POST | `/api/v1/account/password-reset/confirm/` | `PasswordResetConfirmView` | `AllowAny` |
+| POST | `/api/v1/account/verify-email/send/` | `SendVerificationEmailView` | `IsAuthenticated` |
+| POST | `/api/v1/account/verify-email/confirm/` | `ConfirmEmailVerificationView` | `AllowAny` |
+| POST | `/api/v1/account/support/chat/` | `SupportChatView` | padrão do projeto (não declara `permission_classes` própria) |
+| POST | `/api/v1/account/support/ticket/` | `SupportTicketCreateView` | padrão do projeto |
+| GET | `/api/v1/account/support/tickets/` | `SupportTicketListView` | checagem manual de admin dentro da view |
+| PATCH | `/api/v1/account/support/tickets/<int:pk>/` | `SupportTicketListView` | checagem manual de admin dentro da view |
+| GET | `/api/v1/account/support/tickets/<int:pk>/jira-status/` | `SupportTicketJiraStatusView` | checagem manual de admin dentro da view |
+| POST | `/api/v1/account/support/tickets/<int:pk>/jira-sync/` | `SupportTicketJiraSyncView` | checagem manual de admin dentro da view |
+| POST | `/api/v1/account/support/tickets/<int:pk>/reply/` | `SupportTicketReplyView` | checagem manual de admin dentro da view |
+
+<AccordionGroup>
+<Accordion title="POST /api/v1/account/create/ e /register/ — CreateUserView">
+Cria um `CustomUser` público (`app/account/views.py:51`). Loga o usuário automaticamente via `login(request, user)` logo após criar, para permitir seguir direto para o onboarding.
+
+<ParamField path="email" type="string" required>E-mail único do usuário</ParamField>
+<ParamField path="name" type="string" required>Nome</ParamField>
+<ParamField path="password" type="string">Senha; se ausente/vazia, uma senha forte é gerada automaticamente e enviada por e-mail</ParamField>
+<ParamField path="phone" type="string">Telefone; aceita apenas dígitos (opcionalmente com `+` inicial), 8 a 15 dígitos</ParamField>
+
+<ResponseField name="user" type="object">Dados serializados do usuário criado (`CustomUserSerializer`)</ResponseField>
+
+Códigos: `201` sucesso; `400` e-mail já cadastrado, senha fraca (mínimo 8 caracteres, 1 maiúscula, 1 número) ou telefone inválido.
+
+Efeito colateral: dispara o signal `manage_client` (cria `Client` associado) e, se a senha foi gerada automaticamente, envia e-mail com as credenciais (template `emails/credentials.html`) — falha de envio é logada e não quebra a criação.
+</Accordion>
+
+<Accordion title="POST /api/v1/account/team/create/ — CreateTeamMemberView">
+Cria um membro de equipe (admin/manager) ou um cliente já com onboarding completo (`app/account/views.py:98`). Restrito a `IsAdminUser`, com checagem adicional dentro do `create()`: só segue se `request.user.is_superuser` ou `request.user.role == 'admin'` (caso contrário `403`).
+
+<ParamField path="role" type="string" default="manager">`admin`, `manager` ou `client`. Se `admin`/`manager`, o usuário é marcado `is_staff=True`</ParamField>
+<ParamField path="email" type="string" required />
+<ParamField path="name" type="string" required />
+<ParamField path="password" type="string" />
+
+<ResponseField name="id" type="integer" />
+<ResponseField name="email" type="string" />
+
+Efeito colateral: se `role == 'client'`, cria diretamente um `Client` com `onboarding_step='4'` (pula o onboarding) além do `Client` que o signal `manage_client` já cria para todo `CustomUser` novo.
+
+Códigos: `201` sucesso; `403` se o usuário autenticado não for admin/superuser; `400` erros de validação do serializer.
+</Accordion>
+
+<Accordion title="POST /api/v1/account/login/ — LoginView">
+Autentica por e-mail/senha (`app/account/views.py:231`). `AllowAny`.
+
+<ParamField path="email" type="string" required />
+<ParamField path="password" type="string" required />
+
+<ResponseField name="message" type="string" />
+<ResponseField name="user" type="object">`CustomUserSerializer` do usuário autenticado</ResponseField>
+
+Regras: admins/gestores/staff sempre podem logar. Para clientes, verifica `user.client.active` — se inativo, `403` com mensagem "Sua conta está inativa...". Se o usuário tem `role='client'` mas não possui `Client` associado (dessincronização), `403` "Perfil cliente não encontrado.". Credenciais inválidas: `401`.
+</Accordion>
+
+<Accordion title="POST /api/v1/account/google/ — GoogleAuthView">
+Login/cadastro via Google ID token (`app/account/views.py:281`). `AllowAny`.
+
+<ParamField path="credential" type="string">ID token do Google (aceita também `token` como alias)</ParamField>
+
+<ResponseField name="user" type="object" />
+<ResponseField name="access" type="string">JWT access token</ResponseField>
+<ResponseField name="refresh" type="string">JWT refresh token</ResponseField>
+<ResponseField name="created" type="boolean">`true` se um novo usuário foi criado</ResponseField>
+
+Fluxo: valida o token com `google_id_token.verify_oauth2_token` contra `settings.GOOGLE_CLIENT_ID` (tolerância de relógio configurável via `GOOGLE_AUTH_CLOCK_SKEW`, default 10s). Confere `iss` (`accounts.google.com`) e `email_verified`. Se o usuário não existe, cria (`email_verified=True`, sem senha). Se existe, atualiza `google_id`/`avatar_url`/`email_verified` quando necessário e reaplica a checagem de `Client.active` para não-staff. Gera JWT via `RefreshToken.for_user(user)` além do login de sessão.
+
+Códigos: `400` sem token; `503` Google Client ID não configurado ou falha de rede ao validar; `401` token inválido, issuer inesperado, e-mail não verificado; `403` conta/cliente inativo ou perfil cliente ausente.
+</Accordion>
+
+<Accordion title="POST /api/v1/account/password-reset/request/ e /confirm/ — Recuperação de senha">
+`PasswordResetRequestView` (`app/account/views.py:392`) gera um código de 6 dígitos (`utils.toolkit.generate_code`), remove códigos anteriores do mesmo usuário em `UserMeta` (`key='password_reset_code'`) e envia por e-mail (template `emails/password_reset.html`). Sempre responde `200` com mensagem genérica, mesmo se o e-mail não existir (evita enumeração de contas).
+
+`PasswordResetConfirmView` (`app/account/views.py:445`) valida `email` + `code` contra o último `UserMeta` salvo, exige nova senha com mínimo 8 caracteres, 1 maiúscula e 1 número, troca a senha e apaga o `UserMeta` do código.
+
+<ParamField path="email" type="string" required />
+<ParamField path="code" type="string" required>Apenas no confirm</ParamField>
+<ParamField path="new_password" type="string" required>Apenas no confirm</ParamField>
+
+Códigos: `400` campos ausentes, senha fraca ou código inválido/expirado; `500` falha ao enviar e-mail (apenas no request).
+</Accordion>
+
+<Accordion title="POST /api/v1/account/verify-email/send/ e /confirm/ — Verificação de e-mail">
+`SendVerificationEmailView` (`IsAuthenticated`) gera um token com `django.contrib.auth.tokens.default_token_generator` e um `uidb64`, monta um link `FRONTEND_URL/verify-email?uid=...&token=...` e envia por e-mail simples. Retorna `400` se o e-mail já estiver verificado.
+
+`ConfirmEmailVerificationView` (`AllowAny`) decodifica `uid`, busca o `CustomUser`, valida o `token` e marca `email_verified=True`.
+
+<ParamField path="uid" type="string" required>Apenas no confirm</ParamField>
+<ParamField path="token" type="string" required>Apenas no confirm</ParamField>
+
+Códigos: `400` parâmetros inválidos, link inválido/expirado, ou e-mail já verificado.
+</Accordion>
+
+<Accordion title="POST /api/v1/account/support/chat/ — SupportChatView">
+Proxy seguro para a OpenAI (`app/account/support_views.py:121`) — a chave `OPENAI_API_KEY` nunca é exposta ao frontend. Usa o modelo `gpt-4o-mini`, `temperature=0.6`, `max_tokens=600`, com um prompt de sistema fixo (`SUPPORT_SYSTEM_PROMPT`) que define regras de segurança (nunca revelar dados administrativos/de outros clientes) e sempre incluir links diretos para páginas da plataforma. O domínio dos links do prompt é resolvido em runtime substituindo `plataforma.miggomkt.com.br`/`app.miggomkt.com.br` por `settings.FRONTEND_URL`.
+
+<ParamField path="messages" type="array" required>Histórico de mensagens `{role, content}`; truncado às últimas 20</ParamField>
+<ParamField path="conversation_id" type="integer">Se informado, continua uma `SupportConversation` existente</ParamField>
+
+<ResponseField name="reply" type="string" />
+<ResponseField name="conversation_id" type="integer" />
+
+Efeito colateral: classifica a conversa (`_classify_conversation`, por palavras-chave em pt-BR) em `support`/`compliment`/`suggestion` e salva a última mensagem do usuário + a resposta em `SupportMessage`; falha ao salvar no banco nunca quebra a resposta do chat.
+
+Códigos: `400` sem `messages`; `500` chave da OpenAI não configurada; `502` erro HTTP ou resposta malformada da OpenAI; `504` timeout/sem conexão.
+</Accordion>
+
+<Accordion title="POST /api/v1/account/support/ticket/ — SupportTicketCreateView">
+Cria um `SupportTicket` a partir do formulário de contato (`app/account/support_views.py:238`).
+
+<ParamField path="name" type="string" required />
+<ParamField path="email" type="string" required />
+<ParamField path="subject" type="string" required />
+<ParamField path="message" type="string" required />
+<ParamField path="category" type="string" default="doubt" />
+<ParamField path="priority" type="string" default="medium">Se inválido, cai para `medium`</ParamField>
+
+<ResponseField name="id" type="integer" />
+<ResponseField name="message" type="string" />
+
+Efeitos colaterais, todos best-effort (falhas são logadas via `print`, nunca quebram a resposta): envia e-mail para a equipe (`oie@miggomkt.com.br`, com `reply_to` do solicitante), envia e-mail de confirmação ao cliente (template `emails/support_ticket_confirmation.html`) e chama `create_jira_issue(ticket)` para abrir o issue no Jira, salvando `jira_issue_key`/`jira_issue_url` se bem-sucedido.
+
+Código: `400` se faltar algum campo obrigatório.
+</Accordion>
+
+<Accordion title="GET/PATCH /api/v1/account/support/tickets/ e /<pk>/ — SupportTicketListView">
+`GET` lista tickets (apenas admin/staff/superuser, checado manualmente em `_is_admin`), com filtros `status`, `category` e `search` (busca em `ticket_code`, `name`, `email`, `subject` via `Q`). `PATCH` (na rota com `<pk>`) atualiza `status`, `admin_notes` e/ou `priority`.
+
+<ParamField path="status" type="string">query param do GET</ParamField>
+<ParamField path="category" type="string">query param do GET</ParamField>
+<ParamField path="search" type="string">query param do GET</ParamField>
+
+Efeito colateral do `PATCH`: se `priority` mudou e o ticket já tem `jira_issue_key`, chama `update_jira_priority` para propagar a nova prioridade ao Jira.
+
+Códigos: `403` se não for admin; `404` ticket não encontrado (no PATCH).
+</Accordion>
+
+<Accordion title="GET /api/v1/account/support/tickets/<pk>/jira-status/ — SupportTicketJiraStatusView">
+Consulta sob demanda o status atual do issue no Jira vinculado ao ticket, via `get_jira_issue_status`. Retorna `{'jira_issue_key': null, 'status': null}` se o ticket não tiver issue vinculado. Apenas admin.
+</Accordion>
+
+<Accordion title="POST /api/v1/account/support/tickets/<pk>/jira-sync/ — SupportTicketJiraSyncView">
+Cria o issue no Jira para um ticket que ainda não foi sincronizado (ex.: criado quando o Jira estava indisponível). Idempotente: se já houver `jira_issue_key`, apenas retorna o que existe. Apenas admin.
+
+Código: `502` se `create_jira_issue` falhar (credenciais/configuração ausentes ou erro na API).
+</Accordion>
+
+<Accordion title="POST /api/v1/account/support/tickets/<pk>/reply/ — SupportTicketReplyView">
+Envia uma resposta por e-mail ao cliente (template `emails/support_ticket_reply.html`) e marca o ticket como `read` se ainda estava `new`. Apenas admin.
+
+<ParamField path="reply_message" type="string" required />
+
+Efeito colateral: acrescenta a resposta em `admin_notes` com timestamp (`[RESPOSTA ENVIADA em dd/mm/aaaa HH:MM]`), e chama `notify(...)` (`app.notification.utils`) para o usuário dono do ticket, se houver, com `notification_type='support_response'` e `link='/support'`.
+
+Códigos: `400` sem `reply_message`; `403` não-admin; `404` ticket não encontrado; `500` falha ao enviar o e-mail.
+</Accordion>
+</AccordionGroup>
+
+## Serializers
+
+### CustomUserSerializer (`app/account/serializers.py:36`)
+`ModelSerializer` de `CustomUser`, `fields = '__all__'`.
+- **Somente-leitura:** `is_active`, `is_staff`, `is_superuser`, `groups`, `user_permissions`, `last_login`, `google_id`, `avatar_url`.
+- **`password`:** `write_only=True`, `required=False`, `allow_blank=True`; o `__init__` torna `password` opcional sempre que `self.instance` existir (ou seja, em updates).
+- **`validate_email`** (`serializers.py:51`) — rejeita e-mail já cadastrado (case-insensitive, excluindo a própria instância em update); normaliza para minúsculas.
+- **`validate_password`** (`serializers.py:60`) — só aplica `validate_password_strength` na criação (não em update parcial).
+- **`validate_phone`** (`serializers.py:66`) — aceita vazio; caso contrário remove espaços/parênteses/hífens e exige `^\+?\d{8,15}$`.
+- **`create`** (`serializers.py:75`) — se a senha não for informada, gera uma senha forte (`generate_secure_password`) e, nesse caso, envia e-mail de credenciais (template `emails/credentials.html`) com a senha em texto claro; falha de envio é apenas logada.
+- **`update`** (`serializers.py:116`) — se `password` vier preenchida, valida força e usa `set_password` (hash); demais campos são atribuídos diretamente via `setattr`.
+
+### TeamMemberSerializer (`app/account/serializers.py:126`)
+Estende `CustomUserSerializer`; mesma lógica, mas com `read_only_fields` mais permissivo: apenas `is_superuser`, `groups`, `user_permissions`, `last_login` são somente-leitura (ou seja, `is_active`/`is_staff` ficam graváveis diretamente pelo serializer — a view `CreateTeamMemberView` os define manualmente antes de validar).
+
+### UserMetaSerializer (`app/account/serializers.py:130`)
+`ModelSerializer` simples de `UserMeta`, `fields = '__all__'`, sem validações customizadas.
+
+## Regras de negócio e funções
+
+### Geração e validação de senha (`app/account/serializers.py`)
+- `generate_secure_password(length=12)` (linha 12) — gera senha aleatória com `secrets.choice`, garantindo ao menos 1 maiúscula, 1 minúscula e 1 dígito.
+- `validate_password_strength(password)` (linha 23) — exige mínimo 8 caracteres, 1 maiúscula e 1 dígito; levanta `serializers.ValidationError` com lista de mensagens em pt-BR.
+
+### Autenticação (`app/account/authentication.py`)
+`JWTAuthentication(SessionAuthentication)` (linha 4) — apesar do nome, é uma `SessionAuthentication` com `enforce_csrf` neutralizado (`return` sem validar), necessária para chamadas via `fetch`/`axios` do frontend sem token CSRF.
+
+<Warning>
+Em `app/account/views.py`, a classe `JWTAuthentication` do próprio app (`.authentication.JWTAuthentication`, linha 14) é importada e imediatamente sobrescrita pela `JWTAuthentication` real do `rest_framework_simplejwt` (linha 15), que tem o mesmo nome. Isso torna o import da linha 14 um no-op — nenhuma view em `views.py` usa a `JWTAuthentication` local do app diretamente pelo nome.
+</Warning>
+
+### Permissões (`app/account/permissions.py`)
+- `is_management_user(user)` (linha 15) — `True` para superuser, staff, ou `role in ('admin', 'manager')`.
+- `is_admin_user(user)` (linha 26) — `True` para superuser, staff, ou `role == 'admin'` (gestor **não** conta como admin pleno).
+- `HasAPIKeyOrIsAuthenticated` (linha 5) — permite acesso via API key de serviço OU usuário autenticado.
+- `IsManagementUser` (linha 37) — aceita API key OU `is_management_user`; mensagem `"Acesso restrito à equipe Miggo."`.
+- `IsAdminUser` (linha 52) — aceita API key OU `is_admin_user`; mensagem `"Acesso restrito a administradores."`.
+
+### Signal `manage_client` (`app/account/signals.py:7`)
+Conectado a `post_save` de `CustomUser` (via `get_user_model()`).
+- **Criação (`created=True`):** cria um `Client` (app `client`) com `name`/`email`/`phone` do usuário e `active=True`, e um `ClientMeta` com `key='activation_code'` gerado por `utils.toolkit.generate_code()`.
+- **Exclusão (`kwargs.get('deleted')`):** se o `CustomUser` tiver `client` associado, deleta o `Client`. (Nota: `post_save` não emite `deleted=True` nativamente — este ramo depende de algum chamador passar esse kwarg explicitamente; não foi possível confirmar de onde.)
+- **Atualização:** sincroniza `name`/`email`/`phone` do `Client` existente a partir do `CustomUser` salvo.
+
+### Integração com Jira (`app/account/jira_service.py`)
+Integração **unidirecional** Miggo → Jira via HTTP puro (`urllib`, sem dependência de `requests`), autenticação Basic (e-mail + API token). Configuração lida de `settings.JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_PROJECT_KEY` (default `'MIG'`) e `JIRA_ISSUE_TYPE` (default `'Suporte'`). Se alguma credencial obrigatória faltar, as funções fazem no-op (retornam `None`/`False`) sem levantar exceção.
+- `_config()` (linha 28) — monta a tupla de config ou `None`.
+- `_issue_type()` (linha 39) — tipo de issue usado para todo ticket vindo do Miggo.
+- `_auth_header(email, token)` (linha 44) — monta o header `Authorization: Basic ...`.
+- `_request(method, url, email, token, body=None)` (linha 49) — executa a chamada HTTP e retorna `(status_code, json_ou_dict_vazio)`.
+- `_log(service_response, status_code, payload, client=None)` (linha 68) — grava a chamada em `app.integration.models.Integration` (best-effort; qualquer exceção é engolida).
+- `_adf_description(ticket)` (linha 85) — monta a descrição do issue no formato Atlassian Document Format a partir dos dados do ticket.
+- `create_jira_issue(ticket)` (linha 103) — cria o issue (`project`, `issuetype`, `summary` truncado a 255 chars, `description` em ADF, `priority` mapeada por `PRIORITY_MAP`). Retorna `(key, url)` ou `None`; nunca levanta.
+- `update_jira_priority(issue_key, priority)` (linha 144) — `PUT` na prioridade do issue existente. Retorna `bool`; nunca levanta.
+- `get_jira_issue_status(issue_key)` (linha 167) — `GET` do campo `status`; retorna `{'name': ..., 'category': ...}` ou `None`; nunca levanta.
+- `PRIORITY_MAP` (linha 20) — mapeia prioridade Miggo (`low`/`medium`/`high`/`urgent`) para nome de prioridade padrão do Jira (`Low`/`Medium`/`High`/`Highest`).
+
+### `send_post_published_email(post)` (`app/account/support_views.py:585`)
+Utilitário para ser chamado por `app/post/views.py` quando um post muda para status publicado (documentado no próprio docstring como ponto de integração, não é uma view). Busca `post.client.user`, monta contexto com nome do cliente, título, plataforma (via `post.metadata.first()`) e data agendada, e envia e-mail com o template `emails/post_published.html`. Toda a função está envolvida em `try/except` amplo — qualquer erro é logado via `print` e engolido, nunca propaga.
+
+### Django Admin (`app/account/admin.py`)
+`CustomUserAdmin(UserAdmin)` usa `CustomUserCreationForm`/`CustomUserChangeForm` (`app/account/forms.py`) para contornar o campo `username` que o `UserCreationForm` padrão do Django exige. `list_display` mostra `email, name, phone, role, is_active, is_staff`; `list_filter` por `role, is_active, is_staff`; busca por `email, name`. `UserMeta` é registrado sem customização (`admin.site.register(UserMeta)`).
+
+## Erros comuns / pontos de atenção
+
+- **`SafeTokenRefreshView`** (`app/account/views.py:224`) existe especificamente porque o `TokenRefreshSerializer` padrão do `simplejwt` deixa vazar `ObjectDoesNotExist` quando o usuário do claim foi apagado (ex.: banco restaurado) — isso virava HTML de erro 500 de ~128 KB para o cliente. A correção intercepta e devolve `401` (`no_active_account`).
+- **Import duplicado de `JWTAuthentication`** em `app/account/views.py:14-15` — o import local do app é sombreado pelo do `simplejwt` (ver seção Regras de negócio acima). Reportado como inconsistência, não corrigido.
+- **`GoogleAuthView`** trata separadamente falhas de validação de token (`ValueError`, logadas com `aud` do token vs. client id configurado para diagnosticar client id divergente) de falhas de rede/transporte (`503`, não `401`), evitando classificar problema de infraestrutura como token inválido.
+- **Enumeração de e-mail evitada** em `PasswordResetRequestView` — resposta `200` genérica independentemente de o e-mail existir ou não.
+- **`SupportConversation.session_key` e `summary`** estão definidos no modelo mas não são preenchidos por nenhuma view lida (`support_views.py`) — possivelmente campos legados ou reservados para uso futuro.
+- **Signal `manage_client`, ramo de exclusão** depende de `kwargs.get('deleted', False)` vindo de fora do `post_save` padrão do Django — não foi possível confirmar no código lido quem emite esse kwarg; pode nunca ser exercitado na prática.
+- **Emails com falha silenciosa:** praticamente todos os envios de e-mail no app (`credentials`, `support_ticket_confirmation`, `post_published`, criação de Jira issue) usam `try/except` amplo com `print`/`logger`, nunca interrompendo o fluxo principal — bom para robustez, mas significa que falhas de e-mail não ficam visíveis para o usuário nem para monitoramento automático além dos logs.
+- **`UpdateUserView`** e **`UserMetaCreateView`/`UpdateUserMetaView`/`DeleteUserMetaView`** não declaram `permission_classes` próprias, então caem no `DEFAULT_PERMISSION_CLASSES` do projeto (`HasAPIKeyOrIsAuthenticated`) — qualquer usuário autenticado (não só admin/gestor) pode, em tese, atualizar qualquer `CustomUser` por `pk` ou criar/editar/apagar `UserMeta` de qualquer usuário, já que essas views não filtram por dono do recurso.
+
+## Relacionados
+
+<Columns cols={2}>
+  <Card title="Client" icon="briefcase" href="/backend/apps/client">
+    Perfil de cliente criado automaticamente a partir do `CustomUser` (signal `manage_client`).
+  </Card>
+  <Card title="Onboarding" icon="rocket" href="/backend/apps/onboarding">
+    Fluxo de onboarding referenciado por `onboarding_step` do `Client`.
+  </Card>
+  <Card title="Integration" icon="plug" href="/backend/apps/integration">
+    Registra o log das chamadas ao Jira feitas por `jira_service.py`.
+  </Card>
+  <Card title="Notification" icon="bell" href="/backend/apps/notification">
+    `notify()` usado para avisar o cliente sobre resposta de suporte.
+  </Card>
+</Columns>

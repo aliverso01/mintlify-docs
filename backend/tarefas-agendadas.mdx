@@ -1,0 +1,173 @@
+---
+title: "Tarefas agendadas"
+description: "O que roda periodicamente no backend: cobrança, lembretes de grid, análise de mídia e revisões de post."
+icon: "clock"
+---
+
+O backend tem duas formas de agendamento, e é importante não confundi-las:
+
+| Mecanismo | Onde vive | Para quê |
+| --- | --- | --- |
+| **Schedule do Dokploy** | Infraestrutura de produção | Chama os management commands nos intervalos reais |
+| **`run_cron.py`** | Script na raiz do repositório | Substituto local do `django-crontab` para desenvolvimento no Windows |
+
+<Warning>
+  Em produção, quem dispara as rotinas é o **Dokploy**, chamando `manage.py <comando>`. O `CRONJOBS` de `core/settings.py:374` declara apenas um job e o `run_cron.py` roda um subconjunto — nenhum dos dois é a fonte da verdade do agendamento de produção. Ao adicionar rotina nova, cadastre o schedule no Dokploy.
+</Warning>
+
+## Rotinas de cobrança
+
+`app/subscription/cron.py`. A divisão de responsabilidade está documentada no próprio módulo: o **webhook** (`app/webhooks/views.py`) reage em tempo real ao que acontece na Stripe; estes jobs cuidam do que a Stripe não avisa (trial local sem cartão) e funcionam como rede de segurança para eventos perdidos.
+
+<Note>
+  **No Asaas não existe webhook.** Lá o `sync_asaas_billing` é o único caminho automático, e é ele que transforma cobrança paga em fatura `PAID`.
+</Note>
+
+Todos são idempotentes e devolvem um resumo em `dict`.
+
+| Comando | Frequência | Função | O que faz |
+| --- | --- | --- | --- |
+| `notify_trial_ending` | 1x/dia | `notify_trial_ending()` | Avisa o cliente de que o teste está acabando |
+| `expire_trials` | 1x/dia | `expire_trials()` | Encerra os testes vencidos |
+| `check_invoices` | 1x/dia | `check_invoices()` | Reconcilia o estado das faturas |
+| `check_subscriptions` | 1x/dia | `check_subscriptions()` | Reconcilia o estado das assinaturas |
+| `sync_stripe_billing` | a cada 6h | `sync_stripe_billing(limit=None)` | Sincroniza cobrança da Stripe |
+| `sync_asaas_billing` | a cada 6h | `sync_asaas_billing(limit=None)` | Sincroniza cobrança do Asaas — único caminho automático nesse gateway |
+| `restore_lost_trials` | sob demanda | — | Restaura testes perdidos (uso corretivo, não agendado) |
+
+### Helpers internos do módulo
+
+| Função | O que faz |
+| --- | --- |
+| `_notify_client(client, notification_type, title, message, link='/billing')` | Cria a notificação para o cliente |
+| `_already_notified(subscription, key, within_hours=20)` | Evita notificar o mesmo assunto duas vezes na janela |
+| `_mark_notified(subscription, key)` | Marca o aviso como enviado |
+| `_log_cron_integration(client, path, payload, response, status_code=200)` | Registra a execução na tabela `Integration` |
+| `_status_no_gateway(invoice)` | Resolve o status quando a fatura não tem gateway |
+
+As classes `SubscriptionCron` e `InvoiceCron` (final do arquivo) são apenas invólucros com os métodos `check_subscriptions()` e `check_invoices()`, usados pelo `run_cron.py`.
+
+Referência complementar: `docs/billing-stripe.md` no repositório do backend, e [Subscription](/backend/apps/subscription).
+
+## Lembretes de aprovação do grid
+
+`app/onboarding/cron.py` — rotina do card **MIG-165**, rodada **a cada 5 minutos** pelo schedule do Dokploy:
+
+```bash
+python manage.py send_grid_approval_reminders
+```
+
+Função: `send_grid_approval_reminders()`.
+
+<Steps>
+  <Step title="Filtra quem ainda não aprovou">
+    Percorre os clientes e verifica `data.grid.client_approved`. Só age quando **não** foi aprovado.
+  </Step>
+  <Step title="Exige grid pronto">
+    Só cobra quem tem grid pronto para aprovar e cujo grid não está em regeração (`generation_status != 'pending'`).
+  </Step>
+  <Step title="Respeita o intervalo">
+    Para não repetir a cobrança a cada 5 minutos, reenvia apenas quando o último lembrete já passou da janela configurada.
+  </Step>
+  <Step title="Dispara o flow">
+    Chama o flow de cobrança de aprovação no ManyChat, autenticado com `MANYCHAT_API_KEY`.
+  </Step>
+</Steps>
+
+Variáveis relacionadas: `GRID_APPROVAL_FLOW_ID`, `GRID_APPROVAL_MAX_REMINDERS`.
+
+<Warning>
+  O cabeçalho do módulo (`app/onboarding/cron.py:12`) diz que o filtro usa `grid.reference_id`, mas o código em `app/onboarding/cron.py:90` filtra por `grid.image_url`. O comentário está defasado; vale confiar no código.
+</Warning>
+
+## Geração dos grids pendentes
+
+Também do MIG-165, agendado no Dokploy:
+
+```bash
+python manage.py generate_pending_grids [--limit N]
+```
+
+A etapa do grid no onboarding apenas **escolhe** uma referência; a geração da imagem personalizada — recriar a referência com as cores e a logo da marca — roda depois, em lote, por este comando. Ele busca as sessões com `data.grid.generation_status == 'pending'`, gera cada uma reusando o pipeline de imagem, grava o resultado em `SocialNetworkGrid` e notifica quando fica pronto.
+
+Implementação: `services.generate_pending_grids` em `app/onboarding/services.py`.
+
+## Análise da galeria de mídia
+
+`app/media/cron.py` — card **MIG-138**:
+
+```bash
+python manage.py analyze_media_library
+```
+
+Função principal: `analyze_media_library(limit=DEFAULT_LIMIT, client_id=None, force=False, dry_run=False)`.
+
+Roda em lote sobre as imagens que o cliente subiu e ainda não foram lidas pela IA, gravando `ai_description` e `ai_keywords` — **é isso que torna a foto encontrável pelo MiggoAI** na hora de compor a imagem do post. Idempotente: só pega o que ainda não foi analisado, a menos que se passe `force`. Devolve resumo em `dict`.
+
+| Helper | O que faz |
+| --- | --- |
+| `_pendentes(client_id=None, force=False)` | Imagens da galeria a analisar, **mais recentes primeiro** |
+| `_descartar(media, motivo, dry_run=False)` | Tira a mídia da fila sem descrição |
+| `_contar_falha(media, motivo, dry_run=False)` | Registra mais uma falha e descarta ao bater o teto |
+| `_log_integration(client, payload, response, status_code=200)` | Auditoria em `Integration` |
+| `relatorio_galeria(client_id=None, amostra=10)` | Relatório do estado da galeria, para diagnóstico |
+
+<Tip>
+  `dry_run=True` e `relatorio_galeria()` permitem inspecionar o efeito do job antes de rodar de verdade. Use-os quando uma galeria grande estiver com resultados estranhos.
+</Tip>
+
+Modelo de IA usado: `MEDIA_ANALYSIS_MODEL`.
+
+## Revisões de post agendadas
+
+`app/post/cron.py` — função `send_scheduled_reviews()`. É o **único** job declarado em `CRONJOBS` (`core/settings.py:374`), com expressão de cada minuto.
+
+Verifica os registros de `ScheduledReview` com `scheduled_at <= agora` e dispara a revisão para o ManyChat, usando `app/conversation/services`. Toca `SocialNetwork` e `PlatformIntegration` e registra em `Integration`.
+
+## Rodando localmente
+
+`run_cron.py` substitui o `django-crontab` no Windows: roda os jobs registrados em uma lista própria, uma vez por minuto (ou a cada 30 s, para os que pedem esse intervalo).
+
+```bash
+./venv/Scripts/python.exe run_cron.py
+```
+
+Pare com `Ctrl+C`. Jobs que o script roda:
+
+| Job | Intervalo |
+| --- | --- |
+| `app.subscription.cron.SubscriptionCron.check_subscriptions` | 30 s |
+| `app.subscription.cron.InvoiceCron.check_invoices` | 30 s |
+| `app.post.cron.send_scheduled_reviews` | 60 s |
+
+<Note>
+  A lista `JOBS` do `run_cron.py` é **menor** que o conjunto real de produção, e os intervalos de 30 s existem só para acelerar o teste local. Para exercitar uma rotina específica, prefira chamar o management command diretamente — é o que o Dokploy faz.
+</Note>
+
+## Como diagnosticar uma rotina que não rodou
+
+<Steps>
+  <Step title="Rode o comando na mão">
+    `./venv/Scripts/python.exe manage.py <comando>` — todos devolvem resumo e são idempotentes, então rodar de novo é seguro.
+  </Step>
+  <Step title="Olhe a tabela Integration">
+    As rotinas registram execução e resposta externa lá. Veja [Integration](/backend/apps/integration) ou a tela `/admin/logs`.
+  </Step>
+  <Step title="Confirme o log">
+    Sem `LOG_LEVEL` e `LOG_FILE` configurados, o `logger.info` do job pode não deixar rastro. Veja [Configuração](/backend/configuracao).
+  </Step>
+  <Step title="Verifique o schedule do Dokploy">
+    Se o comando funciona na mão, o problema é o agendamento, não o código.
+  </Step>
+</Steps>
+
+## Relacionados
+
+<Columns cols={2}>
+  <Card title="Comandos" icon="terminal" href="/backend/comandos">
+    Todos os management commands, com argumentos e exemplos.
+  </Card>
+  <Card title="Fluxos principais" icon="git-branch" href="/arquitetura/fluxos">
+    Onde cada rotina entra no ciclo de vida.
+  </Card>
+</Columns>

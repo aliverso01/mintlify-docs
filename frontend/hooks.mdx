@@ -1,0 +1,263 @@
+---
+title: "Hooks"
+description: "Todos os hooks customizados de src/hooks/: assinatura, retorno, endpoints e uso real"
+icon: "anchor"
+---
+
+<AccordionGroup>
+
+<Accordion title="authHook — useAuth">
+`src/hooks/authHook.ts:4-48`
+
+```ts
+export const useAuth = () => {
+  // ...
+  return { login, loginWithGoogle, logout, user, loading, error, register, requestPasswordReset, confirmPasswordReset };
+};
+```
+
+Sem parâmetros. Wrapper sobre `useAuthContext` (ver `contextos.mdx`) que navega para `/` após `login`/`register`/`loginWithGoogle` bem-sucedidos. Não consome endpoint diretamente — delega ao `AuthContext` (documentado em `autenticacao.mdx`).
+
+**Uso real** (`src/components/ProtectedRoute.tsx:5`):
+```ts
+const { user, loading } = useAuth();
+```
+</Accordion>
+
+<Accordion title="useBillingPortal">
+`src/hooks/useBillingPortal.ts:17-58`
+
+```ts
+export const useBillingPortal = (): {
+  openPortal: (returnUrl?: string) => Promise<{ ok: boolean; message: string }>;
+  loading: boolean;
+  error: string | null;
+};
+```
+
+Sem parâmetros. Consome `POST /api/v1/subscription/billing-portal/` (body `{ return_url }`), e em sucesso navega o browser (`window.location.href`) para a URL de sessão da Stripe devolvida (`portal_url`). Não desliga `loading` no caminho de sucesso — evita duplo clique durante a navegação (`useBillingPortal.ts:45-47`).
+
+**Uso real** (`src/components/SubscriptionGuard.tsx:16`):
+```ts
+const { openPortal, loading: openingPortal, error: portalError } = useBillingPortal();
+```
+</Accordion>
+
+<Accordion title="useBrandkit — useBrandkits + funções soltas">
+`src/hooks/useBrandkit.ts`
+
+O arquivo exporta o hook `useBrandkits` mais um conjunto grande de funções assíncronas de CRUD (não são hooks React, são chamadas de API diretas). Ver a assinatura completa de cada uma em `services.mdx`, seção "Funções de `useBrandkit.ts`".
+
+```ts
+export const useBrandkits = (
+  clientId?: number | null,
+  isAdmin?: boolean
+): { brandkits: Brandkit[]; loading: boolean; error: string | null; refetch: () => Promise<void> };
+```
+
+- `isAdmin=true` → `GET /api/v1/brandkit/list/` (com `?client_id=` se `clientId` também for passado).
+- `isAdmin=false` → `GET /api/v1/brandkit/client/<clientId>/`, e só busca quando `clientId` está resolvido (`useBrandkit.ts:99-136`).
+
+**Uso real** (`src/pages/Brandkit/useBrandkitPage.ts:84`):
+```ts
+const { brandkits, loading, error, refetch } = useBrandkits(clientId, isAdmin);
+```
+</Accordion>
+
+<Accordion title="useClient">
+`src/hooks/useClient.ts:6-65`
+
+```ts
+export const useClient = (): { clientId: number | null; loading: boolean; error: string | null };
+```
+
+Sem parâmetros — resolve o `clientId` do usuário logado. Em preview mode, usa direto `previewClientId` do `PreviewContext`. Caso contrário, consulta `GET /api/v1/client/list/?user=<user.id>` e usa o primeiro resultado; guarda o resultado em `localStorage["client_id_<user.id>"]` como cache entre sessões (`useClient.ts:9-12,25-51`). Só dispara a busca se `user.role === 'client'`.
+
+**Uso real** (`src/components/OnboardingGuard.tsx:15`):
+```ts
+const { clientId, loading: clientLoading } = useClient();
+```
+</Accordion>
+
+<Accordion title="useClientPlatforms">
+`src/hooks/useClientPlatforms.ts:76-146`
+
+```ts
+export function useClientPlatforms(clientId: number | string | null | undefined): {
+  networks: ClientPlatform[];
+  activeNames: string[];
+  activeIds: number[];
+  loading: boolean;
+};
+```
+
+Deriva as redes sociais disponíveis para o cliente **a partir do nome do plano da assinatura ativa** (não da integração conectada) — assim o cliente vê as funcionalidades da rede que assinou mesmo antes de conectar a conta (`useClientPlatforms.ts:1-15`). Chama em paralelo:
+- `GET /api/v1/post/social-network/list/`
+- `GET /api/v1/post/platform-integration/list/?client=<clientId>`
+- `GET /api/v1/subscription/list/?client_id=<clientId>`
+
+Todas com header `Authorization: <VITE_MIGGO_API_KEY>` (`useClientPlatforms.ts:38,99-101`). Se nenhuma rede for reconhecida pelo nome do plano, cai de volta na regra antiga: redes com `PlatformIntegration.status === 'active'` (`useClientPlatforms.ts:112-119`).
+
+**Uso real** (`src/pages/Content/CreatePostModal.tsx:58`):
+```ts
+const { activeNames, loading: platformsLoading } = useClientPlatforms(activeClientId ? Number(activeClientId) : null);
+```
+</Accordion>
+
+<Accordion title="useGoBack">
+`src/hooks/useGoBack.ts:3-17`
+
+```ts
+const useGoBack = (): (() => void);
+export default useGoBack;
+```
+
+Sem parâmetros; devolve uma função `goBack` que usa `navigate(-1)` se há histórico de navegação (`window.history.state.idx > 0`), senão navega para `/`. Não consome endpoint.
+
+<Note>
+Busca no restante do código não encontrou nenhum import ativo deste hook fora do próprio arquivo — pode estar sem uso atualmente (não removido nesta varredura, apenas reportado).
+</Note>
+</Accordion>
+
+<Accordion title="useGoogleAnalytics">
+`src/hooks/useGoogleAnalytics.ts:15-28`
+
+```ts
+export function useGoogleAnalytics(): void;
+```
+
+Sem parâmetros e sem retorno. A cada troca de `location.pathname`/`location.search`, dispara `window.gtag("event", "page_view", {...})` para o ID de medição `G-V3L43SYRNP` (MIG-182) — necessário porque a tag base no `index.html` é carregada com `send_page_view: false` (SPA não recarrega a página) (`useGoogleAnalytics.ts:4-27`).
+
+**Uso real** (`src/components/common/RouteAnalytics.tsx:6`):
+```ts
+useGoogleAnalytics();
+```
+</Accordion>
+
+<Accordion title="useInvoices">
+`src/hooks/useInvoices.ts:41-95`
+
+```ts
+export const useInvoices = (
+  clientId: number | null | undefined,
+  options?: { paidOnly?: boolean; startDate?: string; endDate?: string; planId?: string }
+): { invoices: Invoice[]; loading: boolean; error: string | null; refetch: () => Promise<void> };
+```
+
+Consome `GET /api/v1/subscription/invoice/list/` com querystring montada a partir de `clientId`/`options` (`client_id`, `paid_only`, `start_date`, `end_date`, `plan_id`) (`useInvoices.ts:52-76`). Normaliza resposta paginada (`{results: []}`) ou array puro.
+
+**Uso real** (`src/pages/Admin/BillingManagement.tsx:29`):
+```ts
+const { invoices, loading, error, refetch } = useInvoices(
+  clientId === 'all' ? null : parseInt(clientId), { /* filtros */ }
+);
+```
+</Accordion>
+
+<Accordion title="useModal">
+`src/hooks/useModal.ts:3-11`
+
+```ts
+export const useModal = (initialState: boolean = false): {
+  isOpen: boolean; openModal: () => void; closeModal: () => void; toggleModal: () => void;
+};
+```
+
+Hook genérico de UI, sem chamadas de rede.
+
+**Uso real** (`src/components/UserProfile/UserAddressCard.tsx:8`):
+```ts
+const { isOpen, openModal, closeModal } = useModal();
+```
+</Accordion>
+
+<Accordion title="useOnboarding">
+`src/hooks/useOnboarding.ts:56-122`
+
+```ts
+export const useOnboarding = (clientId: number | null | undefined): {
+  status: OnboardingStatus | null;
+  loading: boolean;
+  error: string | null;
+  refetch: () => Promise<void>;
+  isComplete: boolean;
+  currentStep: number;
+  isInOnboardingFlow: boolean;
+};
+```
+
+Consome `GET /api/v1/client/onboarding-status/<clientId>/`. Mantém um **cache em memória a nível de módulo** (`_cachedStatus`/`_cachedClientId`) para evitar race condition entre `OnboardingGuard` e `OnboardingFlow` ao navegar logo após completar o onboarding (`useOnboarding.ts:44-105`). `clearOnboardingCache()` é exportado à parte para invalidar esse cache.
+
+`isInOnboardingFlow` é distinto de `!isComplete`: reflete se `onboarding_current_step` existe e não é `'done'` — use para decidir se a pessoa deve voltar à esteira (`useOnboarding.ts:114-121`).
+
+**Uso real** (`src/components/OnboardingGuard.tsx:19-21`):
+```ts
+const { isComplete, status, loading: onboardingLoading } = useOnboarding(
+  user?.role === 'client' ? clientId : null
+);
+```
+</Accordion>
+
+<Accordion title="useRoleArea">
+`src/hooks/useRoleArea.ts:18-33`
+
+```ts
+export function useRoleArea(): {
+  loading: boolean; isManagement: boolean; isFullAdmin: boolean; isClient: boolean;
+  prefix: string; home: string; path: (subpath: string) => string;
+};
+```
+
+Sem parâmetros. Combina `useAuth` com os helpers de `src/routes/rolePaths.ts` (documentado em `autenticacao.mdx`/`roteamento.mdx`). Sem chamadas de rede.
+
+**Uso real** (`src/components/header/NotificationDropdown.tsx:32`):
+```ts
+const { path } = useRoleArea();
+// ... <Link to={path('notifications')}>
+```
+</Accordion>
+
+<Accordion title="useSubscription">
+`src/hooks/useSubscription.ts:46-130`
+
+```ts
+export const useSubscription = (clientId: number | undefined | null): {
+  subscription: Subscription | null; loading: boolean; error: string | null;
+  hasActiveSubscription: boolean; isTrialExpired: boolean; isUnpaid: boolean; isPending: boolean;
+  checkSubscription: () => Promise<void>;
+};
+```
+
+Consome `GET /api/v1/subscription/list/?client_id=<clientId>`. Escolhe a assinatura relevante por prioridade: `ACTIVE > TRIAL > UNPAID > PENDING > PAUSED >` primeira da lista (`useSubscription.ts:75-80`). Falha de rede/servidor não zera a assinatura — evita travar cliente pagante por um erro transitório (`useSubscription.ts:64-70`).
+
+**Uso real** (`src/components/OnboardingGuard.tsx:16-18`):
+```ts
+const { hasActiveSubscription, loading: subscriptionLoading } = useSubscription(
+  user?.role === 'client' ? clientId : null
+);
+```
+</Accordion>
+
+<Accordion title="useWelcomeTour">
+`src/hooks/useWelcomeTour.ts:25-89`
+
+```ts
+export function useWelcomeTour(
+  clientId: number | null | undefined,
+  enabled: boolean
+): { shouldShow: boolean; complete: () => Promise<void>; hide: () => void };
+```
+
+Controla a exibição única do tour de boas-vindas (MIG-227). O estado "já visto" é persistido no backend, não no navegador — via `ClientMeta` (chave `WELCOME_TOUR_META_KEY`, importada de `src/components/onboarding/WelcomeTour.tsx`), para não reaparecer ao trocar de dispositivo. Endpoints:
+- `GET /api/v1/client/client-meta/list/?client_id=<clientId>`
+- `PATCH /api/v1/client/client-meta/update/<metaId>/` (se já existe registro) ou `POST /api/v1/client/client-meta/create/` (se não existe)
+
+`hide()` só esconde na sessão atual (reaparece na próxima visita); `complete()` é o único caminho que grava permanentemente (pulou ou concluiu o tour) (`useWelcomeTour.ts:56-86`).
+
+**Uso real** (`src/pages/Dashboard/DashboardClient.tsx:59`):
+```ts
+const { shouldShow, complete, hide } = useWelcomeTour(clientId, enabled);
+```
+</Accordion>
+
+</AccordionGroup>

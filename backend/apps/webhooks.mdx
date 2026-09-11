@@ -1,0 +1,265 @@
+---
+title: "Webhooks"
+description: "App que recebe eventos de terceiros (Stripe e Zernio) e sincroniza o estado local da plataforma"
+icon: "webhook"
+---
+
+## Responsabilidade
+
+`app/webhooks` é o app Django que recebe callbacks HTTP assíncronos de dois provedores externos:
+
+- **Stripe** — eventos de cobrança (checkout, assinatura, fatura) que movem o fluxo de billing da Miggo.
+- **Zernio** — confirmação de conexão de conta de rede social (ex.: Instagram, TikTok) feita por um provedor de integração externo.
+
+<Note>
+O app não tem `models.py`, `admin.py` nem `urls.py` próprios — são todos stubs vazios gerados pelo `startapp` do Django (`app/webhooks/models.py:1-3`, `app/webhooks/admin.py:1-3`). As rotas dos webhooks são registradas diretamente em `core/urls.py`, e a persistência dos eventos acontece em models de **outros** apps (`app.subscription`, `app.integration`, `app.post`). Isso está documentado como está — não é uma omissão desta página.
+</Note>
+
+## Arquivos
+
+| Arquivo | Conteúdo |
+|---|---|
+| `app/webhooks/views.py` | As duas views reais do app: `webhook_stripe` (`app/webhooks/views.py:62`) e `webhook_zernio_account` (`app/webhooks/views.py:417`) |
+| `app/webhooks/models.py` | Vazio — stub do `startapp`, sem models próprios (`app/webhooks/models.py:1-3`) |
+| `app/webhooks/admin.py` | Vazio — stub do `startapp`, nada registrado no Django admin (`app/webhooks/admin.py:1-3`) |
+| `app/webhooks/apps.py` | `WebhooksConfig`, `name = 'app.webhooks'` (`app/webhooks/apps.py:4-6`) |
+| `app/webhooks/tests.py` | Vazio — stub do `startapp`, sem testes (`app/webhooks/tests.py:1-3`) |
+
+<Warning>
+`app/webhooks/tests.py` não tem nenhum teste. O único caminho crítico do app (verificação de assinatura Stripe, idempotência, dispatch de 11 tipos de evento) não está coberto por testes automatizados neste app.
+</Warning>
+
+## Modelos
+
+O app `webhooks` não define nenhum model próprio. Os efeitos de banco de cada webhook caem em models de outros apps:
+
+| Model | App | Uso pelo webhook |
+|---|---|---|
+| `StripeEvent` | `app.subscription` | Registro de idempotência do webhook Stripe (`app/subscription/models.py:155-173`) |
+| `Subscription`, `SubscriptionMeta` | `app.subscription` | Estado da assinatura, espelhado a partir do evento Stripe |
+| `Invoice` | `app.subscription` | Estado da fatura, espelhado a partir do evento Stripe |
+| `Integration` | `app.integration` | Trilha de auditoria (log) de toda chamada recebida, Stripe e Zernio |
+| `PlatformIntegration` | `app.post` | Conta de rede social ativada pelo webhook Zernio |
+
+### `StripeEvent` (`app/subscription/models.py:155`)
+
+Guarda cada evento Stripe já processado, para bloquear reprocessamento em reenvios.
+
+| Campo | Tipo | Obrigatório | Default/choices | Descrição |
+|---|---|---|---|---|
+| `event_id` | `CharField(max_length=100)` | Sim | `unique=True` | ID do evento Stripe (`evt_...`) — a unicidade é o mecanismo de idempotência |
+| `type` | `CharField(max_length=100)` | Sim | — | Tipo do evento (ex. `invoice.paid`) |
+| `payload` | `JSONField` | Não | `null=True, blank=True` | Corpo bruto do evento decodificado |
+| `processed_at` | `DateTimeField` | Não | `default=timezone.now` | Quando o evento foi recebido |
+| `error` | `TextField` | Não | `null=True, blank=True` | Não é preenchido pelo `webhook_stripe` atual (ver seção de inconsistências) |
+
+**Meta** (`app/subscription/models.py:169-170`): `ordering = ['-processed_at']`.
+
+### `Integration` (`app/integration/models.py:5`)
+
+Log genérico de chamadas a/de serviços externos, reaproveitado pelos dois webhooks como trilha de auditoria.
+
+| Campo | Tipo | Obrigatório | Default/choices | Descrição |
+|---|---|---|---|---|
+| `client` | `ForeignKey(Client)` | Não | `null=True, blank=True, on_delete=CASCADE` | Cliente associado à chamada, quando resolvido |
+| `service` | `CharField(max_length=255)` | Sim | — | Nome do provedor: `'Stripe'` ou `'Zernio'` neste app |
+| `path` | `TextField` | Sim | — | Rota chamada (ex. `/webhooks/`, `/webhooks/zernio/account/`) |
+| `method` | `CharField(max_length=50)` | Sim | — | Sempre `'POST'` nos dois webhooks |
+| `payload` | `JSONField` | Não | `null=True, blank=True` | Corpo recebido |
+| `response` | `JSONField` | Não | `null=True, blank=True` | Corpo devolvido ao provedor |
+| `status_code` | `IntegerField` | Não | `null=True, blank=True` | Status HTTP da resposta |
+| `created_at` / `updated_at` | `DateTimeField` | — | `auto_now_add` / `auto_now` | Timestamps |
+
+Usado em `webhook_stripe._log` (`app/webhooks/views.py:400-413`) e em cada branch de `webhook_zernio_account` (`app/webhooks/views.py:432, 450, 472, 512`).
+
+## Endpoints
+
+Prefixo de rota: as URLs abaixo estão registradas **fora** do prefixo `api/v1/` — direto na raiz do projeto, em `core/urls.py:47-49`.
+
+| Método | Rota completa | View | Permissão |
+|---|---|---|---|
+| `POST` | `/webhooks/` | `webhook_stripe` (`app/webhooks/views.py:62`) | Nenhuma (`permission_classes = []`, `authentication_classes = []`) — autenticação é a assinatura do header Stripe |
+| `POST` | `/webhooks/zernio/account/` | `webhook_zernio_account` (`app/webhooks/views.py:417`) | Nenhuma (`permission_classes = []`) — sem verificação de assinatura no código |
+
+<Note>
+`/webhooks/manychat/` e `/webhooks/manychat/dynamic-block/continue/` também estão registrados em `core/urls.py:49-53`, mas as views (`webhook_manychat`, `manychat_dynamic_block_continue`) pertencem a `app/conversation/webhooks.py`, não a este app. Ver o card "Conversation" ao final desta página.
+</Note>
+
+<AccordionGroup>
+<Accordion title="POST /webhooks/ — Stripe">
+
+**Origem**: Stripe (todos os eventos de billing configurados no Dashboard/CLI da Stripe apontando para esta URL).
+
+**Verificação de assinatura**: `stripe.Webhook.construct_event(payload, signature, secret)` (`app/webhooks/views.py:88`), onde:
+- `payload` é o corpo bruto (`request.body`, não `request.data` — necessário para a verificação de assinatura funcionar).
+- `signature` vem do header `Stripe-Signature` (`request.META.get('HTTP_STRIPE_SIGNATURE')`, `app/webhooks/views.py:77`).
+- `secret` é `settings.STRIPE_WEBHOOK_SECRET` (`app/webhooks/views.py:78`), lido do env var **`STRIPE_WEBHOOK_SECRET`** — só o nome é citado aqui, nunca o valor.
+
+Se `STRIPE_WEBHOOK_SECRET` não estiver configurado, a view responde `503` sem sequer tentar verificar a assinatura (`app/webhooks/views.py:80-85`). Se a assinatura for inválida (`stripe.SignatureVerificationError`) ou o payload não for JSON válido (`ValueError`), responde `400` (`app/webhooks/views.py:89-94`).
+
+**Idempotência**: via `StripeEvent.objects.create(event_id=event_id, ...)` (`app/webhooks/views.py:101-105`). Como `event_id` é `unique=True`, um reenvio do mesmo evento dispara `IntegrityError`, capturado e respondido como `200 {"detail": "already_processed"}` (`app/webhooks/views.py:106-107`) — sem reprocessar nada.
+
+**Eventos tratados** — `HANDLED_EVENTS` (`app/webhooks/views.py:33-46`):
+
+| Evento | Handler | Efeito no banco |
+|---|---|---|
+| `checkout.session.completed` | `_handle_checkout_completed` (`views.py:166`) | Vincula `SubscriptionMeta` (`stripe_subscription_id`), chama `stripe_gateway.sync_subscription_from_stripe`; se `status == 'TRIAL'`, grava `SubscriptionMeta(key='trial_consumed')` (`views.py:198-202`); notifica o cliente |
+| `checkout.session.async_payment_succeeded` | mesmo handler acima (`views.py:146`) | idêntico |
+| `checkout.session.async_payment_failed` | `_handle_checkout_failed` (`views.py:218`) | `Subscription.status = 'UNPAID'`, `.save()`; notifica o cliente |
+| `customer.subscription.created` | `_handle_subscription_changed` (`views.py:233`) | `stripe_gateway.sync_subscription_from_stripe` espelha campos da assinatura |
+| `customer.subscription.updated` | mesmo handler acima | idêntico — inclusive a virada `trialing → active` pós-trial |
+| `customer.subscription.deleted` | `_handle_subscription_deleted` (`views.py:248`) | sync + `Subscription.status = 'CANCELLED'`, `.save()`; notifica o cliente |
+| `customer.subscription.trial_will_end` | `_handle_trial_will_end` (`views.py:263`) | Checa `cron._already_notified` para não duplicar aviso; se não notificado, grava `SubscriptionMeta(key=META_TRIAL_ENDING_NOTIFIED)` (`views.py:285-289`) e notifica o cliente |
+| `invoice.created` | `_handle_invoice_upserted` (`views.py:292`) | `stripe_gateway.sync_invoice_from_stripe` cria/atualiza `Invoice` |
+| `invoice.finalized` | mesmo handler acima | idêntico |
+| `invoice.paid` | `_handle_invoice_paid` (`views.py:298`) | Sync de `Invoice`; se a assinatura Stripe está vinculada, resync via `stripe.Subscription.retrieve` + `sync_subscription_from_stripe`; senão, se `subscription.status` em `('UNPAID','PENDING','EXPIRED')`, marca `'ACTIVE'`; notifica o cliente (só na primeira vez — ver idempotência de negócio abaixo) |
+| `invoice.payment_succeeded` | mesmo handler acima | idêntico — evento irmão de `invoice.paid` para a mesma fatura |
+| `invoice.payment_failed` | `_handle_invoice_payment_failed` (`views.py:348`) | `Invoice.status = 'OVERDUE'`, `.save()`; se `subscription.status` não é `CANCELLED`/`EXPIRED`, marca `'UNPAID'`; notifica o cliente |
+
+Qualquer evento fora dessa lista (ex. `payment_intent.succeeded`, `customer.updated`) cai em `event_type not in HANDLED_EVENTS` (`app/webhooks/views.py:109-113`): é registrado em `StripeEvent` (trava de idempotência) e em `Integration` com `detail: 'ignored_event'`, mas responde `200` — a Stripe não reenvia.
+
+<ParamField path="event" type="object" required>
+Objeto de evento padrão da Stripe (`{id, type, data: {object: {...}}}`), verificado via `stripe.Webhook.construct_event`.
+</ParamField>
+
+<ResponseField name="200 OK" type="object">
+Corpo varia por handler, sempre com `detail` descrevendo o resultado (ex. `{"detail": "subscription_synced", "subscription_id": 42, "status": "ACTIVE"}`, `{"detail": "already_processed"}`, `{"detail": "ignored_event"}`).
+</ResponseField>
+<ResponseField name="400 Bad Request" type="object">
+`{"detail": "invalid payload"}` ou `{"detail": "invalid signature"}` — payload malformado ou assinatura não bate.
+</ResponseField>
+<ResponseField name="500 Internal Server Error" type="object">
+`{"detail": "handler error"}` — uma exceção não tratada estourou dentro do handler do evento; o registro em `StripeEvent` é **apagado** (`app/webhooks/views.py:135`) para permitir retentativa da Stripe.
+</ResponseField>
+<ResponseField name="503 Service Unavailable" type="object">
+`{"detail": "webhook secret not configured"}` — `STRIPE_WEBHOOK_SECRET` ausente no ambiente.
+</ResponseField>
+
+**Transação**: todo o `_dispatch` roda dentro de `transaction.atomic()` (`app/webhooks/views.py:126-127`) — se um handler falhar no meio, nada fica parcialmente salvo.
+
+</Accordion>
+
+<Accordion title="POST /webhooks/zernio/account/ — Zernio">
+
+**Origem**: Zernio (provedor externo de conexão de contas de redes sociais).
+
+**Verificação de assinatura**: **nenhuma**. A view lê `request.data` diretamente, sem checar header de assinatura, token ou secret compartilhado (`app/webhooks/views.py:417-421`). `permission_classes = []` e não há `authentication_classes` sobrescrito.
+
+**Eventos tratados**: apenas um, verificado pelo campo `event` do corpo:
+- `account.connected` — único evento processado (`app/webhooks/views.py:431`).
+- Qualquer outro valor de `event` (incluindo ausente) cai no ramo "ignorado": grava `Integration` com `status_code=200` e `detail: 'ignored_event'`, responde `200` (`app/webhooks/views.py:432-441`).
+
+**Fluxo para `account.connected`**:
+1. Extrai `platform` (slug), `profileId`, `username`, `displayName`, `accountId` de `account_payload = payload.get('account')` (`app/webhooks/views.py:443-447`).
+2. Se faltar `platform` ou `profileId`, responde `400 {"detail": "missing_platform_or_profile"}` e loga em `Integration` (`app/webhooks/views.py:449-459`).
+3. Resolve `SocialNetwork` por `name__iexact`, com fallback para `name__icontains` (`app/webhooks/views.py:461-463`).
+4. Busca `PlatformIntegration` por `profile_id` (mais filtro de `platform`, se resolvido), pegando a mais recente (`order_by('-created_at', '-id').first()`) (`app/webhooks/views.py:465-469`).
+5. Se não encontrar nenhuma integração correspondente, responde `404 {"detail": "integration_not_found"}` (`app/webhooks/views.py:471-481`).
+6. Se encontrar: `integration.status = 'active'`, atualiza `username` se veio no payload, garante `connection_url` não seja `None`, salva com `update_fields=['status', 'username', 'updated_at', 'connection_url']` (`app/webhooks/views.py:483-488`).
+7. Notifica o cliente dono da integração via `notify(...)` com `notification_type='social_network_connected'`, se `integration.client.user` existir (`app/webhooks/views.py:491-499`).
+8. Grava `Integration` de sucesso e responde `200` com o payload completo (`app/webhooks/views.py:501-520`).
+
+**Idempotência**: não há registro de evento já processado (nenhum equivalente a `StripeEvent`). Um reenvio do mesmo `account.connected` reexecuta o fluxo inteiro; como o efeito é `status = 'active'` (operação idempotente em si), reenvios não quebram o estado, mas geram notificação duplicada ao cliente a cada reenvio (não há trava contra isso).
+
+<ParamField path="event" type="string" required>
+Nome do evento. Só `"account.connected"` é processado; qualquer outro é ignorado com `200`.
+</ParamField>
+<ParamField path="account.platform" type="string" required>
+Slug da rede social (ex. `"instagram"`), casado contra `SocialNetwork.name` via `iexact`/`icontains`.
+</ParamField>
+<ParamField path="account.profileId" type="string" required>
+ID do perfil na rede social, casado contra `PlatformIntegration.profile_id`.
+</ParamField>
+<ParamField path="account.username" type="string">
+Nome de usuário — se presente, sobrescreve `PlatformIntegration.username`.
+</ParamField>
+<ParamField path="account.displayName" type="string">
+Nome de exibição — só ecoado na resposta, não persistido.
+</ParamField>
+<ParamField path="account.accountId" type="string">
+ID da conta — só ecoado na resposta, não persistido.
+</ParamField>
+<ParamField path="timestamp" type="string">
+Timestamp do evento — só usado no log de `Integration`, não persistido em `PlatformIntegration`.
+</ParamField>
+
+<ResponseField name="200 OK" type="object">
+Para `account.connected` processado: `{"detail": "integration_activated", "integration_id", "client_id", "platform", "profile_id", "account_id", "username", "display_name"}`. Para evento ignorado: `{"detail": "ignored_event"}`.
+</ResponseField>
+<ResponseField name="400 Bad Request" type="object">
+`{"detail": "missing_platform_or_profile"}` — `account.platform` ou `account.profileId` ausentes.
+</ResponseField>
+<ResponseField name="404 Not Found" type="object">
+`{"detail": "integration_not_found"}` — nenhuma `PlatformIntegration` com aquele `profile_id`/`platform` foi encontrada (ex.: cliente nunca iniciou o fluxo de conexão do lado da Miggo).
+</ResponseField>
+
+</Accordion>
+</AccordionGroup>
+
+## Serializers
+
+O app `webhooks` não usa DRF serializers. As duas views leem `request.body`/`request.data` diretamente e montam dicts de resposta manualmente.
+
+## Regras de negócio e funções
+
+### `_notify_client(client, notification_type, title, message, link)` — `app/webhooks/views.py:49`
+Função auxiliar de módulo. Notifica o usuário vinculado ao `client`, se houver (`client.user`), via `app.notification.utils.notify`. Não retorna nada; não levanta exceção se `client` for `None` ou sem `user`.
+
+### `webhook_stripe._dispatch(event_type, obj)` — `app/webhooks/views.py:145`
+Roteador interno: mapeia `event_type` para o handler correspondente dentre os 11 tipos de `HANDLED_EVENTS`. Retorna `{'detail': 'ignored_event'}` para qualquer tipo fora da lista (não deveria ocorrer, pois esse caso já é filtrado antes de chamar `_dispatch`, ver `app/webhooks/views.py:109-113`).
+
+### `webhook_stripe._local_subscription_from_session(session)` — `app/webhooks/views.py:382`
+Resolve a `Subscription` local associada a uma sessão de checkout: primeiro tenta `metadata.subscription_id` da sessão Stripe; se ausente, resolve o `client` via `stripe_gateway.resolve_client(session)` e pega a assinatura mais recente desse cliente (`order_by('-start_date', '-id').first()`). Retorna `Subscription` ou `None`.
+
+### `webhook_stripe._log(event, status_code, response, client=None)` — `app/webhooks/views.py:400`
+Grava um registro em `Integration` (`service='Stripe'`, `path='/webhooks/'`) para toda chamada — sucesso, ignorada ou erro. Envolvido em `try/except Exception` (`app/webhooks/views.py:412-413`) para que uma falha no log nunca derrube a resposta do webhook.
+
+### Dependências de `app.subscription.stripe_gateway` usadas pelas views
+Todas em `app/subscription/stripe_gateway.py`, não redefinidas neste app:
+- `configure()` — configura a API key global do SDK `stripe` (`stripe_gateway.py:94`).
+- `resolve_client(stripe_object)` — resolve o `Client` local a partir de um objeto Stripe (`stripe_gateway.py:176`).
+- `id_of(value)` — extrai o ID de um campo Stripe que pode vir como string ou objeto expandido.
+- `sync_subscription_from_stripe(stripe_subscription, client=None)` — cria/atualiza `Subscription` local a partir do objeto da Stripe (`stripe_gateway.py:258`).
+- `sync_invoice_from_stripe(stripe_invoice, subscription=None)` — cria/atualiza `Invoice` local (`stripe_gateway.py:366`).
+- `to_datetime(timestamp)` — converte timestamp Unix da Stripe em `datetime` (`stripe_gateway.py:100`).
+- `META_STRIPE_SUBSCRIPTION_ID` / `META_TRIAL_ENDING_NOTIFIED` — chaves de `SubscriptionMeta` usadas como flags (`stripe_gateway.py:62,64`).
+
+### `cron._already_notified(subscription, key, within_hours=20)` — `app/subscription/cron.py:58`
+Usada por `_handle_trial_will_end` para não duplicar o aviso de fim de trial no mesmo dia em que o cron `notify_trial_ending` já notificou. Lê `SubscriptionMeta`, compara timestamp ISO salvo com `timezone.now()` dentro da janela de `within_hours` horas.
+
+## Erros comuns / pontos de atenção
+
+<Warning>
+**Reenvio Stripe após erro 500**: quando um handler lança exceção, o `StripeEvent` recém-criado é **apagado** (`app/webhooks/views.py:135`) para não travar a próxima tentativa na trava de idempotência — mas isso significa que efeitos colaterais parciais já gravados antes da exceção (fora da transação, como o `_log` de erro em `Integration`) não são desfeitos, e a Stripe reenviará o mesmo evento do zero.
+</Warning>
+
+<Warning>
+**`invoice.paid` e `invoice.payment_succeeded` são eventos irmãos** para a mesma fatura. O código já trata isso: verifica se a fatura já estava `'PAID'` antes do sync (`ja_estava_paga`, `app/webhooks/views.py:304-306`) e, se sim, não notifica o cliente de novo — mas o `StripeEvent` de idempotência é por `event_id`, não por fatura, então ambos os eventos passam a trava de idempotência normalmente (são eventos Stripe distintos).
+</Warning>
+
+<Warning>
+**Webhook Zernio sem verificação de assinatura**: `webhook_zernio_account` não valida nenhum header/token. Qualquer request `POST` bem formado para `/webhooks/zernio/account/` com `event: "account.connected"`, `platform` e `profileId` válidos ativa a integração correspondente — inclusive marcando `status = 'active'` sem confirmar que a chamada realmente veio da Zernio. Compare com o webhook ManyChat (`app/conversation/webhooks.py`), que exige `MANYCHAT_WEBHOOK_TOKEN` no header.
+</Warning>
+
+<Warning>
+**Notificação duplicada em reenvio Zernio**: como não há registro de evento processado para o webhook Zernio, um reenvio do mesmo `account.connected` (ex.: retry de rede do lado do provedor) dispara `notify(...)` de novo para o mesmo cliente, mesmo que a integração já estivesse `active`.
+</Warning>
+
+<Warning>
+**`STRIPE_WEBHOOK_SECRET` ausente**: a view não falha silenciosamente — responde `503` e loga em nível `error` (`app/webhooks/views.py:80-85`). Se a Stripe não conseguir configurar essa secret corretamente no ambiente, todo evento é recusado até corrigir a variável.
+</Warning>
+
+<Note>
+**Model `StripeEvent.error` não é usado por este webhook.** O campo existe no model (`app/subscription/models.py:167`), mas `webhook_stripe` nunca grava nele — em caso de falha, o registro inteiro é apagado (ver acima), em vez de marcar `error`.
+</Note>
+
+## Relacionados
+
+<Columns cols={2}>
+<Card title="Subscription" icon="credit-card" href="/backend/apps/subscription">
+Models `Subscription`, `SubscriptionMeta`, `Invoice`, `StripeEvent` e o módulo `stripe_gateway`, que o webhook Stripe usa para sincronizar assinaturas e faturas. Também documenta a classe `WebhookView` (`app/subscription/views.py:865`) — não confundir com `webhook_stripe`: `WebhookView` não está registrada em nenhuma URL do projeto, apenas faz `print(data)` e responde `200`; é código morto, não um webhook ativo.
+</Card>
+<Card title="Conversation" icon="message-circle" href="/backend/apps/conversation">
+O webhook do ManyChat (`POST /webhooks/manychat/` e `/webhooks/manychat/dynamic-block/continue/`) vive em `app/conversation/webhooks.py`, autenticado por token compartilhado (`MANYCHAT_WEBHOOK_TOKEN`) — documentado na página do app `conversation`, não duplicado aqui.
+</Card>
+</Columns>

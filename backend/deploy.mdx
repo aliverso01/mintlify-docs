@@ -1,0 +1,207 @@
+---
+title: "Deploy"
+description: "Imagem Docker, Gunicorn, arquivos estáticos e mídia, Traefik e passo a passo de subida."
+icon: "cloud-upload"
+---
+
+## A imagem
+
+`dockerfile`, na raiz do repositório:
+
+```dockerfile
+FROM python:3.11-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+RUN playwright install --with-deps chromium
+COPY . .
+CMD ["sh", "-c", "python manage.py collectstatic --noinput && gunicorn core.wsgi:application --bind 0.0.0.0:8000 --workers 4 --threads 2 --timeout 60 --access-logfile - --error-logfile - --capture-output"]
+```
+
+<Warning>
+  A imagem é construída em **Python 3.11**, enquanto o ambiente de desenvolvimento usa **Python 3.14** (`backend-miggo/venv`). A diferença de versão é grande o suficiente para esconder incompatibilidade de sintaxe ou de dependência que só aparece no build. Ao adicionar biblioteca, confira que ela tem *wheel* para 3.11.
+</Warning>
+
+### Chromium do Playwright
+
+A imagem instala o Chromium (`playwright install --with-deps chromium`) porque a raspagem do site do cliente no onboarding precisa de um navegador **como último recurso**, quando o site recusa o GET simples com 403. Sem ele, esses sites falham com a mensagem "navegador de leitura não está disponível" em vez de terem a página lida.
+
+É o que mais pesa na imagem e no tempo de build. Não remova a linha sem checar o fluxo de análise de site em [Onboarding](/backend/apps/onboarding).
+
+## Processo em execução
+
+O `CMD` faz duas coisas na subida do container:
+
+<Steps>
+  <Step title="collectstatic">
+    `python manage.py collectstatic --noinput` reúne os estáticos em `STATIC_ROOT` (`BASE_DIR / 'static'`, com `STATIC_URL = 'static/'`).
+  </Step>
+  <Step title="Gunicorn">
+    `gunicorn core.wsgi:application` com:
+
+    | Parâmetro | Valor |
+    | --- | --- |
+    | `--bind` | `0.0.0.0:8000` |
+    | `--workers` | `4` |
+    | `--threads` | `2` |
+    | `--timeout` | `60` |
+    | `--access-logfile` / `--error-logfile` | `-` (stdout/stderr) |
+    | `--capture-output` | Captura o que a aplicação escreve direto na saída |
+  </Step>
+</Steps>
+
+O projeto tem `core/asgi.py`, mas a execução em produção é **WSGI** via Gunicorn.
+
+<Note>
+  Como os logs vão para stdout/stderr, `docker logs` é a primeira parada na investigação. Se quiser arquivo além do terminal, preencha `LOG_FILE` — veja [Configuração](/backend/configuracao).
+</Note>
+
+## Compose e Traefik
+
+`docker-compose.yml` define dois serviços na rede **externa** `root_default`:
+
+<Tabs>
+  <Tab title="miggo-db">
+    ```yaml
+    image: postgres:16
+    container_name: miggo-db
+    restart: always
+    ports: ["5432:5432"]
+    ```
+
+    <Warning>
+      O arquivo versionado carrega `POSTGRES_DB`, `POSTGRES_USER` e `POSTGRES_PASSWORD` em texto puro, e publica a porta `5432` no host. Para qualquer ambiente real: mova as credenciais para variáveis de ambiente ou `.env` não versionado, e não exponha a porta do banco além do necessário.
+    </Warning>
+  </Tab>
+  <Tab title="miggo-api">
+    ```yaml
+    build: .
+    container_name: miggo-api
+    restart: always
+    volumes:
+      - ./static_data:/app/static
+      - ./media_data:/app/media
+    environment:
+      - FILE_UPLOAD_MAX_MEMORY_SIZE=104857600
+      - DATA_UPLOAD_MAX_MEMORY_SIZE=104857600
+    ```
+
+    Os dois volumes persistem estáticos e mídia fora do container — é o que evita perder upload a cada deploy quando `USE_S3` está desligado.
+  </Tab>
+</Tabs>
+
+Rótulos Traefik do serviço da API:
+
+| Rótulo | Valor |
+| --- | --- |
+| Regra de host | `api.miggomkt.com.br` |
+| Entrypoint | `websecure` |
+| Certificado | `letsencrypt` |
+| Porta interna | `8000` |
+| Middlewares | `miggo-headers`, `miggo-buffering` |
+
+| Middleware | O que faz |
+| --- | --- |
+| `miggo-headers` | Injeta `X-Forwarded-Proto: https` e `X-Forwarded-Ssl: on`, para o Django saber que a requisição chegou por HTTPS |
+| `miggo-buffering` | Eleva `maxRequestBodyBytes` para `104857600` (100 MB), casando com os limites de upload passados ao Django |
+
+<Warning>
+  A cadeia de limites de upload tem **três** pontos, e o menor manda: Nginx do frontend (`client_max_body_size 50M`), Traefik (100 MB) e Django (`FILE_UPLOAD_MAX_MEMORY_SIZE` / `DATA_UPLOAD_MAX_MEMORY_SIZE`, 100 MB). Upload que falha só em produção quase sempre bate no primeiro deles. Veja [Build e deploy do frontend](/frontend/build-e-deploy).
+</Warning>
+
+## Arquivos estáticos e mídia
+
+| Cenário | Configuração |
+| --- | --- |
+| Estáticos | `STATIC_URL = 'static/'`, `STATIC_ROOT = BASE_DIR / 'static'`, coletados no boot |
+| Mídia local (`USE_S3` desligado) | `MEDIA_URL = '/media/'`, `MEDIA_ROOT = BASE_DIR / 'media'` |
+| Mídia em S3 (`USE_S3` ligado) | `MEDIA_URL = https://<domínio S3>/<AWS_S3_PROJECT_FOLDER>/media/`, `MEDIA_ROOT` vazio, storage `S3Boto3Storage` |
+
+Quando não há Nginx à frente do Django, `core/urls.py` serve `/media/` pelo próprio Django com um `re_path` apontando para `settings.MEDIA_ROOT`.
+
+<Note>
+  Servir mídia pelo Django é um **fallback**, não o caminho desejado: cada arquivo ocupa um worker do Gunicorn. Em produção, prefira `USE_S3` ligado ou um Nginx servindo o volume `media_data` diretamente.
+</Note>
+
+## Variáveis necessárias em produção
+
+A lista completa está em [Configuração](/backend/configuracao). O que **precisa** mudar em relação ao desenvolvimento:
+
+| Variável | Valor em produção |
+| --- | --- |
+| `DEBUG` | `False` |
+| `SECRET_KEY` | Chave própria do ambiente, nunca a de desenvolvimento |
+| `ALLOWED_HOSTS` | `api.miggomkt.com.br` e o que mais atender |
+| `CORS_ALLOWED_ORIGINS` / `CSRF_TRUSTED_ORIGINS` | Domínio do frontend |
+| `CSRF_COOKIE_DOMAIN` | Domínio da plataforma |
+| `SECURE_SSL_REDIRECT` | Ligado |
+| `DB_HOST`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_PORT` | Banco de produção |
+| `STRIPE_PROD_API_KEY`, `STRIPE_WEBHOOK_SECRET` | Credenciais reais do gateway |
+| `FRONTEND_URL`, `BACKEND_URL` | Domínios reais (usados em links de e-mail e callbacks) |
+| `MIGGOAI_API_URL` | `ai.miggomkt.com.br` |
+| `USE_S3` e as `AWS_*` | Ligado, com bucket de produção |
+| `EMAIL_*` | SMTP real |
+| `LOG_FILE` | Caminho de arquivo, se quiser log persistido |
+
+## Passo a passo de subida
+
+<Steps>
+  <Step title="Garantir a rede externa">
+    ```bash
+    docker network create root_default   # só na primeira vez
+    ```
+  </Step>
+  <Step title="Preencher o .env">
+    Com os valores de produção da tabela acima. O arquivo não é versionado.
+  </Step>
+  <Step title="Construir e subir">
+    ```bash
+    docker compose build
+    docker compose up -d
+    ```
+    O `collectstatic` roda sozinho no boot.
+  </Step>
+  <Step title="Aplicar migrations">
+    ```bash
+    docker compose exec miggo-api python manage.py migrate
+    ```
+    Não está no `CMD`: é passo explícito, para que nenhum deploy altere o esquema do banco por acidente.
+  </Step>
+  <Step title="Verificar">
+    ```bash
+    docker compose exec miggo-api python manage.py check
+    docker compose logs -f miggo-api
+    ```
+    Confirme também que `/api/schema/swagger-ui/` responde e que o domínio resolve com certificado válido.
+  </Step>
+</Steps>
+
+## Depois do deploy
+
+<AccordionGroup>
+  <Accordion title="Webhooks apontados para o novo host">
+    Confirme no painel de cada provedor que a URL aponta para `api.miggomkt.com.br`:
+
+    | Provedor | Rota |
+    | --- | --- |
+    | Stripe | `/webhooks/` |
+    | Zernio | `/webhooks/zernio/account/` |
+    | ManyChat | `/webhooks/manychat/` e `/webhooks/manychat/dynamic-block/continue/` |
+
+    Veja [Webhooks](/backend/apps/webhooks).
+  </Accordion>
+  <Accordion title="Rotinas agendadas">
+    Os jobs periódicos são chamados pelo **Dokploy** como management commands — eles não sobem com o container. Confirme o schedule em [Tarefas agendadas](/backend/tarefas-agendadas).
+  </Accordion>
+  <Accordion title="MiggoAI acessível">
+    O backend precisa alcançar `MIGGOAI_API_URL` com as credenciais configuradas, ou a geração de conteúdo silencia. O primeiro sintoma aparece na tabela `Integration`.
+  </Accordion>
+</AccordionGroup>
+
+## Relacionados
+
+<Columns cols={3}>
+  <Card title="Configuração" icon="settings" href="/backend/configuracao" />
+  <Card title="Ambientes" icon="layers" href="/arquitetura/ambientes" />
+  <Card title="Tarefas agendadas" icon="clock" href="/backend/tarefas-agendadas" />
+</Columns>

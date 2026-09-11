@@ -1,0 +1,160 @@
+---
+title: "Referência de API"
+description: "Índice geral dos endpoints do backend-miggo: prefixos, tabela mestre, schema, webhooks e convenções"
+icon: "plug"
+---
+
+## Prefixos de rota
+
+Definidos em `core/urls.py:28-56`. Todos os apps de negócio (exceto `webhooks`) entram sob `/api/v1/<app>/`:
+
+| Prefixo | App |
+|---|---|
+| `/admin/` | Django Admin |
+| `/api/v1/account/` | `account` |
+| `/api/v1/client/` | `client` |
+| `/api/v1/post/` | `post` |
+| `/api/v1/integration/` | `integration` |
+| `/api/v1/editorial-calendar/` | `editorial_calendar` |
+| `/api/v1/media/` | `media` |
+| `/api/v1/history/` | `history` |
+| `/api/v1/subscription/` | `subscription` |
+| `/api/v1/brandkit/` | `brandkit` |
+| `/api/v1/agenda/` | `agenda` |
+| `/api/v1/notification/` | `notification` |
+| `/api/v1/onboarding/` | `onboarding` |
+| `/api/v1/conversation/` | `conversation` |
+| `/api/v1/email-marketing/` | `emailmarketing` |
+| `/api/schema/`, `/api/schema/swagger-ui/`, `/api/schema/redoc/` | drf-spectacular |
+| `/webhooks/`, `/webhooks/zernio/account/`, `/webhooks/manychat/`, `/webhooks/manychat/dynamic-block/continue/` | `webhooks` + `conversation.webhooks` |
+| `/media/<path>` | serve de arquivos de mídia (fallback sem Nginx) |
+
+<Note>
+  `webhooks` não tem `urls.py` próprio: suas views (`webhook_stripe`, `webhook_zernio_account`) são importadas direto em `core/urls.py:23`, junto com as views de webhook do app `conversation` (`webhook_manychat`, `manychat_dynamic_block_continue`, `core/urls.py:24`).
+</Note>
+
+## Schema OpenAPI (drf-spectacular)
+
+| Rota | O que é |
+|---|---|
+| `GET /api/schema/` | JSON/YAML do schema OpenAPI (`SpectacularAPIView`) |
+| `GET /api/schema/swagger-ui/` | UI interativa Swagger |
+| `GET /api/schema/redoc/` | UI Redoc |
+
+Config em `SPECTACULAR_SETTINGS` (`core/settings.py:159-164`): título "Miggo API", versão "1.0.0". `DEFAULT_SCHEMA_CLASS='drf_spectacular.openapi.AutoSchema'` está em `REST_FRAMEWORK` (`core/settings.py:147`), então toda view DRF entra automaticamente no schema.
+
+## Webhooks
+
+<AccordionGroup>
+  <Accordion title="POST /webhooks/ — Stripe">
+    `webhook_stripe` (`app/webhooks/views.py:62`). Sem autenticação DRF (`permission_classes=[]`) — a validação é a assinatura HMAC do header `Stripe-Signature`, conferida contra `STRIPE_WEBHOOK_SECRET` via `stripe.Webhook.construct_event`. Sem o secret configurado, recusa com `503`.
+
+    Idempotência via `StripeEvent.event_id` (único) — reenvio da Stripe vira no-op (`200 already_processed`). Eventos tratados (`HANDLED_EVENTS`, `app/webhooks/views.py:33-46`): `checkout.session.completed`, `checkout.session.async_payment_succeeded/failed`, `customer.subscription.created/updated/deleted`, `customer.subscription.trial_will_end`, `invoice.created`, `invoice.finalized`, `invoice.paid`, `invoice.payment_succeeded`, `invoice.payment_failed`. Demais tipos são reconhecidos com `200 ignored_event` (para a Stripe não reenviar) e apenas logados.
+
+    Erro no handler: processa dentro de `transaction.atomic()`; se falhar, apaga o `StripeEvent` recém-criado (libera retentativa) e responde `500` — a Stripe reenvia automaticamente.
+  </Accordion>
+
+  <Accordion title="POST /webhooks/zernio/account/ — Zernio/GetLate">
+    `webhook_zernio_account` (`app/webhooks/views.py:417`). Sem autenticação DRF. Só trata o evento `account.connected`: localiza a `PlatformIntegration` pendente por `profile_id` (+ `platform`, quando resolvido) e ativa (`status='active'`), notificando o cliente. Demais eventos são apenas logados em `Integration`.
+  </Accordion>
+
+  <Accordion title="POST /webhooks/manychat/">
+    `webhook_manychat` (`app/conversation/webhooks.py:42`). Sem autenticação DRF — validado por um token compartilhado lido do header, comparado contra `MANYCHAT_WEBHOOK_TOKEN` (`app/conversation/webhooks.py:27`).
+  </Accordion>
+
+  <Accordion title="POST /webhooks/manychat/dynamic-block/continue/">
+    `manychat_dynamic_block_continue` (`app/conversation/webhooks.py:90`). Sem autenticação DRF. URL fixa do flow casca (`ConversationFlowState` decide o que renderizar — nunca um parâmetro da URL, conforme comentário em `core/urls.py:50-53`).
+  </Accordion>
+</AccordionGroup>
+
+## Convenções de resposta e erro
+
+- **Paginação**: `StandardPagination` (`utils/pagination.py`) — `PageNumberPagination` com `page_size` default 10, parametrizável via `?page_size=` restrito a `[10, 30, 50, 100]` (`ALLOWED_PAGE_SIZES`). Resposta paginada: `{"count", "next", "previous", "results"}`. Não confirmado se todas as `ListAPIView` usam essa classe globalmente (`REST_FRAMEWORK` em `core/settings.py` não define `DEFAULT_PAGINATION_CLASS`) — verifique a `pagination_class` de cada view específica.
+- **Filtros**: `DEFAULT_FILTER_BACKENDS` global inclui `DjangoFilterBackend`, `SearchFilter` e `OrderingFilter` (`core/settings.py:142-146`) — views de listagem podem aceitar `?search=`, `?ordering=` e filtros de campo conforme `filterset_fields`/`filterset_class` de cada view.
+- **Erros**: não há um formato de erro global customizado (`EXCEPTION_HANDLER` não é sobrescrito) — segue o padrão DRF (`{"detail": "..."}` ou mapa de erros por campo em validação de serializer). Várias views próprias retornam `{"message": "..."}` em vez de `{"detail": "..."}" (ex.: `LoginView`, `GoogleAuthView`) — não é uniforme entre apps.
+- **Autenticação**: ver [Autenticação](/backend/autenticacao). Permissão padrão de toda rota não sobrescrita: `HasAPIKeyOrIsAuthenticated`.
+
+## Tabela mestre de endpoints
+
+Método, rota completa (prefixo do app + path do `urls.py`), view e app. Auth: "padrão" = permissão herdada de `DEFAULT_PERMISSION_CLASSES` (`HasAPIKeyOrIsAuthenticated`); demais valores foram lidos diretamente de `permission_classes`/`authentication_classes` nas views citadas em cada página de app.
+
+### account — `/api/v1/account/`
+
+| Método | Rota | View |
+|---|---|---|
+| POST | `token/` | `TokenObtainPairView` |
+| POST | `token/refresh/` | `SafeTokenRefreshView` |
+| POST | `create/`, `register/` | `CreateUserView` |
+| POST | `team/create/` | `CreateTeamMemberView` |
+| GET | `team/list/` | `ListTeamView` |
+| PUT/PATCH | `team/update/<pk>/` | `UpdateTeamMemberView` |
+| PUT/PATCH | `update/<pk>/` | `UpdateUserView` |
+| DELETE | `delete/<pk>/` | `DeleteUserView` |
+| GET | `list/` | `ListUsersView` |
+| POST | `user-meta/create/` | `UserMetaCreateView` |
+| PUT/PATCH | `user-meta/update/<pk>/` | `UpdateUserMetaView` |
+| DELETE | `user-meta/delete/<pk>/` | `DeleteUserMetaView` |
+| GET | `user-meta/list/` | `ListUserMetaView` |
+| POST | `login/`, `logout/`, `google/` | `LoginView`, `LogoutView`, `GoogleAuthView` |
+| POST | `password-reset/request/`, `password-reset/confirm/` | `PasswordResetRequestView`, `PasswordResetConfirmView` |
+| POST | `verify-email/send/`, `verify-email/confirm/` | `SendVerificationEmailView`, `ConfirmEmailVerificationView` |
+| POST | `support/chat/` | `SupportChatView` |
+| POST/GET | `support/ticket/`, `support/tickets/`, `support/tickets/<pk>/`, `.../jira-status/`, `.../jira-sync/`, `.../reply/` | `SupportTicketCreateView`, `SupportTicketListView`, `SupportTicketJiraStatusView`, `SupportTicketJiraSyncView`, `SupportTicketReplyView` |
+
+Detalhes de payload/resposta de auth: [Autenticação](/backend/autenticacao). Demais: [account](/backend/apps/account).
+
+### client — `/api/v1/client/`
+
+`create/`, `update/<pk>/`, `delete/<pk>/`, `list/`, `retrieve/<pk>/`, `client-meta/{create,update/<pk>,delete/<pk>,list}/`, `generate-activation-code/<pk>/`, `activate-account/<pk>/`, `verify-code/<pk>/`, `toggle-active/<pk>/`, `trials/`, `signature-preference/<pk>/`, `onboarding-status/<pk>/`, `onboarding-step/<pk>/`, `onboarding-skip/<pk>/`, `instagram-scrape/`, `create-bio-agent/`, `send-generic-password/`. Detalhe em [client](/backend/apps/client).
+
+### post — `/api/v1/post/`
+
+`list/`, `publish/`, `detail/<pk>/`, `create/`, `update/<pk>/`, `delete/<pk>/`, `webhook-update-post/`, `webhook-account-connected/`, `format/{create,list,edit/<pk>,delete/<pk>}/`, `status/{create,list,edit/<pk>,delete/<pk>}/`, `social-network/list/`, `media-post/{create,list,update/<pk>,delete/<pk>}/`, `platform-integration/{create,list,retrieve/<client>,update/<pk>,delete/<pk>}/`, `platform-integration/whatsapp/{create,verify}/`, `send-post-whatsapp/`, `media-view/<token>/{,info/,download/}` (públicos, protegidos por token na URL), `<post_id>/media-link/` (exige token compartilhado no header), `schedule-review/`, `create-posts/`, `insights/{list,create,sync,timeline,daily-metrics,follower-stats}/`, `metadata/list/`, `platform-profile-config/{list,create,update/<pk>,delete/<pk>}/`. Detalhe em [post](/backend/apps/post).
+
+### editorial-calendar — `/api/v1/editorial-calendar/`
+
+`create/`, `update/<pk>/`, `delete/<pk>/`, `list/`, `detail/<pk>/`, `options/`, `content-styles/`, `cta-categories/`, `format-style-rules/`. Detalhe em [editorial-calendar](/backend/apps/editorial-calendar).
+
+### media — `/api/v1/media/`
+
+`create/` (`csrf_exempt`), `list/`, `update/<pk>/`, `delete/<pk>/`, `<pk>/` (alias de delete). Detalhe em [media](/backend/apps/media).
+
+### agenda — `/api/v1/agenda/`
+
+`list/`, `create/`, `detail/<pk>/`, `update/<pk>/`, `delete/<pk>/`, `limits/`. Detalhe em [agenda](/backend/apps/agenda).
+
+### subscription — `/api/v1/subscription/`
+
+`plan-feature/*`, `plan-price/*` (inclui `board/`, `sync-gateway/<pk>/`, `deduplicate/<pk>/`, `bulk-destroy/`), `change-plan/`, `unlinked-active-subscriptions/`, `duplicate-subscriptions/`, `deduplicate-subscriptions/`, `plan-meta/*`, `plan/*`, `create/`, `update/<pk>/`, `list/`, `retrieve/<client>/`, `destroy/<pk>/`, `create-subscription/`, `create-checkout-session/`, `billing-portal/`, `start-trial/`, `cancel/`, `sync-stripe/`, `sync-subscription-status-invoices/` (+ `/async/`, `/status/<job_id>/`), `resolve-unmatched/`, `financial-stats/`, `invoice/*`. A maior parte usa `IsAdminUser`. Detalhe em [subscription](/backend/apps/subscription).
+
+### brandkit — `/api/v1/brandkit/`
+
+`create/`, `list/`, `client/<client_id>/`, `detail/<pk>/`, `update/<pk>/`, `delete/<pk>/`, `logo/{upload,list,update/<pk>,delete/<pk>,reanalyze/<pk>}/`, `color/{create,list,update/<pk>,delete/<pk>}/`, `typography/{create,list,update/<pk>,delete/<pk>}/`, `asset/{create,list,client/<client_id>,detail/<pk>,update/<pk>,delete/<pk>,import-website}/`, `grid/{create,list,delete/<pk>,regenerate,status,approval,approval/approve,approval/feedback}/`, `design-reference/{upload,list,delete/<pk>,reanalyze/<pk>}/`. Detalhe em [brandkit](/backend/apps/brandkit).
+
+### notification — `/api/v1/notification/`
+
+`list/`, `history/`, `<pk>/read/`, `mark-all-read/`. Detalhe em [notification](/backend/apps/notification).
+
+### onboarding — `/api/v1/onboarding/`
+
+`signup/`, `signup/complete-social/`, `verify/`, `verify/resend/`, `verify/change-number/`, `state/`, `resume/`, `validate-profile/`, `brand-source/`, `brand-source/preview/`, `analysis-status/`, `review/`, `review/autofill/`, `identity/candidates/`, `identity/select-logo/`, `identity/continue/`, `logo/`, `photos/`, `plan/`, `referral/`, `strategy/generate/`, `strategy/`, `strategy/approve/`, `strategy/approve-item/`, `strategy/feedback/`, `strategy/item/regenerate/`, `calendar/`, `calendar/regenerate/`, `calendar/approve/`, `media/`, `media/continue/`, `grid/`, `grid/styles/`, `grid/feedback/`, `grid/approve/`, `first-content/`, `first-content/approve/`, `first-content/request-change/`, `complete/`, `summary/`. Detalhe em [onboarding](/backend/apps/onboarding).
+
+### conversation — `/api/v1/conversation/`
+
+`list/`, `automations/`, `flows/`, `flows/preview/`, `flows/variables/`, `flows/<pk>/`, `<pk>/`, `<pk>/messages/`, `<pk>/send/`, `<pk>/read/`, `<pk>/automation/`, `<pk>/posts/`. Detalhe em [conversation](/backend/apps/conversation).
+
+### email-marketing — `/api/v1/email-marketing/`
+
+`campaign/`, `campaign/options/`, `campaign/<pk>/`, `campaign/<pk>/preview/`, `campaign/<pk>/audience/`, `asset/`, `settings/`, `click/<uuid:token>/` (rota pública, clicada de dentro do email sem sessão), `dispatch/`. Detalhe em [emailmarketing](/backend/apps/emailmarketing).
+
+### history — `/api/v1/history/`
+
+`list/`, `report/posts/`, `report/clients/`, `admin-dashboard/`, `admin-dashboard/charts/`. Detalhe em [history](/backend/apps/history).
+
+### integration — `/api/v1/integration/`
+
+`list/`, `detail/<pk>/`, `delete/<pk>/`. Detalhe em [integration](/backend/apps/integration).
+
+<Note>
+  Payloads, respostas e regras de negócio de cada endpoint estão detalhados na página do app correspondente (fora do escopo desta página transversal).
+</Note>

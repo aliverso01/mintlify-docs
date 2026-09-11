@@ -1,0 +1,163 @@
+---
+title: "Integration"
+description: "Log de auditoria das chamadas a serviços externos (Stripe, ManyChat, Instagram, Zernio, MiggoAI etc.)"
+icon: "plug"
+---
+
+## Responsabilidade
+
+O app `app.integration` define um único model, `Integration`, usado como **log de auditoria genérico de chamadas a serviços externos**. Ele não é escrito pelo próprio app: dezenas de outros módulos do backend (`app.subscription`, `app.post`, `app.client`, `app.webhooks`, `app.onboarding`, `app.conversation`, `app.media`, `app.account`) chamam `Integration.objects.create(...)` diretamente sempre que fazem uma chamada de saída (Stripe, ManyChat, Instagram Graph API, Zernio, MiggoAI, Jira etc.), registrando serviço, rota, payload, resposta e status HTTP. O app em si só expõe a leitura/exclusão desse log via API REST.
+
+<Note>
+Confirmado por uso real no código — não é suposição: `Integration.objects.create(...)` aparece, por exemplo, em `app/subscription/views.py:301` (Stripe), `app/post/services.py:29-37` (ManyChat), `app/client/instagram.py:117` (Instagram), `app/post/zernio.py:248` (Zernio), `app/onboarding/miggoai.py:43` (MiggoAI) e `app/account/jira_service.py:72` (Jira).
+</Note>
+
+## Arquivos
+
+| Arquivo | Conteúdo |
+|---|---|
+| `app/integration/models.py` | Model `Integration` |
+| `app/integration/views.py` | `IntegrationListView`, `IntegrationDetailView`, `IntegrationDeleteView` |
+| `app/integration/serializers.py` | `IntegrationSerializer` |
+| `app/integration/urls.py` | Rotas do app, montadas em `api/v1/integration/` |
+| `app/integration/admin.py` | Registro do `Integration` no Django Admin |
+| `app/integration/apps.py` | `IntegrationConfig` (sem `ready()` — não conecta signals) |
+| `app/integration/tests.py` | Vazio (só o boilerplate padrão do `startapp`, sem testes) |
+
+## Modelos
+
+### Integration
+
+`app/integration/models.py:5-20`
+
+| Campo | Tipo | Obrigatório | Default/Choices | Descrição |
+|---|---|---|---|---|
+| `client` | `ForeignKey(Client)` | Não | `null=True, blank=True`, `on_delete=CASCADE` | Cliente ao qual a chamada se relaciona; `None` para chamadas não atreladas a um cliente específico (ex.: sync administrativo) |
+| `service` | `CharField(max_length=255)` | Sim | — | Nome do serviço externo (ex.: `"Stripe"`, `"ManyChat"`) — string livre, não é `choices` |
+| `path` | `TextField` | Sim | — | Rota/endpoint chamado no serviço externo |
+| `method` | `CharField(max_length=50)` | Sim | — | Método/verbo da chamada — string livre; em alguns pontos de uso é um verbo HTTP (`POST`), em outros um rótulo semântico (ex.: `POST_WHATSAPP` em `app/post/services.py:36`) |
+| `payload` | `JSONField` | Não | `null=True, blank=True` | Corpo/parâmetros enviados na chamada |
+| `response` | `JSONField` | Não | `null=True, blank=True` | Resposta recebida do serviço externo |
+| `status_code` | `IntegerField` | Não | `null=True, blank=True` | Código HTTP (ou equivalente) da resposta |
+| `created_at` | `DateTimeField` | Auto | `auto_now_add=True` | Timestamp de criação do registro |
+| `updated_at` | `DateTimeField` | Auto | `auto_now=True` | Atualizado a cada `save()` — na prática, os pontos de uso encontrados só fazem `Integration.objects.create(...)`, não atualizam depois |
+
+Não há relação reversa nomeada (`related_name`) declarada em `client` — o acesso a partir de `Client` usa o related manager default (`integration_set`).
+
+**Métodos**: `__str__` (`app/integration/models.py:16-20`) retorna `"{method} - {service} - {client.name} - {created_at:%d-%m-%Y - %H:%M}"` quando há `client`, ou a mesma string sem o nome do cliente quando `client` é `None`.
+
+## Endpoints
+
+Prefixo: `api/v1/integration/` (`core/urls.py:33`).
+
+| Método | Rota completa | View | Permissão |
+|---|---|---|---|
+| GET | `api/v1/integration/list/` | `IntegrationListView` | `IsManagementUser` (bloqueia `role='client'`; aceita API key de serviço ou equipe) |
+| GET | `api/v1/integration/detail/<int:pk>/` | `IntegrationDetailView` | Default do projeto — `HasAPIKeyOrIsAuthenticated` (sem `permission_classes` própria) |
+| DELETE | `api/v1/integration/delete/<int:pk>/` | `IntegrationDeleteView` | Default do projeto — `HasAPIKeyOrIsAuthenticated` (sem `permission_classes` própria) |
+
+<Warning>
+Apenas `IntegrationListView` restringe a equipe (`IsManagementUser`, `app/integration/views.py:14`). `IntegrationDetailView` e `IntegrationDeleteView` não declaram `permission_classes` e caem no default global `HasAPIKeyOrIsAuthenticated` (`core/settings.py:139-141`) — qualquer usuário autenticado, inclusive `role='client'`, pode ler ou **apagar** um registro de log de integração pelo `pk` se souber (ou adivinhar) o id. Como o log pode conter `payload`/`response` de chamadas a serviços como Stripe, isso é um ponto sensível — ver [Erros comuns](#erros-comuns-pontos-de-atencao).
+</Warning>
+
+<AccordionGroup>
+  <Accordion title="GET /api/v1/integration/list/ — IntegrationListView">
+    `app/integration/views.py:12-50`. `ListAPIView` paginado (`StandardPagination`) sobre `Integration.objects.all()`, ordenado por `-created_at`.
+
+    **Query params (filtros, todos opcionais)**
+
+    <ParamField query="client_id" type="string">Filtra por `client_id` exato.</ParamField>
+    <ParamField query="service" type="string">Filtro `icontains` sobre `service`.</ParamField>
+    <ParamField query="status_code" type="integer">Filtra por `status_code` exato; valor não numérico é ignorado silenciosamente.</ParamField>
+    <ParamField query="date" type="string">Filtra `created_at__date` (formato `YYYY-MM-DD`).</ParamField>
+    <ParamField query="time" type="string">Formato `HH:MM`; filtra `created_at__hour`/`created_at__minute` exatos. Valor inválido é ignorado silenciosamente.</ParamField>
+    <ParamField query="page_size" type="integer">Herdado de `StandardPagination` — `10`, `30`, `50` ou `100`; outro valor cai no default (`10`).</ParamField>
+
+    **Resposta** — envelope padrão de paginação (`utils/pagination.py:21-27`):
+
+    <ResponseField name="count" type="integer">Total de registros que batem no filtro.</ResponseField>
+    <ResponseField name="next" type="string | null">URL da próxima página.</ResponseField>
+    <ResponseField name="previous" type="string | null">URL da página anterior.</ResponseField>
+    <ResponseField name="results" type="array">Lista de `Integration` serializados — ver [Serializers](#serializers).</ResponseField>
+  </Accordion>
+
+  <Accordion title="GET /api/v1/integration/detail/{id}/ — IntegrationDetailView">
+    `app/integration/views.py:53-55`. `RetrieveAPIView` simples sobre `Integration.objects.all()`, sem filtros extras.
+
+    <ResponseField name="id" type="integer" />
+    <ResponseField name="client" type="integer | null">PK do `Client` relacionado.</ResponseField>
+    <ResponseField name="client_detail" type="object | null">Cliente serializado por `ClientSerializer` (só leitura).</ResponseField>
+    <ResponseField name="service" type="string" />
+    <ResponseField name="path" type="string" />
+    <ResponseField name="method" type="string" />
+    <ResponseField name="payload" type="object | null" />
+    <ResponseField name="response" type="object | null" />
+    <ResponseField name="status_code" type="integer | null" />
+    <ResponseField name="created_at" type="string" />
+    <ResponseField name="updated_at" type="string" />
+
+    Retorna 404 padrão do DRF se o `pk` não existir.
+  </Accordion>
+
+  <Accordion title="DELETE /api/v1/integration/delete/{id}/ — IntegrationDeleteView">
+    `app/integration/views.py:58-61`. `DestroyAPIView` simples sobre `Integration.objects.all()` — apaga o registro de log pelo `pk`. Resposta `204 No Content` em sucesso, `404` se o `pk` não existir. Sem soft-delete.
+  </Accordion>
+</AccordionGroup>
+
+## Serializers
+
+### IntegrationSerializer
+
+`app/integration/serializers.py:5-10`. `ModelSerializer` sobre `Integration`, `fields = '__all__'`.
+
+| Campo | Origem | Read-only | Descrição |
+|---|---|---|---|
+| `client_detail` | `ClientSerializer(source='client')` | Sim | Representação completa do `Client` relacionado (via `app.client.serializers.ClientSerializer`) |
+| `client` | Campo do model | Não (mas na prática só é escrito por código interno via `Integration.objects.create`, não pela API) | PK do `Client` |
+| `service`, `path`, `method`, `payload`, `response`, `status_code` | Campos do model | Não | Ver [Modelos](#modelos) |
+| `created_at`, `updated_at` | Campos do model | Não são marcados `read_only` explicitamente em `extra_kwargs`, mas `auto_now_add`/`auto_now` os tornam não-editáveis a nível de model | Timestamps |
+
+Não há `validate_*`, `create()` nem `update()` customizados — comportamento 100% padrão do `ModelSerializer`.
+
+## Regras de negócio e funções
+
+Este app não define signals, middleware nem management commands próprios — `IntegrationConfig` (`app/integration/apps.py:4-6`) não sobrescreve `ready()`.
+
+A "regra de negócio" real do model é o **padrão de uso disperso pelo resto do backend**: cada integração externa chama `Integration.objects.create(...)` manualmente no ponto onde faz a chamada de saída, para registrar o que foi enviado e o que voltou. Exemplos confirmados no código:
+
+- `app/subscription/views.py:301-312` — chamadas ao Stripe (criação/atualização de customer), gravando `service='Stripe'`, `path`, `method`, `payload`, `response`, `status_code`.
+- `app/post/services.py:28-37` — função utilitária `_log(client, path, payload, response_data, status_code)` que centraliza o registro das chamadas ao ManyChat (`service='ManyChat'`) dentro do módulo de posts.
+- `app/client/instagram.py:117` — chamadas à API do Instagram.
+- `app/post/zernio.py:248` — chamadas ao Zernio (agendador externo).
+- `app/onboarding/miggoai.py:43` — chamadas ao serviço MiggoAI durante o onboarding.
+- `app/account/jira_service.py:72` — chamadas ao Jira.
+- Também usado em `app/webhooks/views.py`, `app/media/cron.py`, `app/subscription/cron.py`, `app/onboarding/cron.py`, `app/onboarding/services.py` e extensivamente em `app/post/views.py`.
+
+<Note>
+Não há uma função/serviço central (tipo `log_integration_call()`) reaproveitada por todos esses pontos — cada app chama `Integration.objects.create(...)` diretamente com seus próprios campos, exceto `app/post/services.py`, que encapsula a chamada numa função privada `_log`. Isso significa que a consistência de `service`/`method` entre chamadas depende de cada desenvolvedor seguir a convenção, não de um contrato de código.
+</Note>
+
+## Erros comuns / pontos de atenção
+
+- **`IntegrationDetailView` e `IntegrationDeleteView` não exigem `IsManagementUser`.** Só `IntegrationListView` restringe a equipe; as outras duas caem no default `HasAPIKeyOrIsAuthenticated`, que aceita qualquer usuário autenticado — incluindo clientes (`role='client'`). Um cliente autenticado que descobrir um `pk` pode ler ou apagar um log de integração de qualquer cliente, não só o seu (não há filtro por `client` dono da sessão). Vale confirmar se isso é intencional.
+- **`payload`/`response` podem conter dados sensíveis.** Como o log grava o corpo bruto das chamadas a serviços como Stripe, é preciso cuidado ao expor esses campos via `IntegrationDetailView`/`IntegrationListView` — não há mascaramento de campos sensíveis no serializer.
+- **`method` não é padronizado.** Nem sempre é um verbo HTTP — em `app/post/services.py:36` o valor gravado é `'POST_WHATSAPP'`, um rótulo semântico. Filtros ou dashboards que assumem `method` como verbo HTTP puro vão falhar para esses registros.
+- **Sem paginação/filtro por client na exclusão.** `IntegrationDeleteView` apaga um registro por vez, sem confirmação nem auditoria da própria exclusão (o app não tem "quem apagou o log").
+- **Não há testes.** `app/integration/tests.py` está vazio — nenhuma cobertura automatizada para este app.
+
+## Relacionados
+
+<Columns cols={2}>
+  <Card title="Subscription" icon="credit-card" href="/backend/apps/subscription">
+    Maior consumidor de `Integration` — registra todas as chamadas ao Stripe (criação de customer, cobrança, cancelamento).
+  </Card>
+  <Card title="Client" icon="user" href="/backend/apps/client">
+    Model `Client` referenciado pelo `client`/`client_detail` do log, e origem das chamadas ao Instagram.
+  </Card>
+  <Card title="History" icon="clock-rotate-left" href="/backend/apps/history">
+    Log complementar — cobre ações de clientes dentro da plataforma, enquanto `Integration` cobre chamadas a serviços externos.
+  </Card>
+  <Card title="Account" icon="user-shield" href="/backend/apps/account">
+    Permissões (`IsManagementUser`, `HasAPIKeyOrIsAuthenticated`) usadas nas rotas deste app.
+  </Card>
+</Columns>

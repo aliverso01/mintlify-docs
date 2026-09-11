@@ -1,0 +1,198 @@
+---
+title: "Instalação"
+description: "Como preparar o ambiente local do MiggoAI (backend Django + frontend Vite) e rodar o CLI de protótipo"
+icon: "download"
+---
+
+O MiggoAI (`miggoai-2.0/miggoai_v2`) é composto por três partes que podem ser instaladas separadamente:
+
+- **`backend/`** — Django + DRF, a API que hoje concentra os workflows de geração.
+- **`frontend/`** — SPA React 19 + Vite que consome essa API.
+- **`modules/` + `main.py`** — script CLI de protótipo (histórico), usado localmente sem servidor.
+
+<Note>
+  `modules/*.py` e `main.py` são o protótipo original dos workflows de IA. A versão em produção hoje vive em
+  `backend/apps/generations/services/*` (ver <a href="/miggoai/workflows">Workflows</a>). Documentamos os dois.
+</Note>
+
+## Pré-requisitos
+
+- Python 3.13 (`Dockerfile.backend:1` usa `python:3.13-slim`)
+- PostgreSQL (local ou remoto)
+- Node.js 22 (`Dockerfile.frontend:1` usa `node:22-alpine`)
+- Acesso à API do backend principal (`backend-miggo`) com uma API Key válida
+- Uma chave de API da OpenAI
+
+## Backend (Django + DRF)
+
+<Steps>
+  <Step title="Criar e ativar o venv">
+    Dentro de `miggoai-2.0/miggoai_v2/backend/`:
+
+    ```bash
+    python -m venv venv
+    # Windows
+    venv\Scripts\activate
+    # Linux/Mac
+    source venv/bin/activate
+    ```
+  </Step>
+
+  <Step title="Instalar dependências">
+    ```bash
+    pip install -r requirements.txt
+    ```
+
+    Pacotes declarados em `backend/requirements.txt:1-11`: `Django`, `djangorestframework`, `djangorestframework-simplejwt`, `psycopg2-binary`, `python-decouple`, `django-cors-headers`, `requests`, `Pillow`, `drf-spectacular`, `whitenoise`, `gunicorn`.
+  </Step>
+
+  <Step title="Configurar o .env">
+    Copie `backend/.env.example` para `backend/.env` e preencha os valores (nunca comite o `.env` real).
+
+    ```bash
+    cp .env.example .env
+    ```
+
+    Veja a tabela completa de variáveis abaixo e em <a href="/miggoai/configuracao">Configuração</a>.
+  </Step>
+
+  <Step title="Rodar migrations">
+    ```bash
+    python manage.py migrate
+    ```
+  </Step>
+
+  <Step title="Popular prompts/workflows (seed)">
+    O app `prompts` não vem com dados por padrão — é preciso rodar o seed que cria `Workflow`, `WorkflowConfig`, `PromptDefinition` e `PromptVariable` a partir de `backend/apps/prompts/data/seed_prompts.json` (`backend/apps/prompts/management/commands/seed_prompts.py:1-91`):
+
+    ```bash
+    python manage.py seed_prompts
+    # ou, para simular sem gravar:
+    python manage.py seed_prompts --dry-run
+    ```
+  </Step>
+
+  <Step title="Criar superusuário">
+    Necessário para acessar `/admin/` e para autenticar via JWT (`/api/token/`) no frontend:
+
+    ```bash
+    python manage.py createsuperuser
+    ```
+  </Step>
+
+  <Step title="Subir o servidor">
+    ```bash
+    python manage.py runserver 8010
+    ```
+
+    A porta `8010` é a esperada pelo frontend em dev (`VITE_API_BASE_URL=http://localhost:8010`, `frontend/.env.example:1`), mas qualquer porta funciona desde que o `.env` do frontend aponte para ela.
+  </Step>
+</Steps>
+
+## Frontend (Vite + React 19)
+
+<Steps>
+  <Step title="Instalar dependências">
+    Dentro de `miggoai-2.0/miggoai_v2/frontend/`:
+
+    ```bash
+    npm install
+    ```
+  </Step>
+
+  <Step title="Configurar o .env">
+    ```bash
+    cp .env.example .env
+    ```
+
+    `VITE_API_BASE_URL` — URL base da API do backend deste próprio serviço (`frontend/.env.example:1`).
+  </Step>
+
+  <Step title="Rodar em dev">
+    ```bash
+    npm run dev
+    ```
+  </Step>
+</Steps>
+
+## Variáveis de ambiente
+
+### Raiz do repositório (`.env`, usado por `modules/*.py` e `main.py`)
+
+Fonte: `.env.example:1-11`.
+
+| Variável | Obrigatória | Propósito |
+|---|---|---|
+| `MIGGO_API_KEY` | Sim | API Key para autenticar contra o backend principal (`backend-miggo`), enviada como header `Authorization: Api-Key <valor>` (`modules/miggo.py:12-15`). |
+| `MIGGO_API_BASE_URL` | Sim | URL base da API do `backend-miggo` (ex.: `https://test-api.miggomkt.com.br/api/v1/`). |
+| `OPENAI_API_KEY` | Sim | Chave da API OpenAI, usada em `modules/openai.py:8` para geração de texto e imagem. |
+
+### `backend/.env` (Django)
+
+Fonte: `backend/.env.example:1-17` e leituras `config(...)` em `backend/core/settings.py`.
+
+| Variável | Obrigatória | Propósito |
+|---|---|---|
+| `SECRET_KEY` | Sim | Chave secreta do Django (`settings.py:25`). |
+| `DEBUG` | Sim | Liga/desliga modo debug — cast para `bool` (`settings.py:28`). |
+| `ALLOWED_HOSTS` | Não (default vazio) | Lista de hosts permitidos, CSV (`settings.py:30`, helper `_get_csv`). |
+| `DB_NAME` | Sim | Nome do banco PostgreSQL (`settings.py:96`). |
+| `DB_USER` | Sim | Usuário do PostgreSQL. |
+| `DB_PASSWORD` | Sim | Senha do PostgreSQL. |
+| `DB_HOST` | Sim | Host do PostgreSQL. |
+| `DB_PORT` | Sim | Porta do PostgreSQL. |
+| `MIGGO_API_KEY` | Sim | API Key do backend principal — usada por `apps.common.miggo_client` (`settings.py:179`). |
+| `MIGGO_API_BASE_URL` | Sim | URL base do backend principal (`settings.py:180`). |
+| `OPENAI_API_KEY` | Não (default `''`) | Chave OpenAI usada pelos workflows de geração (`settings.py:182`). |
+| `CORS_ALLOWED_ORIGINS` | Não (default vazio) | Origens CORS permitidas, CSV (`settings.py:32`). |
+| `CSRF_TRUSTED_ORIGINS` | Não (default vazio) | Origens confiáveis para CSRF, CSV (`settings.py:33`). |
+
+### `frontend/.env`
+
+Fonte: `frontend/.env.example:1`.
+
+| Variável | Obrigatória | Propósito |
+|---|---|---|
+| `VITE_API_BASE_URL` | Não (fallback `http://localhost:8010`) | URL base da API do backend deste serviço, lida em `frontend/src/services/jwtAuth.ts:8-11`. Em produção (container), é sobrescrita em runtime por `window.__MIGGO_CONFIG__.API_BASE_URL` — ver <a href="/miggoai/deploy">Deploy</a>. |
+
+## Rodando o CLI de protótipo (`main.py`)
+
+`main.py:1-77` é um script interativo que roda os workflows diretamente, sem servidor. Usa apenas o `.env` da raiz do repo (não o de `backend/`).
+
+```bash
+python main.py
+```
+
+O script pede o ID do cliente (padrão `178`), a data do post (padrão hoje) e o modo:
+
+1. Só título
+2. Título + imagem
+3. Título + legenda
+4. Título + legenda + hashtags
+
+Cada execução salva um log em `outputs/resultado_<cliente>_<timestamp>.txt` e, nos modos com imagem, os arquivos PNG gerados também em `outputs/`.
+
+## Problemas comuns
+
+<AccordionGroup>
+  <Accordion title="manage.py check falha com 'SECRET_KEY não definido'">
+    `backend/.env` não foi criado ou não está no diretório `backend/` (o `python-decouple` procura `.env` a partir do diretório de execução).
+  </Accordion>
+  <Accordion title="Erro de conexão com o PostgreSQL">
+    Confirme que `DB_HOST`/`DB_PORT`/`DB_NAME`/`DB_USER`/`DB_PASSWORD` batem com uma instância ativa. Não há fallback para SQLite — `settings.py:93-102` usa exclusivamente `django.db.backends.postgresql`.
+  </Accordion>
+  <Accordion title="Geração falha com 'Grid do cliente não encontrado'">
+    O workflow de imagem exige um grid 3x3 cadastrado no brandkit do cliente no `backend-miggo` (`backend/apps/generations/services/image_workflow.py:152-154`). Sem grid, a geração de imagem não roda.
+  </Accordion>
+  <Accordion title="Nenhum prompt encontrado / PromptDefinition.DoesNotExist">
+    Rode `python manage.py seed_prompts` — os workflows de geração buscam `PromptDefinition` ativos por `slug` (ex.: `titulo-story`, `imagem-post`) e falham se o seed nunca rodou.
+  </Accordion>
+  <Accordion title="Frontend não autentica / 401 constante">
+    Confirme que existe um usuário Django criado (`createsuperuser`) — a autenticação do frontend usa `SimpleJWT` contra `/api/token/`, não há cadastro público de usuário.
+  </Accordion>
+</AccordionGroup>
+
+<Columns cols={2}>
+  <Card title="Configuração" icon="sliders" href="/miggoai/configuracao">Settings, apps instalados, JWT, CORS/CSRF.</Card>
+  <Card title="Arquitetura" icon="sitemap" href="/miggoai/arquitetura">Como o MiggoAI se encaixa no ecossistema Miggo.</Card>
+</Columns>

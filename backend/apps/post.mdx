@@ -1,0 +1,631 @@
+---
+title: "Post"
+description: "Núcleo do fluxo de conteúdo: posts, formatos, status, mídia vinculada, integrações com redes sociais (Zernio/Late.dev e WhatsApp/ManyChat) e insights de performance."
+icon: "images"
+---
+
+## Responsabilidade
+
+O app `post` é o coração operacional da plataforma Miggo: modela o **conteúdo** que a equipe produz para os clientes (`Post`), o **formato** e a **rede social** de destino, o **fluxo de aprovação** (status + histórico de transições), a **mídia vinculada** a cada post, as **integrações de plataforma** (Instagram/LinkedIn via Zernio/Late.dev e WhatsApp via ManyChat) e os **insights de performance** sincronizados do Zernio.
+
+É consumido por:
+- **Frontend** (Kanban de conteúdo, tela "Meus conteúdos" do cliente, configurações de integração, dashboard de insights, tela "Minha Marca").
+- **Webhooks externos**: Zernio (`webhook-update-post/`, `webhook-account-connected/`) e o link permanente de mídia aberto pelo cliente via WhatsApp.
+- **ManyChat/conversas** (`app.conversation`): dispara automações (envio para aprovação, "pode postar", aviso de publicação) e consulta o link de mídia de um post (`PostMediaLinkView`).
+- **Cron** (`app/post/cron.py`): processa revisões agendadas (`ScheduledReview`).
+- **`app.editorial_calendar`**: `Post` referencia `EditorialCalendar` (origem da pauta) e o serializer usa `FormatStyleRule`/`rules_for_post` para anexar regras editoriais.
+- **`app.media`**: cada `MediaPost` vincula um `Post` a uma `Media`.
+
+## Arquivos
+
+| Arquivo | Conteúdo |
+|---|---|
+| `app/post/models.py` | Modelos: `SocialNetwork`, `PostFormat`, `PostStatus`, `Post`, `PostStatusEvent`, `MediaPost`, `PlatformIntegration`, `PlatformProfileConfig`, `PostMetadata`, `ScheduledReview`, `PostInsights`, `PostInsightsSnapshot`. |
+| `app/post/serializers.py` | Serializers DRF para todos os modelos acima (exceto `PostStatusEvent`, `ScheduledReview`, `PostInsightsSnapshot`, que não têm serializer). |
+| `app/post/views.py` | Todas as views (CRUD de post/formato/status/mídia, publicação, integrações, insights, webhooks, link de mídia). Arquivo extenso (~2860 linhas). |
+| `app/post/urls.py` | Roteamento do app, incluído em `core/urls.py` sob `/api/v1/post/`. |
+| `app/post/admin.py` | Registro no Django Admin (`Post`, `PostFormat`, `PostStatus`, `SocialNetwork`, `PlatformIntegration`, `MediaPost`, `PostMetadata`, `PlatformProfileConfig`). |
+| `app/post/apps.py` | `AppConfig`; em `ready()` importa `signals` para registrar os receivers de `PostStatusEvent`. |
+| `app/post/signals.py` | Registra `PostStatusEvent` a cada `save()` de `Post` que muda de status (via `pre_save`/`post_save`). |
+| `app/post/cron.py` | `send_scheduled_reviews()` — cron que envia `ScheduledReview` pendentes via ManyChat. |
+| `app/post/media_link.py` | Token assinado permanente de mídia (`build_media_view_token`, `resolve_post_id_from_token`, `build_media_page_url`, `guess_content_type`). |
+| `app/post/services.py` | `send_post_for_approval(post)` — regra de envio de post para aprovação via WhatsApp, compartilhada entre a view HTTP e a ação de flow de conversa. |
+| `app/post/stalled.py` | `stalled_posts()` — fila de posts parados (`status='sent'` sem resposta do cliente há N dias). |
+| `app/post/zernio.py` | Integração com a API de analytics do Zernio: sincronização de insights (`sync_client_insights`) e reconciliação de conexões de conta (`sync_platform_connections`). |
+| `app/post/management/commands/backfill_post_status_events.py` | Management command que reconstrói `PostStatusEvent` a partir do `History`. |
+| `app/post/management/commands/repair_platform_integrations.py` | Management command que realinha `PlatformIntegration` com as contas realmente conectadas no Zernio. |
+
+## Modelos
+
+### SocialNetwork
+`app/post/models.py:10`
+
+Representa uma rede social (Instagram, LinkedIn, WhatsApp etc.).
+
+| Campo | Tipo | Obrigatório | Default/Choices | Descrição |
+|---|---|---|---|---|
+| `name` | CharField(100) | sim | — | Nome da rede. |
+| `description` | TextField | não | null/blank | Descrição livre. |
+
+Relacionamentos reversos: `post_formats` (`PostFormat`), `platform_integrations` (`PlatformIntegration`), `profile_configs` (`PlatformProfileConfig`), `post_insights` (`PostInsights`).
+
+### PostFormat
+`app/post/models.py:18`
+
+Formato de publicação (ex.: Feed, Story, Reels) associado a uma rede social.
+
+| Campo | Tipo | Obrigatório | Default/Choices | Descrição |
+|---|---|---|---|---|
+| `name` | CharField(100) | sim | — | Nome do formato. |
+| `social_network` | FK → `SocialNetwork` | não (null) | `on_delete=CASCADE` | Rede social a que o formato pertence. |
+| `description` | TextField | não | null/blank | Descrição livre. |
+
+### PostStatus
+`app/post/models.py:26`
+
+Catálogo de status possíveis para um `Post` (ex.: `pending`, `sent`, `in_review`, `approved`, `rejected`, `scheduled`, `holding`, `published`, `error`, `canceled` — nomes deduzidos do uso em `views.py`/`services.py`, não há choices fixas no model).
+
+| Campo | Tipo | Obrigatório | Default/Choices | Descrição |
+|---|---|---|---|---|
+| `name` | CharField(100) | sim | — | Nome do status (texto livre, sem `choices`). |
+| `description` | TextField | não | null/blank | Descrição livre. |
+
+<Note>
+`PostStatus` não usa `choices` — os nomes de status são strings livres cadastradas no banco/admin e referenciadas por nome (`.filter(name='...')`) em todo o código. Isso permite adicionar novos status sem migration, mas também significa que erros de digitação no nome não são pegos em tempo de deploy.
+</Note>
+
+### Post
+`app/post/models.py:34`
+
+O conteúdo em si: uma peça a ser publicada para um cliente em uma data/hora, com pauta, formato, mídia e status de aprovação.
+
+| Campo | Tipo | Obrigatório | Default/Choices | Descrição |
+|---|---|---|---|---|
+| `client` | FK → `Client` | sim | `on_delete=CASCADE`, `related_name='posts'` | Cliente dono do post. |
+| `calendar_id` | FK → `editorial_calendar.EditorialCalendar` | não (null) | `on_delete=CASCADE`, `related_name='posts'` | Regra do calendário editorial que originou o post (quando gerado automaticamente). |
+| `subject` | CharField(2000) | sim | — | Assunto/pauta. |
+| `title` | CharField(2000) | não | null/blank | Título (editável em lista no admin). |
+| `post_format` | FK → `PostFormat` | não | `on_delete=SET_NULL`, `related_name='posts'` | Formato escolhido para publicação. |
+| `suggested_formats` | M2M → `PostFormat` | não | `related_name='suggested_posts'` | Formatos sugeridos pela regra do calendário. |
+| `tags` | JSONField | não | `default=list` | Palavras-chave herdadas de `EditorialCalendar.tags`. |
+| `objetivo` | TextField | não | `default=""` | Objetivo editorial herdado do calendário. |
+| `macro_objetivo` | CharField(20) | não | `default=""` | Lente de funil (entreter/inspirar/educar/convencer), herdada do calendário. |
+| `cta` | JSONField | não | `default=list` | CTAs pré-cadastradas herdadas do calendário. |
+| `cta_required` | BooleanField | não | `default=False` | Se o CTA é de aplicação obrigatória (vem da matriz Formato x Estilo). |
+| `content` | TextField | não | null/blank | Texto/legenda do post. |
+| `status` | FK → `PostStatus` | não | `on_delete=CASCADE`, `related_name='posts'` | Status atual no fluxo. |
+| `post_date` | DateField | sim | — | Data de publicação/agendamento. |
+| `post_time` | TimeField | sim | — | Horário de publicação/agendamento. |
+| `created_at` | DateTimeField | auto | `auto_now_add=True` | — |
+| `updated_at` | DateTimeField | auto | `auto_now=True` | Também usado como "relógio" da fila de posts parados (`stalled.py`). |
+| `correction_description` | TextField | não | null/blank | Motivo informado pelo cliente ao pedir correção/reprovar. |
+
+`__str__`: `"<subject> - <client.name>"` (`app/post/models.py:60-61`).
+
+Relacionamentos reversos: `status_events` (`PostStatusEvent`), `media_posts` (`MediaPost`), `post_metadata` (`PostMetadata`), `scheduled_reviews` (`ScheduledReview`), `post_insights` (`PostInsights`).
+
+### PostStatusEvent
+`app/post/models.py:66`
+
+Histórico (o "filme") das transições de status de um post — `Post.status` guarda só a foto atual. Permite medir tempo até aprovação, correções pedidas e evolução das filas.
+
+| Campo | Tipo | Obrigatório | Default/Choices | Descrição |
+|---|---|---|---|---|
+| `post` | FK → `Post` | sim | `on_delete=CASCADE`, `related_name='status_events'` | Post da transição. |
+| `client` | FK → `Client` | sim | `on_delete=CASCADE`, `related_name='post_status_events'` | Denormalizado do post, para consultas por cliente. |
+| `from_status` | CharField(100) | não | `default=''`, blank | Status anterior (texto, denormalizado). |
+| `to_status` | CharField(100) | sim | `db_index=True` | Novo status (texto, denormalizado). |
+| `created_at` | DateTimeField | não | `default=timezone.now`, `db_index=True` | Usa `default` (não `auto_now_add`) para permitir que o backfill grave datas passadas. |
+
+`Meta` (`app/post/models.py:80-85`): `ordering = ('created_at', 'id')`; índices em `('post', 'created_at')` e `('to_status', 'created_at')`.
+
+Os status são gravados como **texto**, não FK, para que o histórico sobreviva a renomeação/remoção de `PostStatus`.
+
+Gerado automaticamente por `app/post/signals.py` a cada `Post.save()` que muda de status — não é criado manualmente em nenhuma view.
+
+### MediaPost
+`app/post/models.py:91`
+
+Vínculo entre um `Post` e uma `Media`, com ordenação.
+
+| Campo | Tipo | Obrigatório | Default/Choices | Descrição |
+|---|---|---|---|---|
+| `post` | FK → `Post` | sim | `on_delete=CASCADE`, `related_name='media_posts'` | — |
+| `media` | FK → `Media` | sim | `on_delete=CASCADE`, `related_name='media_posts'` | — |
+| `sort_order` | PositiveIntegerField | não | `default=0` | Ordem de exibição/carrossel. |
+| `created_at` | DateTimeField | auto | `auto_now_add=True` | — |
+| `updated_at` | DateTimeField | auto | `auto_now=True` | — |
+
+`Meta` (`app/post/models.py:98-99`): `ordering = ('sort_order', 'id')`.
+
+**Métodos com efeito colateral:**
+- `save(*args, **kwargs)` (`app/post/models.py:104-108`): salva normalmente e, se a `Media` vinculada tinha `from_media_library=True`, marca `from_media_library=False` — ou seja, uma mídia da biblioteca deixa de contar como "da biblioteca" assim que é usada em um post.
+- `delete(*args, **kwargs)` (`app/post/models.py:110-114`): apaga o vínculo e, se a `Media` não estiver vinculada a nenhum outro `MediaPost`, **apaga a própria `Media`** em cascata (limpeza de mídia órfã).
+
+### PlatformIntegration
+`app/post/models.py:121`
+
+Integração de um cliente com uma rede social (Instagram/LinkedIn via Late.dev/Zernio, ou WhatsApp via ManyChat).
+
+| Campo | Tipo | Obrigatório | Default/Choices | Descrição |
+|---|---|---|---|---|
+| `client` | FK → `Client` | sim | `on_delete=CASCADE`, `related_name='platform_integrations'` | — |
+| `platform` | FK → `SocialNetwork` | não | `on_delete=CASCADE`, `related_name='platform_integrations'` | — |
+| `profile_image` | URLField(1000) | não | null/blank | Foto de perfil da conta social. |
+| `profile_id` | CharField(2000) | não | null/blank | ID do perfil no Zernio/Late.dev (ou subscriber_id do ManyChat, para WhatsApp). |
+| `username` | CharField(2000) | não | null/blank | Handle/nome de usuário (ou telefone, para WhatsApp). |
+| `status` | CharField(20) | sim | `choices=integration_status` (`active`, `inactive`) | Estado da integração. |
+| `created_at` | DateTimeField | auto | `auto_now_add=True` | — |
+| `updated_at` | DateTimeField | auto | `auto_now=True` | — |
+| `connection_url` | CharField(1000) | não | null/blank | URL de autorização OAuth (Late.dev) ou, para WhatsApp em fluxo de verificação, guarda `pending_code:<código>` até a confirmação. |
+
+### PlatformProfileConfig
+`app/post/models.py:142`
+
+Configurações de perfil de rede social propostas para um cliente (bio, capa, destaques, calendário editorial em texto) — tela "Minha Marca". Guarda o conteúdo **anterior** (`old_*`) e o **novo proposto** (`new_*`), vinculado diretamente ao `Client` (independente de integração ativa).
+
+| Campo | Tipo | Obrigatório | Default/Choices | Descrição |
+|---|---|---|---|---|
+| `client` | FK → `Client` | sim | `on_delete=CASCADE`, `related_name='profile_configs'` | — |
+| `platform` | FK → `SocialNetwork` | não | `on_delete=SET_NULL`, `related_name='profile_configs'` | — |
+| `config_type` | CharField(20) | sim | `choices=config_type_choices`: `bio`, `cover`, `highlights`, `editorial_calendar` | Tipo de configuração. |
+| `old_text` | TextField | não | null/blank | Texto atual na plataforma (ou JSON estruturado, conforme `config_type`). |
+| `old_images` | JSONField | não | `default=list` | Lista de URLs. |
+| `new_text` | TextField | não | null/blank | Texto/JSON proposto. |
+| `new_images` | JSONField | não | `default=list` | Lista de URLs propostas. |
+| `approved` | BooleanField | não | `default=False` | Se a proposta foi aprovada. |
+| `created_at` | DateTimeField | auto | `auto_now_add=True` | — |
+| `updated_at` | DateTimeField | auto | `auto_now=True` | — |
+
+`Meta` (`app/post/models.py:178-180`): `verbose_name = 'Configuração de Perfil'`.
+
+Para `highlights`: lista de `{icone, texto, bg_color, outline_color}` em `*_text`. Para `cover`: `{content, subject}` em `*_text`.
+
+### PostMetadata
+`app/post/models.py:187`
+
+Par chave/valor genérico associado a um post — usado para guardar IDs/URLs de terceiros (`late_post_id`, `<plataforma>_url`, `<plataforma>_post_id`, `whatsapp_media_view_url`).
+
+| Campo | Tipo | Obrigatório | Default/Choices | Descrição |
+|---|---|---|---|---|
+| `post` | FK → `Post` | sim | `on_delete=CASCADE`, `related_name='post_metadata'` | — |
+| `key` | CharField(2000) | sim | — | Chave (ex.: `late_post_id`). |
+| `value` | CharField(2000) | sim | — | Valor. |
+| `created_at` | DateTimeField | auto | `auto_now_add=True` | — |
+| `updated_at` | DateTimeField | auto | `auto_now=True` | — |
+
+### ScheduledReview
+`app/post/models.py:205`
+
+Agendamento de envio de revisão de post via ManyChat para uma data/hora futura, processado pelo cron `send_scheduled_reviews`.
+
+| Campo | Tipo | Obrigatório | Default/Choices | Descrição |
+|---|---|---|---|---|
+| `post` | FK → `Post` | sim | `on_delete=CASCADE`, `related_name='scheduled_reviews'` | — |
+| `scheduled_at` | DateTimeField | sim | — | Quando enviar. |
+| `status` | CharField(20) | não | `choices=scheduled_review_status`: `pending`, `sent`, `failed`, `canceled`; `default='pending'` | — |
+| `error_message` | TextField | não | null/blank | Erro registrado em caso de falha. |
+| `created_at` | DateTimeField | auto | `auto_now_add=True` | — |
+| `updated_at` | DateTimeField | auto | `auto_now=True` | — |
+
+### PostInsights
+`app/post/models.py:219`
+
+Métricas de performance de um post publicado — via Zernio ou externo (publicado fora da Miggo, apenas importado).
+
+| Campo | Tipo | Obrigatório | Default/Choices | Descrição |
+|---|---|---|---|---|
+| `client` | FK → `Client` | sim | `on_delete=CASCADE`, `related_name='post_insights'` | — |
+| `post` | FK → `Post` | não | `on_delete=CASCADE`, null/blank, `related_name='post_insights'` | Opcional — posts externos não têm `Post` local correspondente. |
+| `platform` | FK → `SocialNetwork` | não | `on_delete=CASCADE`, `related_name='post_insights'` | — |
+| `external_post_id` | CharField(255) | não | null/blank, **unique**, `db_index=True` | ID do post no Zernio (`_id` do `ExternalPost`) — chave de upsert. |
+| `is_external` | BooleanField | não | `default=False` | `True` quando o post não foi publicado via Zernio. |
+| `published_at` | DateTimeField | não | null/blank | — |
+| `media_type` | CharField(20) | não | null/blank | `image`, `video`, `carousel`, `text`... |
+| `impressions`, `reach`, `likes`, `comments`, `shares`, `views`, `saves`, `clicks`, `follows` | IntegerField | não | `default=0` | Métricas brutas. |
+| `engagement_rate` | FloatField | não | `default=0.0` | — |
+| `platform_post_url` | URLField(1000) | não | null/blank | — |
+| `thumbnail_url` | URLField(1000) | não | null/blank | — |
+| `content` | TextField | não | null/blank | — |
+| `created_at` / `updated_at` | DateTimeField | auto | — | — |
+
+`__str__` (`app/post/models.py:247-261`): resolve `post`/`platform` de forma tolerante a `ObjectDoesNotExist` — durante deleções em cascata o FK pode apontar para um id já removido.
+
+### PostInsightsSnapshot
+`app/post/models.py:264`
+
+Snapshot diário das métricas de um `PostInsights`, gravado a cada sync com o Zernio, mantendo histórico local (a linha "atual" em `PostInsights` é sobrescrita a cada sync).
+
+| Campo | Tipo | Obrigatório | Default/Choices | Descrição |
+|---|---|---|---|---|
+| `insight` | FK → `PostInsights` | sim | `on_delete=CASCADE`, `related_name='snapshots'` | — |
+| `snapshot_date` | DateField | sim | `db_index=True` | — |
+| `impressions`, `reach`, `likes`, `comments`, `shares`, `views`, `saves`, `clicks`, `follows` | IntegerField | não | `default=0` | — |
+| `engagement_rate` | FloatField | não | `default=0.0` | — |
+| `created_at` | DateTimeField | auto | `auto_now_add=True` | — |
+
+`Meta` (`app/post/models.py:284-286`): `unique_together = ('insight', 'snapshot_date')`; `ordering = ('snapshot_date',)`.
+
+## Endpoints
+
+Prefixo do app: `/api/v1/post/` (`core/urls.py:32`). Autenticação/permissão padrão do projeto (`core/settings.py:135-141`): `JWTAuthentication` + `HasAPIKeyOrIsAuthenticated`, salvo onde a view sobrescreve explicitamente.
+
+| Método | Rota | View | Permissão |
+|---|---|---|---|
+| POST | `/api/v1/post/create/` | `PostCreateView` | Padrão |
+| PUT/PATCH | `/api/v1/post/update/<int:pk>/` | `PostUpdateView` | Padrão |
+| GET | `/api/v1/post/list/` | `PostListView` | Padrão (com escopo extra por `role='client'`) |
+| DELETE | `/api/v1/post/delete/<int:pk>/` | `PostDeleteView` | Padrão |
+| GET | `/api/v1/post/detail/<int:pk>/` | `PostDetailView` | Padrão |
+| POST | `/api/v1/post/publish/` | `PublishPostView` | Padrão |
+| POST | `/api/v1/post/webhook-update-post/` | `webhookUpdatePostView` | `AllowAny` (sem autenticação) |
+| POST | `/api/v1/post/webhook-account-connected/` | `webhookAccountConnectedView` | `AllowAny` (sem autenticação) |
+| POST | `/api/v1/post/format/create/` | `PostFormatCreateView` | Padrão |
+| GET | `/api/v1/post/format/list/` | `PostFormatListView` | Padrão |
+| GET | `/api/v1/post/format/edit/<int:pk>/` | `PostFormatListView` | Padrão |
+| GET | `/api/v1/post/format/delete/<int:pk>/` | `PostFormatListView` | Padrão |
+| POST | `/api/v1/post/status/create/` | `PostStatusCreateView` | Padrão |
+| GET | `/api/v1/post/status/list/` | `PostStatusListView` | Padrão |
+| GET | `/api/v1/post/status/edit/<int:pk>/` | `PostStatusListView` | Padrão |
+| GET | `/api/v1/post/status/delete/<int:pk>/` | `PostStatusListView` | Padrão |
+| GET | `/api/v1/post/social-network/list/` | `SocialNetworkListView` | Padrão |
+| POST | `/api/v1/post/media-post/create/` | `MediaPostCreateView` | Padrão |
+| GET | `/api/v1/post/media-post/list/` | `MediaPostListView` | Padrão |
+| PUT/PATCH | `/api/v1/post/media-post/update/<int:pk>/` | `MediaPostUpdateView` | Padrão |
+| DELETE | `/api/v1/post/media-post/delete/<int:pk>/` | `MediaPostDeleteView` | Padrão |
+| POST | `/api/v1/post/platform-integration/create/` | `PlatformIntegrationCreateView` | Padrão |
+| GET | `/api/v1/post/platform-integration/list/` | `PlatformIntegrationListView` | Padrão |
+| GET | `/api/v1/post/platform-integration/retrieve/<int:client>/` | `PlatformIntegrationRetrieveView` | Padrão |
+| PUT/PATCH | `/api/v1/post/platform-integration/update/<int:pk>/` | `PlatformIntegrationUpdateView` | Padrão |
+| DELETE | `/api/v1/post/platform-integration/delete/<int:pk>/` | `PlatformIntegrationDeleteView` | Padrão |
+| POST | `/api/v1/post/platform-integration/whatsapp/create/` | `WhatsAppIntegrationCreateView` | Padrão |
+| POST | `/api/v1/post/platform-integration/whatsapp/verify/` | `WhatsAppVerifyCodeView` | Padrão |
+| POST | `/api/v1/post/send-post-whatsapp/` | `SendPostWhatsAppView` | Padrão |
+| GET | `/api/v1/post/media-view/<str:token>/info/` | `PostMediaInfoView` | `AllowAny` (protegido por token assinado) |
+| GET | `/api/v1/post/media-view/<str:token>/` | `PostMediaViewView` | `AllowAny` (redireciona ao front) |
+| GET | `/api/v1/post/media-view/<str:token>/download/` | `PostMediaDownloadView` | `AllowAny` (protegido por token assinado) |
+| GET | `/api/v1/post/<int:post_id>/media-link/` | `PostMediaLinkView` | `AllowAny` (protegido por token compartilhado do ManyChat) |
+| POST | `/api/v1/post/schedule-review/` | `ScheduleReviewView` | Padrão |
+| POST | `/api/v1/post/create-posts/` | `CreatePostsWithCalendarView` | Padrão |
+| GET | `/api/v1/post/insights/list/` | `PostInsightsView` | Padrão |
+| POST | `/api/v1/post/insights/create/` | `PostInsightsCreateView` | Padrão |
+| POST | `/api/v1/post/insights/sync/` | `PostInsightsSyncView` | Padrão |
+| GET | `/api/v1/post/insights/timeline/` | `PostInsightsTimelineView` | Padrão |
+| GET | `/api/v1/post/insights/daily-metrics/` | `InsightsDailyMetricsView` | Padrão |
+| GET | `/api/v1/post/insights/follower-stats/` | `InsightsFollowerStatsView` | Padrão |
+| GET | `/api/v1/post/metadata/list/` | `PostMetadataListView` | Padrão |
+| GET | `/api/v1/post/platform-profile-config/list/` | `PlatformProfileConfigListView` | `IsManagementUser` |
+| POST | `/api/v1/post/platform-profile-config/create/` | `PlatformProfileConfigCreateView` | `IsManagementUser` |
+| PUT/PATCH | `/api/v1/post/platform-profile-config/update/<int:pk>/` | `PlatformProfileConfigUpdateView` | `IsManagementUser` |
+| DELETE | `/api/v1/post/platform-profile-config/delete/<int:pk>/` | `PlatformProfileConfigDeleteView` | `IsManagementUser` |
+
+<Warning>
+As rotas `format/edit/<pk>/`, `format/delete/<pk>/`, `status/edit/<pk>/` e `status/delete/<pk>/` (`app/post/urls.py:18-19,24-25`) apontam para `PostFormatListView`/`PostStatusListView` — a mesma view de **listagem**, não para views de update/delete dedicadas. Na prática essas quatro rotas apenas listam, não editam nem apagam nada.
+</Warning>
+
+<AccordionGroup>
+<Accordion title="POST /api/v1/post/create/ — PostCreateView">
+`app/post/views.py:75-137`. Cria um ou vários posts (aceita objeto único ou lista no corpo).
+
+Antes de criar, valida (para usuários não-admin) se o `post_format` enviado é permitido pelas regras ativas do `EditorialCalendar` do cliente para o dia da semana de `post_date`; se houver regra com formatos permitidos e o formato não estiver entre eles, retorna erro.
+
+Após criar, procura e remove um post "placeholder" (gerado automaticamente pelo calendário, sem `post_format`) na mesma data/cliente, para não duplicar linhas no Kanban.
+
+<ParamField path="client" type="integer" required>ID do cliente.</ParamField>
+<ParamField path="post_date" type="string" required>Data (YYYY-MM-DD).</ParamField>
+<ParamField path="post_time" type="string" required>Horário.</ParamField>
+<ParamField path="subject" type="string" required>Assunto/pauta.</ParamField>
+<ParamField path="post_format" type="integer">ID do `PostFormat`.</ParamField>
+<ParamField path="content" type="string">Texto/legenda.</ParamField>
+<ParamField path="tags" type="array">Palavras-chave.</ParamField>
+
+**Erros**: `400` se o formato não for permitido pela regra do calendário editorial.
+</Accordion>
+
+<Accordion title="PUT/PATCH /api/v1/post/update/<pk>/ — PostUpdateView">
+`app/post/views.py:140-251`. Bloqueia edição de posts já publicados (`status.name` contém `published` → `403`).
+
+Após salvar, dois efeitos colaterais (cada um protegido por `try/except` isolado, sem interromper a resposta em caso de falha):
+1. Se o status mudou para "published" (e não estava antes), dispara `send_post_published_email` (`app.account.support_views`).
+2. Chama `_notify_status_transition` (`app/post/views.py:187-247`), que cria notificações in-app conforme a transição de status:
+   - `→ in_review` por admin: notifica o cliente ("Novo conteúdo para revisão").
+   - `→ in_review` pelo próprio cliente: notifica admins ("Cliente solicitou alterações").
+   - `→ published`: notifica admins e o cliente.
+   - `→ rejected`: notifica admins, incluindo `post.correction_description` na mensagem.
+   - `→ approved`: notificação desabilitada (`pass`).
+
+<ResponseField name="error" type="string">"Este conteúdo já foi publicado e não pode ser editado." (403)</ResponseField>
+</Accordion>
+
+<Accordion title="GET /api/v1/post/list/ — PostListView">
+`app/post/views.py:255-341`. Lista posts com `prefetch_related('media_posts__media', 'suggested_formats')` para evitar N+1.
+
+**Escopo por role**: usuário com `role='client'` só vê posts do próprio `client` (ignora `client_id` da query) e apenas nos status "públicos" (`CLIENT_VISIBLE_STATUS_NAMES = ['sent', 'approved', 'published', 'in_review']`, `app/post/views.py:43`). Status internos (`draft`, `pending`, `scheduled`, `error`...) nunca são expostos ao cliente.
+
+Paginação (`StandardPagination`) só é aplicada quando `?stalled_days=` está presente — o Kanban recebe a lista crua (já limitada pela janela semanal no front).
+
+<ParamField path="client_id" type="integer">Filtra por cliente (ignorado para `role='client'`).</ParamField>
+<ParamField path="start_date" type="string">Início do intervalo de `post_date`.</ParamField>
+<ParamField path="end_date" type="string">Fim do intervalo de `post_date`.</ParamField>
+<ParamField path="status" type="string">Nome do `PostStatus`.</ParamField>
+<ParamField path="time" type="string">Filtra por hora de `post_time` (ex.: `08:00` filtra a hora 8 inteira).</ParamField>
+<ParamField path="without_media" type="boolean">`true` filtra posts sem `MediaPost`.</ParamField>
+<ParamField path="has_post_format" type="boolean">`true` filtra posts com `post_format` definido.</ParamField>
+<ParamField path="stalled_days" type="integer">Fila de posts parados (`status='sent'`) há pelo menos N dias — delega a `stalled.stalled_posts`. Ativa a paginação.</ParamField>
+</Accordion>
+
+<Accordion title="POST /api/v1/post/publish/ — PublishPostView">
+`app/post/views.py:1275-1667`. View única para **agendar, publicar ou cancelar** um post via Zernio/Late.dev. Também cobre o caso "sem integração com a rede principal, mas com WhatsApp" (envia automação "pode postar" e aprova o post automaticamente).
+
+<ParamField path="post_id" type="integer" required>ID do post.</ParamField>
+<ParamField path="publish" type="string" required>`"publish"`, `"schedule"` ou `"cancel"`.</ParamField>
+
+Validações antes de disparar:
+- Post precisa ter `post_format` definido (`400` senão).
+- Post precisa ter ao menos uma `MediaPost` vinculada (`400` senão).
+- Se não houver `PlatformIntegration` para a rede principal do formato, mas houver integração WhatsApp ativa: dispara flow "pode postar" no ManyChat, marca o post como `approved` e retorna `200` sem publicar de fato.
+- Bloqueia reagendar post já `scheduled`, publicar/agendar post já `published`, ou agendar/publicar post `canceled` (todos `400`).
+- Se a data/hora agendada já passou, força `publish='publish'` imediato (ajustando `post_date`/`post_time` para agora).
+- Valida tipo de arquivo de cada mídia (via `resolve_media_upload_info`) e, para Instagram feed com imagem, valida proporção (0.75 a 1.91) usando Pillow — `400` se fora do limite.
+
+**Cancelamento** (`publish='cancel'`) é síncrono: busca `PostMetadata` `late_post_id`, chama `DELETE /v1/posts/<id>` no Zernio e marca o post como `canceled`.
+
+**Publicação/agendamento** roda em **thread de background** (`_publish_in_background`, `app/post/views.py:1470-1650`) e a view responde `202 Accepted` imediatamente. O fluxo em background: presign + upload de cada mídia ao Zernio, montagem de `mediaItems` (com tratamento especial para Reels: usa a primeira imagem como thumbnail), busca do `accountId` no Zernio, montagem do `platformSpecificData` (Story/Reels), chamada `POST /v1/posts` e, em caso de sucesso, grava `PostMetadata` `late_post_id` e atualiza o status do post (`scheduled` ou `holding`, conforme o caso — `published` só é setado pelo webhook).
+
+<ResponseField name="message" type="string">Mensagem de confirmação (assíncrona) ou de post aprovado via WhatsApp.</ResponseField>
+
+**Erros**: `400` (formato/mídia ausente, estado inválido do post, `publish` inválido, proporção de imagem inválida, tipo de arquivo não suportado), `404` (post/integração não encontrados).
+</Accordion>
+
+<Accordion title="POST /api/v1/post/webhook-update-post/ — webhookUpdatePostView">
+`app/post/views.py:2012-2233`. Webhook do Zernio para eventos de publicação (`post.published`, `post.failed`). Sem autenticação (`AllowAny`).
+
+Responde `200` imediatamente e processa em **thread de background** (`_process_webhook`), que:
+- Tenta localizar o post local via `PostMetadata` `late_post_id` (retry de até 10 tentativas, 1s cada — cobre a corrida entre o webhook e a thread de publicação que ainda está gravando o `late_post_id`).
+- `post.published`: marca `PostStatus='published'`, notifica admins e cliente (só na primeira vez, guarda contra reentrega do webhook), grava `PostMetadata` de URL/ID por plataforma, garante o `whatsapp_media_view_url` (MIG-235) e dispara notificação via ManyChat.
+- `post.failed`: marca `PostStatus='error'` e notifica o cliente.
+
+<Note>
+Este endpoint não valida nenhum token/assinatura do Zernio — está exposto publicamente sem verificação de origem.
+</Note>
+</Accordion>
+
+<Accordion title="POST /api/v1/post/webhook-account-connected/ — webhookAccountConnectedView">
+`app/post/views.py:2696-2858`. Webhook do Zernio para `account.connected`. Sem autenticação (`AllowAny`).
+
+Casa a `PlatformIntegration` pendente pela chave **(profile_id, platform)** — não só por `profile_id`, que no Zernio identifica o cliente e é compartilhado entre redes (correção da MIG-185: o webhook antigo pegava `.first()` só por `profile_id` e reescrevia `platform`, ativando/renomeando a linha errada). Se não achar integração com `profile_id` já gravado, procura por integrações do mesmo cliente (resolvido via outras integrações ou `ClientMeta.late_profile_id`) que ainda não estejam ativas para aquela plataforma.
+
+Retorna `200` mesmo quando não encontra integração para atualizar (com `status: 'warning'`), e `400`/`404` para payload inválido/plataforma não cadastrada.
+</Accordion>
+
+<Accordion title="POST /api/v1/post/platform-integration/whatsapp/create/ — WhatsAppIntegrationCreateView">
+`app/post/views.py:478-769`. Conecta o WhatsApp de um cliente via ManyChat (não usa Zernio/Late.dev).
+
+<ParamField path="client" type="integer" required>ID do cliente.</ParamField>
+<ParamField path="platform" type="integer" required>ID da `SocialNetwork` WhatsApp.</ParamField>
+<ParamField path="skip_verification" type="boolean" default="false">Se `true`, ativa a integração direto, sem código de verificação.</ParamField>
+
+Fluxo: busca (best-effort) o subscriber do ManyChat pelo telefone; se não achar, cria (`createSubscriber`) e faz `updateSubscriber` (best-effort) para gravar telefone/e-mail. Se `skip_verification`, cria `PlatformIntegration` já `active`. Senão, gera código de 6 dígitos, grava em `UserMeta` (`whatsapp_activation_code`) e em `connection_url` (`pending_code:<código>`), e dispara o código como custom field + flow de validação no ManyChat.
+
+**Erros**: `400` (campos obrigatórios ausentes, plataforma errada, integração já existe, cliente sem telefone), `404` (cliente/plataforma não encontrados), `500` (falha ao criar no ManyChat).
+</Accordion>
+
+<Accordion title="POST /api/v1/post/platform-integration/whatsapp/verify/ — WhatsAppVerifyCodeView">
+`app/post/views.py:773-863`. Valida o código de ativação enviado via ManyChat (busca em `UserMeta` primeiro, com fallback para o prefixo `pending_code:` em `connection_url`). Em caso de sucesso, ativa a integração, grava o telefone formatado como `username`, avança `client.onboarding_step` para 3 se necessário, e apaga o `UserMeta` do código.
+
+<ParamField path="client" type="integer" required />
+<ParamField path="platform" type="integer" required />
+<ParamField path="code" type="string" required />
+
+**Erros**: `400` (campos ausentes, código não encontrado, código incorreto), `404` (cliente/plataforma/integração pendente não encontrados).
+</Accordion>
+
+<Accordion title="POST /api/v1/post/platform-integration/create/ — PlatformIntegrationCreateView">
+`app/post/views.py:869-1088`. Conecta redes sociais via Zernio/Late.dev (Instagram, LinkedIn etc. — **não** WhatsApp, bloqueado explicitamente).
+
+Resolve/cria o `profile_id` do Late.dev do cliente (nesta ordem): `ClientMeta.late_profile_id` válido → integração existente não-WhatsApp/ManyChat → busca por nome no Late.dev → cria novo perfil. Se a criação retornar `400` (nome já existe), busca de novo; `403`/`401`/outros erros retornam mensagens específicas.
+
+Monta a URL de conexão OAuth (`GET /v1/connect/<slug>?profileId=...&redirect_url=...`); o `redirect_path` varia conforme `origin='onboarding'` (volta para a esteira de onboarding) ou não (tela de configurações). Se o Zernio responder "Profile not found" (404), limpa o `profile_id` inválido e tenta recriar/buscar o perfil, refazendo a chamada de conexão.
+
+A integração é criada com `status='inactive'` — só o webhook `account.connected` a ativa.
+
+<ParamField path="client" type="integer" required />
+<ParamField path="platform" type="integer" required>ID da `SocialNetwork` (não pode ser WhatsApp).</ParamField>
+<ParamField path="origin" type="string">`"onboarding"` para redirecionar de volta à esteira de onboarding.</ParamField>
+
+**Erros**: `400` (WhatsApp neste endpoint, integração já existe), `401` (chave Late.dev inválida), `403` (limite de perfis/permissão), `502` (erro inesperado do Zernio ou perfil não encontrado/criado).
+</Accordion>
+
+<Accordion title="GET /api/v1/post/platform-integration/list/ — PlatformIntegrationListView">
+`app/post/views.py:1092-1113`. Ao filtrar por `?client=`, antes de listar chama `zernio.sync_platform_connections(client)` para reconciliar integrações presas em "aguardando confirmação" (caso o webhook `account.connected` não tenha chegado) — só faz chamada externa quando há pendência.
+</Accordion>
+
+<Accordion title="PUT/PATCH /api/v1/post/platform-integration/update/<pk>/ — PlatformIntegrationUpdateView">
+`app/post/views.py:1132-1197`. Ao ativar (`status='active'`) uma integração não-WhatsApp, busca as contas do profile no Zernio e tenta preencher `username`/`profile_image` a partir da conta correspondente (melhor esforço; falhas são apenas logadas).
+</Accordion>
+
+<Accordion title="DELETE /api/v1/post/platform-integration/delete/<pk>/ — PlatformIntegrationDeleteView">
+`app/post/views.py:1200-1271`. Para integrações não-WhatsApp: localiza o `account_id` correspondente no Zernio e chama `DELETE /v1/accounts/<id>` antes de apagar o registro local; apaga também `ClientMeta.late_profile_id` do cliente (força criação de novo perfil na próxima tentativa). Sempre apaga o registro local, mesmo se a chamada ao Zernio falhar.
+</Accordion>
+
+<Accordion title="GET/POST /api/v1/post/media-view/<token>/... — PostMediaViewView / PostMediaInfoView / PostMediaDownloadView / PostMediaLinkView">
+`app/post/views.py:1677-1802`. Grupo de endpoints públicos (`AllowAny`) para o link permanente de mídia enviado ao cliente pelo WhatsApp (ver seção Regras de negócio → `media_link.py`).
+
+- `PostMediaViewView` (`/media-view/<token>/`): redireciona para a página do frontend (`FRONTEND_URL/midia/<token>`) — existe só para não quebrar links já enviados antes da página passar a ser do front.
+- `PostMediaInfoView` (`/media-view/<token>/info/`): retorna dados da mídia para a página do front renderizar.
+- `PostMediaDownloadView` (`/media-view/<token>/download/`): serve o arquivo com `Content-Disposition: attachment` (força download, resolve player nativo sem opção de download em alguns celulares).
+- `PostMediaLinkView` (`/<post_id>/media-link/`): chamado pelo ManyChat (External Request) para montar a mensagem do WhatsApp; protegido pelo token compartilhado `MANYCHAT_WEBHOOK_TOKEN` (`hmac.compare_digest`), não é público como os três acima.
+
+<ResponseField name="url" type="string">URL da mídia (`PostMediaInfoView`) ou link permanente (`PostMediaLinkView`).</ResponseField>
+<ResponseField name="download_url" type="string">Rota reversa para download (`PostMediaInfoView`).</ResponseField>
+<ResponseField name="is_video" type="boolean">Deduzido do content-type (`PostMediaInfoView`).</ResponseField>
+
+**Erros**: `404`/link inválido para token inválido ou mídia inexistente.
+</Accordion>
+
+<Accordion title="POST /api/v1/post/create-posts/ — CreatePostsWithCalendarView">
+`app/post/views.py:1917-2009`. Gera posts "placeholder" a partir das regras ativas do `EditorialCalendar` de cada cliente ativo, cobrindo os próximos 14 dias (varre 3 semanas: atual, próxima e seguinte). Usa `PostStatus` `pending` (ou primeiro fallback disponível) como status inicial e popula `suggested_formats` a partir dos formatos da regra. Não duplica: pula se já existir post para `(client, calendar_id, post_date)`.
+
+<ResponseField name="data.created_count" type="integer">Quantidade de posts criados nesta execução.</ResponseField>
+</Accordion>
+
+<Accordion title="POST /api/v1/post/schedule-review/ — ScheduleReviewView">
+`app/post/views.py:1841-1913`. Agenda o envio de revisão via WhatsApp para data/hora futura (processado pelo cron `send_scheduled_reviews`). Exige que o cliente já tenha integração WhatsApp ativa. Data/hora sem timezone é interpretada como `America/Sao_Paulo` (MIG-261 — mesma convenção usada em `PublishPostView`). Cancela agendamentos `pending` anteriores do mesmo post antes de criar o novo.
+
+<ParamField path="post_id" type="integer" required />
+<ParamField path="scheduled_at" type="string" required>ISO 8601, ex.: `2026-03-02T15:00:00-03:00`.</ParamField>
+</Accordion>
+
+<Accordion title="POST /api/v1/post/send-post-whatsapp/ — SendPostWhatsAppView">
+`app/post/views.py:1805-1818`. Fina camada HTTP sobre `services.send_post_for_approval` (ver seção Regras de negócio).
+</Accordion>
+
+<Accordion title="Insights (list/create/sync/timeline/daily-metrics/follower-stats)">
+`app/post/views.py:2238-2617`. Grupo de endpoints de métricas, todos proxy/consumidores da API do Zernio (via `app/post/zernio.py`):
+
+- `PostInsightsView` (GET `insights/list/`): lista `PostInsights` locais com filtros (`client_id`, `post_id`, `platform_id`, `start_date`/`end_date` sobre `published_at`, `search` em conteúdo/assunto/título, `source=all|late|external`) e ordenação segura por allowlist de campos. A resposta paginada inclui `totals` — soma agregada de todas as métricas sobre o queryset filtrado completo (não só a página atual), para os cards de resumo do dashboard.
+- `PostInsightsCreateView` (POST `insights/create/`): mapeia a resposta pontual do Zernio (`GET /v1/analytics?postId=`) para um `PostInsights` via upsert. Trata `202` (Zernio ainda sincronizando) salvando dados parciais e retornando `202` para o caller (N8N) tentar de novo depois.
+- `PostInsightsSyncView` (POST `insights/sync/`): dispara `zernio.sync_client_insights` para um cliente específico (`client_id`) ou para **todos os clientes ativos** se `client_id` for omitido.
+- `PostInsightsTimelineView` (GET `insights/timeline/`): série diária de um post (por `insight_id` local ou `post_id` do Zernio), proxy de `/analytics/post-timeline`.
+- `InsightsDailyMetricsView` (GET `insights/daily-metrics/`): métricas agregadas por dia das contas do cliente, proxy de `/analytics/daily-metrics`.
+- `InsightsFollowerStatsView` (GET `insights/follower-stats/`): histórico de seguidores, proxy de `/accounts/follower-stats`.
+
+**Erros comuns**: `400` (parâmetros obrigatórios ausentes), `404` (cliente/insight não encontrados), `502` (erro de comunicação com o Zernio).
+</Accordion>
+</AccordionGroup>
+
+<Note>
+`SendApprovationWhatsappView` (`app/post/views.py:1821-1838`) e `WebhookPostPublishView` (`app/post/views.py:1671-1674`) estão definidas em `views.py` mas **não constam em `urls.py`** — não são endpoints acessíveis. `WebhookPostPublishView.post` também não retorna nenhuma `Response` (implementação incompleta). Não documentados como endpoints por não estarem roteados.
+</Note>
+
+## Serializers
+
+### PostSerializer
+`app/post/serializers.py:9-129`. `fields = '__all__'` sobre `Post`.
+
+- `post_format`: `PrimaryKeyRelatedField` explícito (opcional, aceita null).
+- `suggested_formats`: `PrimaryKeyRelatedField(many=True)`, opcional.
+- **Somente leitura** (`SerializerMethodField`): `media_urls`, `media_thumbnails`, `editorial_rules`, `macro_objetivo_label` (além de `id`, `created_at` via `read_only_fields`).
+- `get_editorial_rules(obj)`: usa `app.editorial_calendar.selection.rules_for_post` (com cache de regras via `_rules_cache`, carregado uma vez por serialização de lista a partir do `context`) para anexar, por post, a lista de regras da matriz Formato x Estilo aplicáveis — formatação exigida, CTA obrigatório/sugerido — que o MiggoAI consome ao gerar conteúdo.
+- `get_macro_objetivo_label(obj)`: traduz `macro_objetivo` via `MACRO_OBJECTIVE_LABELS` (`app.editorial_calendar.catalog`).
+- `get_media_urls`/`get_media_thumbnails`: constroem URLs absolutas (via `request.build_absolute_uri`, se disponível no contexto) das mídias vinculadas, ordenadas por `_ordered_media_posts` (ordena em Python sobre o prefetch, para não perder o cache do `prefetch_related` disparando uma query extra por objeto).
+- `create`/`update` (`app/post/serializers.py:75-88`): fazem `pop` de `suggested_formats` antes do `super()`, e aplicam `.set()` no M2M depois — `update` só toca `suggested_formats` se a chave veio no payload (`is not None`).
+
+### PostFormatSerializer
+`app/post/serializers.py:132-140`. `fields = '__all__'`; `platform` é um `SerializerMethodField` somente-leitura que expõe `social_network.name` (não o objeto/ID).
+
+### PostStatusSerializer / SocialNetworkSerializer
+`app/post/serializers.py:142-150`. `ModelSerializer` simples, `fields = '__all__'`, sem customização.
+
+### MediaPostSerializer
+`app/post/serializers.py:153-185`. Campos: `id, post, media, sort_order, media_url, thumbnail_url, media_path, generated_url, created_at`.
+
+- `media_url`/`thumbnail_url`: `SerializerMethodField`, URL absoluta se houver `request` no contexto.
+- `media_path`: `source='media.media.name'`, somente leitura.
+- `generated_url`: `source='media.generated_url'`, somente leitura.
+- `create` (`app/post/serializers.py:164-169`): se `sort_order` não vier no payload, calcula automaticamente como `max(sort_order existente para o post) + 1` (ou `0` se não houver nenhum).
+
+### PlatformIntegrationSerializer
+`app/post/serializers.py:188-192`. `fields = '__all__'`.
+
+<Warning>
+`read_only_fields = ('id', 'created_at', 'hash', 'user')` (`app/post/serializers.py:192`) referencia campos `hash` e `user` que **não existem** no model `PlatformIntegration` — provável resquício de refator anterior. Sem efeito funcional (DRF ignora `read_only_fields` para campos inexistentes), mas é ruído a limpar.
+</Warning>
+
+### PostInsightsSerializer
+`app/post/serializers.py:195-200`. `fields = '__all__'`; adiciona `platform_name` (`source='platform.name'`, somente leitura).
+
+### PostMetadataSerializer
+`app/post/serializers.py:203-207`. `fields = '__all__'`, sem customização além de `read_only_fields` padrão.
+
+### PlatformProfileConfigSerializer
+`app/post/serializers.py:210-298`. Expõe uma lista explícita de campos (não `__all__`), incluindo derivados somente-leitura:
+
+- `client_name`, `platform_name` (`allow_null`), `config_type_display` (via `get_config_type_display`).
+- `new_text_data`/`old_text_data`: JSON parseado de `new_text`/`old_text` (via `_parse`, método estático que tenta `json.loads` e retorna `None` se não for `list`/`dict` válido) — para a tela renderizar chips/capas em vez do JSON cru.
+- `new_text_display`/`old_text_display`: resumo legível em texto (via `_display`), cobrindo os formatos conhecidos:
+  - `highlights` (lista de `{texto, ...}`): junta os textos com `' · '`.
+  - `cover`/`banner` (dict com `content`/`subject`): junta com `' — '` — **nota**: o literal no código (`app/post/serializers.py:288`) está como `' â€” '`, indício de mojibake (UTF-8 interpretado como Latin-1) no arquivo-fonte.
+  - Fallback: retorna o texto bruto.
+
+<Warning>
+`app/post/serializers.py:288` contém a sequência `â€”` (mojibake de um travessão `—` salvo em UTF-8 e lido como Latin-1) dentro do separador usado em `_display` para pares `content`/`subject`. Isso significa que o resumo de `cover`/`banner` exibido na tela "Minha Marca" mostra esse texto corrompido em vez de um travessão. Não corrigido aqui — reportado apenas como observação de código-fonte.
+</Warning>
+
+## Regras de negócio e funções
+
+### `app/post/signals.py`
+Escuta `pre_save`/`post_save` de `Post` para gravar `PostStatusEvent` automaticamente, cobrindo qualquer caminho de código que use `.save()` (aprovação do cliente, publicação, cron do Zernio, correção via WhatsApp) sem precisar instrumentar cada um.
+
+- `remember_previous_status(sender, instance, **kwargs)` (`app/post/signals.py:15-26`, `pre_save`): antes de gravar, busca o status **anterior** direto do banco (`Post.objects.filter(pk=instance.pk).values_list('status__name', flat=True).first()`) e guarda em `instance._previous_status_name` — necessário porque no `post_save` a linha já estaria atualizada.
+- `record_status_event(sender, instance, created, **kwargs)` (`app/post/signals.py:29-44`, `post_save`): se o post tem status atual e (foi criado OU o status mudou), cria um `PostStatusEvent`. Não faz nada se `current` for vazio (post sem status) ou se o status não mudou num update.
+
+### `app/post/stalled.py`
+- `stalled_posts(queryset=None, min_days=0, only_active_clients=True)` (`app/post/stalled.py:23-38`): retorna posts com `status__name='sent'` (constante `STALLED_STATUS`), opcionalmente só de clientes ativos, ordenados por `updated_at` crescente (mais antigo primeiro). `min_days=0` retorna a fila inteira de espera. Módulo isolado propositalmente para o dashboard e a tela de resolução usarem a mesma definição de "parado" — evita que as duas telas divirjam na contagem.
+
+### `app/post/media_link.py` — link permanente de mídia (MIG-235)
+Resolve um bug em que o link de mídia enviado ao cliente pelo WhatsApp "andava" para o post mais recente, porque dependia de um campo customizado do subscriber no ManyChat que é sobrescrito a cada novo envio.
+
+- `build_media_view_token(post_id: int) -> str` (`app/post/media_link.py:22-24`): assina `post_id` com `django.core.signing.Signer(salt='post-media-view')` — token permanente, amarrado ao post, não ao cliente/subscriber.
+- `resolve_post_id_from_token(token: str)` (`app/post/media_link.py:27-33`): decodifica de volta, retorna `None` em caso de `BadSignature`/`ValueError`.
+- `build_media_page_url(post_id: int) -> str` (`app/post/media_link.py:36-46`): monta `settings.FRONTEND_URL/midia/<token>` — o cliente sempre recebe a URL do **frontend**, nunca de backend/CDN diretamente.
+- `guess_content_type(filename: str) -> str` (`app/post/media_link.py:59-61`): mapeia extensão → content-type via `MEDIA_CONTENT_TYPES` (mp4, mpeg, mov, avi, webm, jpg/jpeg, webp, png, gif, pdf); fallback `application/octet-stream`.
+
+### `app/post/services.py`
+- `send_post_for_approval(post)` (`app/post/services.py:47-153`): regra central de envio de post para aprovação via WhatsApp — usada tanto pela view HTTP `SendPostWhatsAppView` quanto por uma ação de flow do módulo de conversas. Passos, na ordem (a ordem importa):
+  1. Valida `post` existente e com `post_format`.
+  2. Localiza `PlatformIntegration` WhatsApp do cliente com `profile_id`.
+  3. Grava/atualiza `PostMetadata` `whatsapp_media_view_url` com o link permanente da primeira mídia vinculada (se houver).
+  4. Grava `post_id` no custom field do ManyChat (`setCustomField`, `field_id=12805782`) — **antes** de disparar o flow, porque é dali que o flow lê qual post está em aprovação.
+  5. Só marca `post.status = PostStatus 'sent'` depois que o passo 4 confirma sucesso.
+  6. Dispara o flow de aprovação (`sendFlow`, `flow_ns=CONTENT_APPROVATION_FLOW_ID`) e registra o log em `conversation_services.log_automation`.
+  
+  Retorna `(ok: bool, payload: dict, http_status)`.
+
+<Warning>
+`app/post/services.py:153` retorna `'media_view_url': media_view_url` na resposta de sucesso, mas essa variável **nunca é atribuída** em nenhum ponto da função (o valor calculado no passo 3 é salvo só em `PostMetadata`, sem ficar numa variável local `media_view_url`). Isso causa `NameError` sempre que `send_post_for_approval` completa com sucesso — tanto via `SendPostWhatsAppView` quanto via a ação de flow de conversa. Reportado como inconsistência de código, não corrigido aqui.
+</Warning>
+
+### `app/post/zernio.py`
+- `zernio_get(path, params=None, timeout=30)` (`app/post/zernio.py:23-38`): GET autenticado na API do Zernio (`ZERNIO_BASE = "https://zernio.com/api/v1"`, header `Authorization` a partir de `LATE_API_KEY`, que já inclui o prefixo `Bearer`). Retorna `(status_code, json|None)`; captura `RequestException` e erro de parse de JSON.
+- `get_client_profile_ids(client)` (`app/post/zernio.py:41-50`): `profileId`s de todas as integrações ativas do cliente, excluindo WhatsApp.
+- `_resolve_local_post(client, zernio_post)` (`app/post/zernio.py:53-102`): casa um post do Zernio com um `Post` local em cascata de estratégias — `late_post_id`/`_id` em `PostMetadata` → `platformPostId` por rede → `platformPostUrl` → correspondência de conteúdo (exata, depois parcial `icontains` nos 200 primeiros caracteres). Grava o vínculo em `PostMetadata` quando resolve por um caminho secundário.
+- `upsert_insight(client, zernio_post)` (`app/post/zernio.py:130-197`): cria/atualiza `PostInsights` a partir de um item retornado pelo Zernio (upsert por `external_post_id`, com fallback para adotar um `PostInsights` legado sem `external_post_id` do mesmo post local) e grava/atualiza um `PostInsightsSnapshot` do dia (upsert por `(insight, snapshot_date)`).
+- `sync_client_insights(client, source='all', max_pages=20)` (`app/post/zernio.py:200-260`): pagina `GET /analytics` para cada `profileId` do cliente (até `max_pages`), chama `upsert_insight` por post retornado, e registra um log de sincronização em `Integration`. Retorna `{'synced', 'pages', 'errors'}`.
+- `sync_platform_connections(client)` (`app/post/zernio.py:302-366`): para integrações não-WhatsApp que não estão `active` e têm `profile_id`, consulta `GET /accounts?profileId=` no Zernio e ativa localmente as que já estão de fato conectadas lá (idempotente; cacheia a resposta por `profile_id` para não repetir chamadas). Cobre o caso do webhook `account.connected` não ter chegado.
+
+### `app/post/cron.py`
+- `send_scheduled_reviews()` (`app/post/cron.py:10-97`): cronjob que busca `ScheduledReview` com `status='pending'` e `scheduled_at <= agora`, e as envia via ManyChat (`sendFlow`, `flow_ns=CONTENT_APPROVATION_FLOW_ID`). Resolve a `SocialNetwork` "WhatsApp" com `name__iexact` (corrigindo bug anterior de busca case-sensitive que marcava toda revisão como falha). Marca cada `ScheduledReview` como `sent`/`failed` conforme o resultado, registra log em `Integration` e em `conversation_services.log_automation`; exceções por item não interrompem o processamento dos demais.
+
+### Management commands
+- `backfill_post_status_events` (`app/post/management/commands/backfill_post_status_events.py`): reconstrói `PostStatusEvent` retroativamente a partir de snapshots do `History` (log genérico) para o período anterior à instrumentação via signals. Idempotente (não duplica eventos já existentes, comparados por `(post_id, to_status, created_at)`); ignora snapshots de posts já deletados (`skipped_orphan`). Aceita `--dry-run` para só reportar quantos eventos seriam criados.
+- `repair_platform_integrations` (`app/post/management/commands/repair_platform_integrations.py`): conserta `PlatformIntegration`s corrompidas por um bug do webhook antigo (MIG-185) que casava só por `profileId` — compartilhado entre redes do mesmo cliente — e reescrevia `platform` na linha errada. Consulta o Zernio por cliente/profile e realinha: ativa integrações corretamente conectadas, desativa as que foram erroneamente ativadas/renomeadas, e cria linhas faltantes para redes conectadas sem registro local. Aceita `--apply` (sem a flag, só relata) e `--client <id>` para limitar a um cliente.
+
+## Erros comuns / pontos de atenção
+
+- **`send_post_for_approval` tem um `NameError` garantido no caminho de sucesso** (`app/post/services.py:153`) — `media_view_url` é referenciada mas nunca atribuída. Afeta `SendPostWhatsAppView` e a ação de flow de conversa equivalente.
+- **Rotas de edição/exclusão de formato e status são, na prática, apenas listagem** (`app/post/urls.py:18-19,24-25`) — `format/edit/`, `format/delete/`, `status/edit/`, `status/delete/` todas mapeiam para as views de list, não para update/delete.
+- **`read_only_fields` de `PlatformIntegrationSerializer` referencia campos inexistentes** (`hash`, `user` — `app/post/serializers.py:192`), sem efeito funcional mas indício de código desatualizado.
+- **Mojibake em `PlatformProfileConfigSerializer._display`** (`app/post/serializers.py:288`): separador de `cover`/`banner` corrompido (`â€”` em vez de `—`).
+- **`webhook-update-post/` e `webhook-account-connected/` são públicos sem verificação de assinatura/token** do lado do Zernio — diferente de `PostMediaLinkView`, que exige um token compartilhado.
+- **`PostStatus.name` é texto livre, sem `choices`** — todo o fluxo de negócio (publicação, notificações, escopo do cliente, fila de parados) depende de comparações por string (`'published'`, `'sent'`, `'scheduled'` etc.); um nome de status cadastrado incorretamente no banco quebra silenciosamente essas comparações.
+- **`PostListView` só pagina quando `?stalled_days=` está presente** — a listagem padrão do Kanban não é paginada; pode crescer sem limite se usada fora do padrão de "semana" esperado pelo frontend.
+- **Publicação/webhook rodam em threads de background "soltas"** (`threading.Thread(daemon=True)`, sem fila/worker dedicado) — falhas são apenas logadas via `print`, sem retry automático nem alerta estruturado; `webhookUpdatePostView._process_webhook` faz polling de até 10s por `PostMetadata` antes de desistir silenciosamente.
+- **Views classes `SendApprovationWhatsappView` e `WebhookPostPublishView`** existem no código mas não estão roteadas — a segunda tem `post()` sem `return`.
+
+## Relacionados
+
+<Columns cols={2}>
+  <Card title="Media" icon="image" href="/backend/apps/media">
+    Modelo `Media` vinculado a `Post` via `MediaPost`; upload e biblioteca de mídia.
+  </Card>
+  <Card title="Editorial Calendar" icon="calendar" href="/backend/apps/editorial-calendar">
+    `EditorialCalendar`, `FormatStyleRule` e regras usadas na criação de posts e no serializer (`editorial_rules`).
+  </Card>
+  <Card title="Client" icon="building" href="/backend/apps/client">
+    `Client`, `ClientMeta` — dono dos posts, integrações e configurações de perfil.
+  </Card>
+  <Card title="Integration" icon="plug" href="/backend/apps/integration">
+    `Integration` — log de todas as chamadas a APIs externas (Zernio, ManyChat) disparadas por este app.
+  </Card>
+</Columns>

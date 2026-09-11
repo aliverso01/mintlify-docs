@@ -1,0 +1,261 @@
+---
+title: "History"
+description: "Log de auditoria das ações de clientes na plataforma e endpoints de relatório/dashboard administrativo"
+icon: "clock-rotate-left"
+---
+
+## Responsabilidade
+
+O app `app.history` mantém um log de auditoria (`History`) das alterações que **clientes** fazem em qualquer model do app (`app.*`), gravado automaticamente via Django signals (`post_save`/`post_delete`). Além do log, o app expõe endpoints de listagem do histórico e de relatórios/dashboards agregados (posts, clientes, pipeline, KPIs) usados no painel administrativo — esses relatórios não dependem do model `History`, consultam `Post`, `Client` e `Subscription` diretamente.
+
+<Note>
+O `History` registra **apenas** ações de usuários com `role='client'` (`app/history/signals.py:34-43`). Ações da equipe (admin/gestor) e de automações (cron, MiggoAI, management commands) não geram linhas — o rastro operacional dessas fontes é o `PostStatusEvent` (`app/post/models.py`), não este log.
+</Note>
+
+## Arquivos
+
+| Arquivo | Conteúdo |
+|---|---|
+| `app/history/models.py` | Model `History` |
+| `app/history/views.py` | `HistoryListView`, `ReportPostListView`, `ReportClientListView`, `AdminDashboardView`, `AdminDashboardChartsView` |
+| `app/history/serializers.py` | `HistorySerializer` |
+| `app/history/urls.py` | Rotas do app, montadas em `api/v1/history/` |
+| `app/history/admin.py` | Registro do `History` no Django Admin |
+| `app/history/apps.py` | `HistoryConfig` — conecta `app/history/signals.py` no `ready()` |
+| `app/history/middleware.py` | `CurrentRequestMiddleware` + `get_current_user()` — expõe o usuário da requisição atual aos signals |
+| `app/history/signals.py` | Receivers `post_save`/`post_delete` que gravam o `History` |
+| `app/history/management/commands/purge_non_client_history.py` | Management command para apagar linhas antigas que não são de clientes |
+
+## Modelos
+
+### History
+
+`app/history/models.py:4-25`
+
+| Campo | Tipo | Obrigatório | Default/Choices | Descrição |
+|---|---|---|---|---|
+| `user` | `ForeignKey(CustomUser)` | Não | `null=True, blank=True`, `related_name='history'`, `on_delete=CASCADE` | Autor da ação. Sempre um usuário `role='client'` pela regra de gravação (ver [`should_track_action`](#should-track-action)); o registro some se o usuário for deletado (CASCADE) |
+| `action` | `CharField(max_length=10)` | Sim | choices: `CREATE` (Criado), `UPDATE` (Alterado), `DELETE` (Deletado), `OTHER` (Outro) | Tipo de ação registrada |
+| `model_name` | `CharField(max_length=100)` | Sim | — | Nome verboso do model afetado (`sender._meta.verbose_name.title()`) |
+| `object_id` | `CharField(max_length=100)` | Não | `null=True, blank=True` | PK (como string) do objeto afetado |
+| `description` | `TextField` | Sim | — | Descrição legível em pt-BR da ação, montada pelo signal |
+| `fields_changed` | `JSONField` | Não | `null=True, blank=True` | Diff `{campo: {from, to}}` — só em `UPDATE` quando há mudança detectável |
+| `field_snapshot` | `JSONField` | Não | `null=True, blank=True` | Snapshot completo do objeto no momento do save (via `model_to_dict`) |
+| `created_at` | `DateTimeField` | Auto | `auto_now_add=True` | Timestamp de criação da linha de histórico |
+
+**Meta**: `ordering = ['-created_at']` (`app/history/models.py:24-25`) — mais recente primeiro por padrão.
+
+**Métodos**: `__str__` retorna `"{model_name} - {action} - {created_at}"` (`app/history/models.py:21-22`).
+
+## Endpoints
+
+Prefixo: `api/v1/history/` (`core/urls.py:36`).
+
+| Método | Rota completa | View | Permissão |
+|---|---|---|---|
+| GET | `api/v1/history/list/` | `HistoryListView` | Default do projeto — `HasAPIKeyOrIsAuthenticated` (nenhuma `permission_classes` própria) |
+| GET | `api/v1/history/report/posts/` | `ReportPostListView` | Default do projeto |
+| GET | `api/v1/history/report/clients/` | `ReportClientListView` | Default do projeto |
+| GET | `api/v1/history/admin-dashboard/` | `AdminDashboardView` | Default do projeto |
+| GET | `api/v1/history/admin-dashboard/charts/` | `AdminDashboardChartsView` | Default do projeto |
+
+<Warning>
+Nenhuma view do app declara `permission_classes` ou `authentication_classes` próprias — todas caem no default global do DRF, `app.account.permissions.HasAPIKeyOrIsAuthenticated` (`core/settings.py:139-141`), que aceita **qualquer** usuário autenticado (inclusive `role='client'`) ou uma API key de serviço. `HistoryListView` importa `JWTAuthentication` de `app.account.views` (`app/history/views.py:4`) mas nunca a usa em `authentication_classes` — os dashboards administrativos e o relatório de posts/clientes não estão restritos à equipe por código, ao contrário do que o nome "admin-dashboard" sugere. Ver [Erros comuns](#erros-comuns-pontos-de-atencao).
+</Warning>
+
+<AccordionGroup>
+  <Accordion title="GET /api/v1/history/list/ — HistoryListView">
+    `app/history/views.py:22-70`. `ListAPIView` paginado (`StandardPagination`) sobre `History.objects.all()`.
+
+    **Query params (filtros, todos opcionais)**
+
+    <ParamField query="user_id" type="string">Filtra por `user_id` exato.</ParamField>
+    <ParamField query="model_name" type="string">Filtra por `model_name` exato.</ParamField>
+    <ParamField query="client_id" type="string">Restringe a linhas de `model_name='Post'` cujo `object_id` pertence a um `Post` do cliente informado (`app/history/views.py:59-68`).</ParamField>
+    <ParamField query="status" type="string">Combinado com `client_id` (ou sozinho): restringe a `Post`s cujo `status__name` bate; aplica o mesmo filtro de `model_name='Post'` + `object_id__in`.</ParamField>
+    <ParamField query="action" type="string">Filtra por `action` exato (`CREATE`/`UPDATE`/`DELETE`/`OTHER`).</ParamField>
+    <ParamField query="object_id" type="string">Filtro `icontains` sobre `object_id`.</ParamField>
+    <ParamField query="description" type="string">Filtro `icontains` sobre `description`.</ParamField>
+    <ParamField query="date" type="string">Filtra `created_at__date` (formato `YYYY-MM-DD`).</ParamField>
+    <ParamField query="time" type="string">Formato `HH:MM`; filtra `created_at__hour` e `created_at__minute` exatos. Valor inválido é ignorado silenciosamente (`app/history/views.py:52-57`).</ParamField>
+    <ParamField query="page_size" type="integer">Herdado de `StandardPagination` — aceita `10`, `30`, `50` ou `100`; outro valor cai no default (`10`).</ParamField>
+
+    **Resposta** — paginação padrão (`utils/pagination.py:21-27`) envelopando `HistorySerializer`:
+
+    <ResponseField name="count" type="integer">Total de linhas que batem no filtro.</ResponseField>
+    <ResponseField name="next" type="string | null">URL da próxima página.</ResponseField>
+    <ResponseField name="previous" type="string | null">URL da página anterior.</ResponseField>
+    <ResponseField name="results" type="array">Lista de objetos `History` serializados — ver [Serializers](#serializers).</ResponseField>
+  </Accordion>
+
+  <Accordion title="GET /api/v1/history/report/posts/ — ReportPostListView">
+    `app/history/views.py:72-126`. Não usa o model `History` — agrega direto sobre `Post`/`PostStatus`.
+
+    <ParamField query="client_id" type="string">Restringe a contagem a um cliente.</ParamField>
+    <ParamField query="has_post_format" type="string">Se `"true"` (case-insensitive), filtra `post_format__isnull=False`.</ParamField>
+
+    Retorna 404 (`{"error": "Cliente Não Encontrado"}`) se `client_id` não existir (`app/history/views.py:92-93`).
+
+    <ResponseField name="total_posts" type="integer">Total de posts (com os filtros aplicados).</ResponseField>
+    <ResponseField name="total_this_month" type="integer">Total criados desde o 1º dia do mês corrente.</ResponseField>
+    <ResponseField name="by_status" type="array">Um item por `PostStatus`: `{status, total, this_month}`.</ResponseField>
+  </Accordion>
+
+  <Accordion title="GET /api/v1/history/report/clients/ — ReportClientListView">
+    `app/history/views.py:128-144`. Sem parâmetros.
+
+    <ResponseField name="0.total_clients" type="integer">Total de `Client`.</ResponseField>
+    <ResponseField name="0.details.active" type="integer">Clientes com `active=True`.</ResponseField>
+    <ResponseField name="0.details.inactive" type="integer">Clientes com `active=False`.</ResponseField>
+
+    <Note>A resposta é uma lista com um único objeto (`client_status_data.append(...)`), não um objeto direto — reflete o código como está (`app/history/views.py:132-144`).</Note>
+  </Accordion>
+
+  <Accordion title="GET /api/v1/history/admin-dashboard/ — AdminDashboardView">
+    `app/history/views.py:147-280`. Sem parâmetros. Endpoint agregado para o dashboard administrativo — pipeline do dia, posts por status, funil de leads, clientes convertidos/não convertidos e assinaturas com problema.
+
+    <ResponseField name="posts.total_this_month" type="integer" />
+    <ResponseField name="posts.by_status" type="array">`{status, total, this_month}` por `PostStatus`.</ResponseField>
+    <ResponseField name="posts.pipeline" type="array">Estágios fixos definidos em `PIPELINE_STAGES` (`app/history/views.py:161-167`): `published_today`, `scheduled`, `pending_approval`, `in_review`, `correction_requested` — cada um com `{key, label, count, status_names, today_only}`. Considera só `Post` de cliente ativo (`client__active=True`); `published_today` filtra ainda `updated_at__date=today`.</ResponseField>
+    <ResponseField name="leads" type="object">Delegado a `app.client.trials.trial_funnel_snapshot()` (`app/history/views.py:249`) — funil de trial em andamento (novo usuário / onboarding incompleto / onboarding completo).</ResponseField>
+    <ResponseField name="clients.unconverted" type="integer">Contagem de clientes que concluíram a esteira de onboarding e nunca assinaram (`lifecycle='unconverted'`, via `app.client.lifecycle.annotate_lifecycle`).</ResponseField>
+    <ResponseField name="clients.unconverted_recent" type="array">Até 10 mais recentes: `{client_id, client_name, email, phone, completed_at, estimated}`. `estimated=true` quando a data de conclusão vem do contador legado `Client.onboarding_step` em vez da sessão real (`app/history/views.py:262-266`).</ResponseField>
+    <ResponseField name="alerts.problem_subscriptions" type="array">`Subscription` com `status` em `EXPIRED`/`UNPAID`: `{client_id, client_name, plan, status, expires_at}`.</ResponseField>
+
+    <Note>
+    O comentário do código (`app/history/views.py:205-211`) registra que o funil de leads/clientes foi migrado do contador legado `Client.onboarding_step` (nunca regride, ordem diferente da esteira atual) para a mesma lógica de `app/client/lifecycle.py` usada na listagem de clientes — evita que as duas telas divirjam.
+    </Note>
+  </Accordion>
+
+  <Accordion title="GET /api/v1/history/admin-dashboard/charts/ — AdminDashboardChartsView">
+    `app/history/views.py:284-450`. Sem parâmetros. Séries temporais das últimas `WEEKS = 12` semanas (segunda-feira a segunda-feira), calculadas sobre `PostStatusEvent` — **não** sobre `History`.
+
+    <ResponseField name="weeks" type="array">12 datas ISO (segundas-feiras), da mais antiga à mais recente.</ResponseField>
+    <ResponseField name="coverage_start" type="string | null">Data do primeiro `PostStatusEvent` já registrado — sinaliza a partir de quando as séries têm dado real (antes disso as semanas são "sem dado", não zero).</ResponseField>
+    <ResponseField name="production.planned" type="array">Contagem semanal de `Post` por `post_date` (cliente ativo).</ResponseField>
+    <ResponseField name="production.published" type="array">Contagem semanal de eventos com `to_status='published'`.</ResponseField>
+    <ResponseField name="approval.approved" type="array">Transições de `sent` para um status em `APPROVAL_TARGETS` (`holding`, `approved`, `published`, `scheduled`, `finished`).</ResponseField>
+    <ResponseField name="approval.corrections" type="array">Transições de `sent` para `CORRECTION_TARGETS` (`in_review`, `rejected`).</ResponseField>
+    <ResponseField name="approval.avg_hours" type="array">Média de horas entre entrar em `sent` e sair para aprovação/correção, por semana.</ResponseField>
+    <ResponseField name="aging.buckets" type="array">Posts parados em `sent` agora, agrupados em `0-2 dias`, `3-7 dias`, `8-14 dias`, `15+ dias` (`AGING_BUCKETS`), usando `app.post.stalled.stalled_posts()`.</ResponseField>
+    <ResponseField name="aging.top_clients" type="array">Até 8 clientes com mais posts parados/mais antigos: `{client_id, client_name, count, oldest_days}`.</ResponseField>
+    <ResponseField name="kpis.active_clients" type="object">`{value, delta, series}` — clientes ativos criados até cada semana.</ResponseField>
+    <ResponseField name="kpis.published_per_week" type="object">`{value, delta, series}` — espelha `production.published`.</ResponseField>
+    <ResponseField name="kpis.approval_rate" type="object">`{value, delta, series}` — `100 * approved / (approved + corrections)` por semana, `0` se não houver transições.</ResponseField>
+
+    <Note>
+    O código deixa explícito (`app/history/views.py:368-374`) que o critério de "parado" (aging) usa a mesma definição de `app/post/stalled.py` — contar aqui e listar lá com critérios diferentes reproduziria o mesmo problema de divergência do funil de onboarding.
+    </Note>
+  </Accordion>
+</AccordionGroup>
+
+## Serializers
+
+### HistorySerializer
+
+`app/history/serializers.py:6-52`. `ModelSerializer` sobre `History`, `fields = '__all__'`.
+
+| Campo | Origem | Read-only | Descrição |
+|---|---|---|---|
+| `client` | `SerializerMethodField` (`get_client`) | Sim | Nome do `Client` dono do `Post`, só quando `model_name='Post'` — busca `Post.objects.get(id=object_id)` e lê `post.client.name`. Retorna `None` se não achar o post ou não for um `Post` |
+| `post` | `SerializerMethodField` (`get_post`) | Sim | Quando `model_name='Post'`: serializa o `Post` inteiro com `PostSerializer` (usando o `context` da request) e injeta `post_data['history']`, a lista completa de `History` daquele `object_id` ordenada por `-created_at` (`{id, action, description, created_at}`). Retorna `[]` se o post não existir ou não for `Post` |
+| demais campos do model | `History` | Não (exceto `client`/`post`, marcados `read_only` em `extra_kwargs`) | `id`, `user`, `action`, `model_name`, `object_id`, `description`, `fields_changed`, `field_snapshot`, `created_at` |
+
+<Warning>
+`get_post` (`app/history/serializers.py:18-41`) dispara uma query extra (`Post.objects.get`) e outra query de `History.objects.filter(...)` **por linha** da listagem — em `HistoryListView` isso é N+1 sobre uma página inteira sempre que há registros de `Post`. Não há `select_related`/`prefetch_related` na `queryset` da view para mitigar.
+</Warning>
+
+## Regras de negócio e funções
+
+### Middleware — `CurrentRequestMiddleware`
+
+`app/history/middleware.py:22-30`. Registrado em `MIDDLEWARE` (`core/settings.py:178`), **depois** de `AuthenticationMiddleware` — comentário no próprio settings (`core/settings.py:176-177`) explica que a posição é proposital: precisa vir depois da autenticação para que `request.user` já esteja resolvido quando os signals consultarem.
+
+Funcionamento:
+1. A cada requisição, guarda o objeto `request` (não o `user`) numa `contextvars.ContextVar` chamada `_current_request`, via `token = _current_request.set(request)`.
+2. Chama `get_response(request)`.
+3. No `finally`, restaura o estado anterior com `_current_request.reset(token)` — evita vazamento de contexto entre requisições concorrentes (o `contextvars` é isolado por task/thread).
+
+Guarda a *requisição*, e não o usuário, porque no momento em que o middleware roda (antes do dispatch da view), o DRF ainda não autenticou via JWT/API key — `request.user` estaria anônimo. A resolução de `request.user` só é lida depois, quando o signal chama `get_current_user()`.
+
+**`get_current_user()`** (`app/history/middleware.py:15-19`): lê a `ContextVar`, extrai `request.user` e retorna esse usuário somente se `is_authenticated` for `True`; caso contrário retorna `None` (cron, shell, tarefas sem request HTTP em andamento).
+
+### Signals — `app/history/signals.py`
+
+Conectados em `HistoryConfig.ready()` (`app/history/apps.py:7-8`), que importa o módulo `app.history.signals` para registrar os receivers.
+
+**`should_track_action()`** (`app/history/signals.py:34-43`) — só retorna `True` se houver um usuário autenticado na requisição atual **e** `user.role == 'client'`. É o filtro central: equipe, automações e chamadas sem request (management commands, cron) nunca geram `History`.
+
+**`should_track_model(sender)`** (`app/history/signals.py:46-55`) — só rastreia models cujo módulo começa com `app.` (ignora models de libs terceiras/Django) e exclui explicitamente `History`, `CustomUser`, `UserMeta`, `DesignReference` e `PostStatusEvent` (este último já é, ele mesmo, um log de transições de status — duplicar no `History` só infla a tabela).
+
+**`get_readable_name(instance)`** (`app/history/signals.py:11-20`) — heurística para montar um nome legível do objeto na descrição: tenta `instance.name`, depois `instance.subject`, depois `instance.email` (usuário/cliente), depois um caso especial para `MediaPost` (`"{media} no post {post.subject}"`), e por fim cai em `str(instance)`.
+
+**`get_client_suffix(instance)`** (`app/history/signals.py:22-32`) — monta o sufixo `" do cliente {nome}"` da descrição: se o próprio model é `Client` não repete o nome; senão tenta `instance.client`, depois `instance.post.client`; retorna `""` se não achar nenhum.
+
+**`get_user_from_instance(instance)`** (`app/history/signals.py:57-64`) — fallback de autor: se a instância é o próprio `CustomUser`, retorna ela mesma; senão tenta `instance.user`; senão `None`. Só é usado se `get_current_user()` não achar ninguém (`user or get_user_from_instance`), embora `should_track_action()` já garanta que existe um `request.user` cliente — é uma defesa redundante, não o caminho normal.
+
+**`log_save(sender, instance, created, **kwargs)`** — receiver de `post_save` (`app/history/signals.py:66-145`):
+1. Sai cedo se `should_track_action()` ou `should_track_model(sender)` falhar.
+2. Monta `snapshot = model_to_dict(instance)` e sanitiza para JSON: `date`/`time`/`datetime` viram `isoformat()`; `FieldFile` vira a `url` (ou `str`); listas (M2M) viram lista de PKs (`item.pk`) ou valores primitivos; qualquer outro tipo não-JSON-nativo vira `str(v)`.
+3. Se `created=True`: `action='CREATE'`, descrição `"{Model} {nome}{sufixo cliente} criado"`.
+4. Se `update`: busca a versão anterior no banco (`sender.objects.get(pk=instance.pk)`), monta `old_snapshot` e compara campo a campo; para cada diferença grava `{"from": str(old), "to": str(new)}` em `fields_changed` e monta a descrição com a lista de campos alterados. Se a busca da versão anterior falhar (`except Exception: pass`), segue sem diff — grava a linha mesmo assim, sem `fields_changed`.
+5. Define o autor: `get_current_user() or get_user_from_instance(instance)` — comentário no código (`app/history/signals.py:133-134`) registra que antes o dono do objeto era gravado como se fosse o autor; agora isso é só um fallback.
+6. Cria a linha `History` com `action`, `model_name` (verbose name), `object_id=str(instance.pk)`, `description`, `fields_changed`, `field_snapshot=snapshot`, `user`.
+
+**`log_delete(sender, instance, **kwargs)`** — receiver de `post_delete` (`app/history/signals.py:147-174`): mesmo filtro de entrada. Constrói `readable_name`/`client_suffix` protegidos por `try/except ObjectDoesNotExist`, porque em deleções em cascata objetos relacionados (ex.: `instance.client`) podem já ter sido removidos — o comentário no código (`app/history/signals.py:156-157`) é explícito que montar o nome legível não pode derrubar a própria deleção. Não grava `fields_changed`/`field_snapshot` (ficam `None`).
+
+<Warning>
+Como os signals rodam de forma síncrona dentro de `post_save`/`post_delete`, **todo** `save()`/`delete()` de um model `app.*` (fora da lista de exclusão) dispara uma query extra de leitura (`sender.objects.get(pk=...)`) em updates, mesmo quando `should_track_action()` vai descartar o registro — a checagem de `should_track_action()` roda primeiro, então isso só acontece quando a ação já é de um cliente autenticado. Ainda assim, é custo por save, não amortizável em bulk operations (`bulk_create`/`bulk_update` não disparam signals no Django, logo escapam do log).
+</Warning>
+
+### Management command — `purge_non_client_history`
+
+`app/history/management/commands/purge_non_client_history.py`. Apaga do `History` tudo que **não** é ação de cliente (`History.objects.exclude(user__role='client')`) — inclui linhas antigas gravadas antes da regra atual existir (equipe, automação, registros sem `user`).
+
+**Argumentos**
+
+| Flag | Tipo | Default | Efeito |
+|---|---|---|---|
+| `--dry-run` | flag | — | Só relata o que seria apagado (comportamento padrão mesmo sem passar a flag, já que a exclusão real exige `--yes`) |
+| `--yes` | flag | `False` | Confirma a exclusão de fato — sem ela, o comando sempre para em modo relatório |
+| `--batch-size` | int | `5000` | Linhas apagadas por lote, para não segurar uma transação gigante |
+
+Sempre imprime: total de linhas, quantas seriam mantidas (`user__role='client'`), quantas seriam apagadas, e o top 8 `model_name` mais afetados. Sem `--yes`, encerra com aviso `[dry-run]`. Com `--yes`, apaga em lotes de `batch_size` via `id__in`, reportando progresso a cada lote.
+
+```bash
+# Simular (não apaga nada)
+./venv/Scripts/python.exe manage.py purge_non_client_history
+
+# Apagar de fato, lotes de 2000
+./venv/Scripts/python.exe manage.py purge_non_client_history --yes --batch-size 2000
+```
+
+<Warning>
+Comando destrutivo e sem confirmação interativa — a segurança é só a exigência da flag `--yes`. Não há soft-delete nem backup automático antes de rodar.
+</Warning>
+
+## Erros comuns / pontos de atenção
+
+- **Rotas de "admin-dashboard" não são restritas à equipe por código.** Diferente de `IntegrationListView` (que usa `IsManagementUser`), nenhuma view deste app define `permission_classes` — cai no default `HasAPIKeyOrIsAuthenticated`, que aceita qualquer usuário autenticado, inclusive `role='client'`. Se a intenção é que só a equipe veja esses dashboards, a restrição precisa estar em outra camada (frontend, roteamento) ou é uma lacuna.
+- **`History` não é um audit log completo do sistema.** Só ações de `role='client'`; ações de equipe/automação não aparecem aqui — para essas, use `PostStatusEvent` (posts) ou o app `app.integration` (chamadas a serviços externos).
+- **`bulk_create`/`bulk_update`/`queryset.update()` não geram `History`** — Django não dispara `post_save`/`post_delete` nesses casos. Qualquer alteração em massa feita por management command ou migração de dados fica fora do log.
+- **N+1 em `HistoryListView`** quando há muitos registros `model_name='Post'` na página — ver aviso em [Serializers](#serializers).
+- **Filtro `time` silencioso em erro**: `?time=abc` não retorna 400, apenas ignora o filtro (`app/history/views.py:52-57`), podendo confundir quem espera validação.
+- **`ReportClientListView` retorna uma lista**, não um objeto (`[{...}]`) — atenção ao consumir no frontend.
+
+## Relacionados
+
+<Columns cols={2}>
+  <Card title="Client" icon="user" href="/backend/apps/client">
+    Model `Client`, ciclo de vida (`lifecycle.py`) e funil de trials consumidos pelo `AdminDashboardView`.
+  </Card>
+  <Card title="Subscription" icon="credit-card" href="/backend/apps/subscription">
+    Assinaturas usadas no bloco `alerts.problem_subscriptions` do dashboard administrativo.
+  </Card>
+  <Card title="Account" icon="user-shield" href="/backend/apps/account">
+    `CustomUser`, `role` e permissões (`HasAPIKeyOrIsAuthenticated`, `IsManagementUser`) usadas na autenticação das rotas.
+  </Card>
+  <Card title="Integration" icon="plug" href="/backend/apps/integration">
+    Log de chamadas a serviços externos — complementar ao `History`, que só cobre ações de clientes dentro da plataforma.
+  </Card>
+</Columns>

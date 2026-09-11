@@ -1,0 +1,136 @@
+---
+title: "Área administrativa"
+description: "As telas de /admin, quem pode entrar e como o acesso é restringido."
+icon: "shield"
+---
+
+A aplicação tem **duas áreas simétricas e mutuamente exclusivas** (`src/routes/rolePaths.ts:1`):
+
+| Área | Público | Prefixo |
+| --- | --- | --- |
+| `/admin/*` | Equipe Miggo — admin e gestor | `ADMIN_PREFIX` |
+| `/app/*` | Cliente | `CLIENT_PREFIX` |
+
+A raiz `/` não renderiza nada: apenas redireciona para a área do usuário através de `RoleHomeRedirect` (`src/App.tsx:90`).
+
+## Níveis de acesso
+
+Três predicados, todos em `src/routes/rolePaths.ts`, decidem o que o usuário vê:
+
+| Função | Quem satisfaz | Dá acesso a |
+| --- | --- | --- |
+| `isManagementUser(user)` | `is_superuser`, `is_staff`, `role === "admin"` ou `role === "manager"` | Toda a área `/admin` |
+| `isFullAdminUser(user)` | `is_superuser`, `is_staff` ou `role === "admin"` (gestor **não** entra) | Telas financeiras e de time |
+| `isClientUser(user)` | `role === "client"` | Área `/app` |
+
+`isFullAdminUser` é um **subconjunto** de `isManagementUser`: o gestor navega em `/admin`, mas é barrado nas telas de faturamento, financeiro e time.
+
+<Note>
+  No **preview mode** — admin visualizando a plataforma como cliente — o `AuthContext` devolve `role: 'client'`, então toda a lógica de área trata o caso sozinha, sem `if` espalhado nas telas.
+</Note>
+
+## Guards de rota
+
+O aninhamento em `src/App.tsx` define a cascata de proteção:
+
+```
+ProtectedRoute            (autenticado)
+└── OnboardingGuard       (onboarding concluído)
+    └── SubscriptionGuard (assinatura válida)
+        └── AppLayout     (casca visual)
+            ├── ManagementRoute  → /admin/*
+            │   └── AdminRoute   → billing, financial, team
+            └── ClientRoute      → /app/*
+```
+
+| Componente | Arquivo | O que barra |
+| --- | --- | --- |
+| `ProtectedRoute` | `src/components/` | Usuário não autenticado |
+| `OnboardingGuard` | `src/components/` | Onboarding incompleto |
+| `SubscriptionGuard` | `src/components/` | Assinatura inválida ou expirada |
+| `ManagementRoute` | `src/components/` | Quem não é equipe Miggo |
+| `AdminRoute` | `src/components/AdminRoute` (`src/App.tsx:17`) | Gestor nas telas de admin pleno |
+| `ClientRoute` | `src/components/` | Quem não é cliente |
+
+## Telas de `/admin`
+
+As telas exclusivas da equipe vivem em `src/pages/Admin/`. As demais rotas de `/admin` reaproveitam os mesmos componentes de `/app` (dashboard, conteúdo, calendário, mídia, brandkit, briefing, histórico, redes, notificações) — é por isso que nenhum componente deve escrever o prefixo da área na mão.
+
+<AccordionGroup>
+  <Accordion title="Gestão de clientes e contas">
+    | Rota | Componente | O que permite |
+    | --- | --- | --- |
+    | `/admin/clients` | `ClientsList` | Lista e gestão dos clientes da plataforma |
+    | `/admin/users` | `UsersList` | Lista de usuários |
+    | `/admin/trials` | `Admin/TrialsPanel` | Acompanhamento dos períodos de teste |
+    | `/admin/plans` | `Admin/PlanManagement` | Cadastro e edição dos planos |
+    | `/admin/platform-config` | `Admin/PlatformProfileConfigPage` | Configuração do perfil da plataforma |
+  </Accordion>
+
+  <Accordion title="Conteúdo e operação">
+    | Rota | Componente | O que permite |
+    | --- | --- | --- |
+    | `/admin/content/parados` | `StalledPosts` | Cards travados na esteira de produção |
+    | `/admin/logs` | `Admin/IntegrationLogs` | Auditoria das chamadas a APIs externas (tabela `Integration` do backend) |
+    | `/admin/notifications` | `Admin/NotificationHistory` | Histórico de notificações enviadas |
+    | `/admin/design-references` | `Admin/DesignReferences` | Referências visuais |
+  </Accordion>
+
+  <Accordion title="Comunicação">
+    | Rota | Componente | O que permite |
+    | --- | --- | --- |
+    | `/admin/conversations` | `Admin/ConversationsPage` | Conversas do WhatsApp (ManyChat) |
+    | `/admin/message-flows` | `Admin/MessageFlowsPage` | Fluxos de mensagem configurados |
+    | `/admin/email-marketing` | `Admin/EmailMarketingPage` | Campanhas de e-mail |
+    | `/admin/support` | `Admin/AdminSupportPage` | Atendimento de suporte |
+  </Accordion>
+
+  <Accordion title="Admin pleno — gestor não entra">
+    Protegidas por `AdminRoute` (`src/App.tsx:143`):
+
+    | Rota | Componente | O que permite |
+    | --- | --- | --- |
+    | `/admin/billing` | `Admin/BillingManagement` | Gestão de faturamento |
+    | `/admin/financial` | `Admin/FinancialDashboard` | Painel financeiro |
+    | `/admin/team` | `Admin/TeamManagement` | Gestão do time Miggo |
+  </Accordion>
+
+  <Accordion title="Painéis de saneamento de assinatura">
+    Também em `src/pages/Admin/`, montados dentro das telas de faturamento:
+
+    - `DuplicateSubscriptionsPanel` — assinaturas duplicadas no gateway.
+    - `UnlinkedSubscriptionsPanel` — assinaturas sem cliente vinculado.
+    - `PlanClientsBoard` e `planClientsShared` — visão de clientes por plano.
+  </Accordion>
+</AccordionGroup>
+
+## Endpoints administrativos consumidos
+
+As telas administrativas consomem os mesmos apps do backend, em rotas ou filtros restritos a staff:
+
+| Tela | Backend |
+| --- | --- |
+| Clientes, usuários | [Client](/backend/apps/client), [Account](/backend/apps/account) |
+| Faturamento, financeiro, planos, trials | [Subscription](/backend/apps/subscription) |
+| Logs de integração | [Integration](/backend/apps/integration) |
+| Conversas, fluxos de mensagem | [Conversation](/backend/apps/conversation) |
+| E-mail marketing | [E-mail marketing](/backend/apps/emailmarketing) |
+| Notificações | [Notification](/backend/apps/notification) |
+| Cards parados | [Post](/backend/apps/post) |
+
+## Regra ao criar tela nova
+
+<Warning>
+  Nunca escreva `/admin/...` ou `/app/...` direto no JSX. Use `path()` do hook `useRoleArea` (`src/hooks/useRoleArea.ts`) — `path('content')` resolve para `/admin/content` ou `/app/content` conforme o usuário. É o que permite ao mesmo componente servir as duas áreas.
+</Warning>
+
+## Relacionados
+
+<Columns cols={2}>
+  <Card title="Roteamento" icon="route" href="/frontend/roteamento">
+    Tabela completa de rotas, legadas incluídas.
+  </Card>
+  <Card title="Autenticação" icon="shield-check" href="/frontend/autenticacao">
+    Como o papel do usuário é resolvido.
+  </Card>
+</Columns>

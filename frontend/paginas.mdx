@@ -1,0 +1,510 @@
+---
+title: "Catálogo de Telas"
+description: "Todas as telas de src/pages (exceto Onboarding e Admin, documentadas à parte), rota, dados consumidos e estados de carregamento"
+icon: "layout-dashboard"
+---
+
+Esta página cataloga as telas de `src/pages/` do `frontend-miggo`, exceto `Onboarding/` (ver `onboarding.mdx`) e `Admin/` (ver `area-admin.mdx`).
+
+O roteamento vive em `src/App.tsx`. A maioria das telas é montada **duas vezes** — uma vez sob `/admin/*` (equipe Miggo, dentro de `ManagementRoute`) e outra sob `/app/*` (cliente final, dentro de `ClientRoute`) — com o **mesmo componente**, que decide internamente o que mostrar a partir do papel (`user.role`) obtido de `useAuthContext`/`useAuth`. Isso está documentado por tela abaixo.
+
+<Note>
+`src/pages/AuthPages/OnboardingFlow.tsx` (1060 linhas) existe no repositório mas **não é importado por `App.tsx`** — a rota `/onboarding` usa `src/pages/Onboarding/OnboardingShell.tsx`. Parece um arquivo órfão/legado; não documentado aqui como tela ativa.
+</Note>
+
+<AccordionGroup>
+
+<Accordion title="AuthPages — SignIn, SignUp, ResetPassword, InstagramSuccess">
+
+### SignIn — `/signin`
+**Arquivo:** `src/pages/AuthPages/SignIn.tsx`
+
+Tela de login. Se já existe `user` (via `useAuth` — `src/hooks/authHook.ts`), redireciona (`<Navigate>`) para o `?next=` capturado por `ProtectedRoute` (só aceita caminho interno, começando com `/` e não `//`) ou para `/`. Renderiza `AuthPageLayout` + `SignInForm` (`src/components/auth/SignInForm.tsx` — não documentado aqui, é componente).
+
+- **Componentes:** `AuthPageLayout`, `SignInForm`, `PageMeta`.
+- **Hooks:** `useAuth` (login).
+- **Estados:** sem loading/erro próprio na página (delegado ao `SignInForm`).
+
+### SignUp — `/signup`
+**Arquivo:** `src/pages/AuthPages/SignUp.tsx`
+
+<Warning>
+A rota `/signup` no `App.tsx` (linha 191) é um `<Navigate to="/onboarding" replace />` — **redireciona direto**, sem nunca montar este componente. `SignUp.tsx` existe mas está inacessível pelo roteamento atual (MIG-154: onboarding virou o registro oficial).
+</Warning>
+
+Se acessado, redirecionaria usuário logado para `/` e renderizaria `AuthPageLayout` + `SignUpForm`.
+
+### ResetPassword — `/reset-password`
+**Arquivo:** `src/pages/AuthPages/ResetPassword.tsx`
+
+Fluxo de 4 passos controlado por `useState<Step>` (`"email" | "code" | "password" | "success"`), sem roteamento próprio:
+
+1. **email** — usuário informa e-mail (pré-preenchido se já logado); chama `requestPasswordReset(email)` do `useAuth`.
+2. **code** — usuário digita o código recebido; validação só de campo não-vazio (a validação real do código acontece no passo seguinte, via API). Permite reenviar.
+3. **password** — nova senha + confirmação, com indicador de força (`getPasswordStrength`, calculado no cliente: comprimento, maiúscula, número, símbolo). Validações antes de enviar: mínimo 8 caracteres, 1 maiúscula, 1 número, confirmação igual. Chama `confirmPasswordReset(email, code, newPassword)`. Erro no código volta para o passo `code`.
+4. **success** — confirmação; botão vai para `/` (logado) ou `/signin`.
+
+- **Hooks:** `useAuth` (`requestPasswordReset`, `confirmPasswordReset`).
+- **Estados:** `loading` por submit, `error` textual por passo.
+
+### InstagramSuccess — `/app/instagram/success/:clientId/*`, `/app/linkedin/success/:clientId/*`, `/app/whatsapp/success/:clientId/*`
+**Arquivo:** `src/pages/AuthPages/InstagramSuccess.tsx`
+
+Tela de retorno do OAuth de redes sociais (as três rotas apontam para o mesmo componente; a rede é lida de `?connected=` ou, na ausência, inferida do próprio path). Antes de qualquer leitura de estado, chama `clearOnboardingCache()` (síncrono, fora de `useEffect`) para não reaproveitar cache de onboarding desatualizado pela conexão recém-concluída.
+
+Usa `useOnboarding(clientId)` (`isInOnboardingFlow`, `loading`) para decidir o destino:
+- Se ainda em onboarding: navega (`replace`) para `/onboarding/conectado/:platform/:clientId` (quando dá para identificar rede+cliente) ou `/onboarding?continuar=1`.
+- Fora do onboarding: mostra botões "Voltar para o Perfil" (`/app/profile`) / "Ir para Conteúdos" (`/app/content`).
+
+- **Hooks:** `useOnboarding`, `useParams`, `useSearchParams`.
+- **Estados:** enquanto `loading || isInOnboardingFlow` é `true`, mostra só "Retomando a configuração…" (evita piscar os botões de saída).
+
+</Accordion>
+
+<Accordion title="Dashboard — Home, DashboardAdmin, DashboardClient">
+
+### Home (container) — `/admin` (index) e `/app` (index)
+**Arquivo:** `src/pages/Dashboard/Home.tsx`
+
+Container puro: chama `useDashboard()` e escolhe `DashboardClient` (se `isClient`) ou `DashboardAdmin`. Skeleton (`SkeletonDashboardCards` + `Skeleton`) enquanto `loading`.
+
+**`useDashboard` (`src/pages/Dashboard/useDashboard.ts`)** concentra todo o fetch:
+
+Modo equipe (`!isClient`), em paralelo:
+| Endpoint | Uso |
+|---|---|
+| `GET /api/v1/client/list/` | lista de clientes |
+| `GET /api/v1/history/report/clients/` | contagem ativos/inativos |
+| `GET /api/v1/history/report/posts/` | contagem de posts (via `getNonPendingPostCount`) |
+| `GET /api/v1/history/admin-dashboard/` | painel completo (leads, clientes, alerts) |
+| `GET /api/v1/history/admin-dashboard/charts/` | séries para `AdminCharts` |
+
+Modo cliente (`isClient`), primeiro resolve o `Client` (por `previewClientId` em preview mode via `GET /api/v1/client/retrieve/:id/`, ou por `?user=` via `GET /api/v1/client/list/?user=:id`), depois em paralelo:
+| Endpoint | Uso |
+|---|---|
+| `GET /api/v1/client/retrieve/:id/` | detalhe (flag `active`) |
+| `GET /api/v1/editorial-calendar/list/?client_id=` | regras editoriais |
+| `GET /api/v1/history/report/posts/?client_id=&has_post_format=true` | contagem de posts |
+| `GET /api/v1/post/platform-integration/list/?client=` | redes conectadas |
+| `GET /api/v1/post/list/?client_id=&start_date=hoje` | próximos posts |
+| `GET /api/v1/subscription/retrieve/:id/` | assinatura |
+| `GET /api/v1/brandkit/client/:id/` | brand kit |
+| `GET /api/v1/post/status/list/` | mapa id→nome de status |
+
+Mais: `GET /api/v1/client/client-meta/list/?client_id=` (dados de briefing) num segundo `useEffect`.
+
+Ações de ativação de conta:
+- `POST /api/v1/client/activate-account/:clientId/` — body `{ code, activation_code }`.
+- `GET /api/v1/client/generate-activation-code/:clientId/` — reenvia código.
+
+### DashboardAdmin — visão da equipe
+**Arquivo:** `src/pages/Dashboard/DashboardAdmin.tsx`
+
+Renderizado só dentro de `/admin/*`. Mostra `AdminCharts` (KPIs com tendência) quando `adminCharts` chega; senão cards de fallback (clientes ativos/inativos, total de posts, posts do mês). Pipeline de conteúdo do dia (`adminDashboard.posts.pipeline`) com link para `content?status=...`. Funil de trials por etapa (link para `/admin/trials?stage=`), lista de clientes sem assinatura (`clientesLink("unconverted")`) e assinaturas com problema (inadimplentes/expiradas).
+
+- **Hooks:** `useRoleArea` (monta paths `/admin/...` vs `/app/...`).
+- **Estado vazio:** cada bloco tem sua própria mensagem (`"Nenhum trial em andamento."`, `"Ninguém parado antes da assinatura."`, `"Nenhuma assinatura com problema."`).
+
+### DashboardClient — visão do cliente
+**Arquivo:** `src/pages/Dashboard/DashboardClient.tsx`
+
+Renderizado só dentro de `/app/*` (inclusive preview mode do admin). Mostra `WelcomeTour` (primeiro acesso, só após onboarding completo e fora de preview), aviso de "Conta não ativada" com formulário de código, `OnboardingGamificationWidget`, cards de marca/posts, atalhos de mídia e sugestão de pauta, lista de redes sociais conectadas, status do plano (com estado "teste encerrado" via `isTrialOver`), posts aguardando aprovação e próximos posts, e o calendário editorial semanal.
+
+- **Hooks:** `useWelcomeTour`, `useRoleArea`.
+- **Estados vazio:** "Nenhuma rede social conectada ainda.", "Nenhuma assinatura ativa.", "Nenhum post agendado para os próximos dias.", "Nenhuma regra ativa no calendário."
+
+</Accordion>
+
+<Accordion title="Clients — ClientsList (só /admin)">
+
+### ClientsList — `/admin/clients`
+**Arquivo:** `src/pages/Clients/ClientsList.tsx` (1180 linhas)
+
+Gestão de clientes da carteira: tabela paginada com busca, criação de conta (usuário + client), edição, ativação/desativação, e gestão de assinatura (plano, preço, criação/edição/histórico).
+
+**Endpoints:**
+| Método | Rota | Uso |
+|---|---|---|
+| GET | `/api/v1/client/list/?...` | listagem paginada (filtros de busca) |
+| GET | `/api/v1/post/social-network/list/` | catálogo de redes |
+| GET | `/api/v1/post/platform-integration/list/` | integrações ativas por cliente |
+| GET | `/api/v1/subscription/plan/list/` | planos disponíveis |
+| GET | `/api/v1/subscription/plan-price/list/` | preços por plano |
+| GET | `/api/v1/account/user-meta/list/?user_id=` | metadados do usuário |
+| GET | `/api/v1/subscription/list/?client_id=` | histórico de assinaturas do cliente |
+| POST | `/api/v1/account/create/` | criar conta (usuário + client) |
+| PATCH/POST | (`url` dinâmica) | salvar client/user-meta |
+| PATCH | `/api/v1/subscription/update/:id/` | atualizar assinatura (inclui ativar/desativar) |
+| DELETE | `/api/v1/account/delete/:userId/` | excluir conta |
+
+Usa `runSubscriptionSyncAsync` (`src/services/subscriptionSync.ts`) para sincronizar assinatura, e cache local `getClientsWithMetaCache` (chave `miggo.clients-list.enriched.v1`).
+
+- **Hooks:** `useAuth`, `useNotification`, `useModal` (vários modais).
+- **Componentes:** `ManualSubscriptionModal`, `SubscriptionHistoryModal`, `ClientSignatureModal`, `Table`, `Pagination`.
+- **Estados:** `SkeletonTable` durante carregamento; mensagens de erro via `getErrorMessage` + toast.
+
+</Accordion>
+
+<Accordion title="Content — ContentKanban, ContentBoardAdmin, ContentBoardClient, StalledPosts">
+
+### ContentKanban (container) — `/admin/content` e `/app/content`
+**Arquivo:** `src/pages/Content/ContentKanban.tsx`
+
+Container: chama `useContentBoard()`, bloqueia com `OnboardingRequiredState` se `isClientView` e onboarding incompleto, e escolhe `ContentBoardClient` ou `ContentBoardAdmin`. Renderiza também `CreatePostModal`, `EditPostModal` e o modal de confirmação de exclusão — compartilhados pelas duas visões.
+
+**`useContentBoard` (`src/pages/Content/useContentBoard.ts`, ~1500 linhas)** é o hook mais denso do repo. Endpoints usados:
+
+| Método | Rota | Uso |
+|---|---|---|
+| GET | `/api/v1/post/format/list/` | formatos de post |
+| GET | `/api/v1/post/status/list/` | status de post |
+| GET | `/api/v1/client/retrieve/:id/` | garante cliente selecionado carregado |
+| GET | `/api/v1/client/list/?active=true&page_size=100&page=N` | todos os clientes ativos (paginado, laço) |
+| GET | `/api/v1/post/insights/list/?client_id=` | insights de posts |
+| GET | `/api/v1/post/list/?...` | posts (janela semanal no admin; todos no cliente) |
+| GET | `/api/v1/editorial-calendar/list/?client_id=` | regras do calendário (para `template_link`) |
+| GET | `/api/v1/media/list/?page_size=100` | mídias |
+| GET | `/api/v1/post/media-post/list/` | vínculos post↔mídia |
+| POST | `/api/v1/post/create/` | criar post manual |
+| POST | `/api/v1/media/create/` | upload de mídia (`FormData`) |
+| POST | `/api/v1/post/media-post/create/` | vincular mídia ao post |
+| PATCH | `/api/v1/post/update/:id/` | mover post (drag&drop), editar, mudar status/formato |
+| POST | `/api/v1/post/publish/` | `{ publish: "publish"\|"schedule"\|"cancel", post_id }` — pode responder `202` (assíncrono) |
+| POST | `/api/v1/post/send-post-whatsapp/` | envia post para revisão via WhatsApp (usa `X-CSRFToken`) |
+| DELETE | `/api/v1/post/delete/:id/` | excluir post |
+| DELETE | `/api/v1/post/media-post/delete/:linkId/` | remover mídia do post |
+| PATCH | `/api/v1/post/media-post/update/:linkId/` | reordenar mídias (`sort_order`) |
+| GET | `/api/v1/onboarding/first-content/` | polling (15s) do status de geração do primeiro conteúdo |
+
+<Note>
+`handleImportTemplate` chama um webhook **externo** do Make.com (`https://hook.us2.make.com/...`) para gerar thumbnails de páginas de template do Canva, com retry (3 tentativas). Isso é uma integração de terceiros embutida diretamente na tela, fora do backend Miggo.
+</Note>
+
+### ContentBoardAdmin — visão da equipe
+**Arquivo:** `src/pages/Content/ContentBoardAdmin.tsx`
+
+Kanban semanal com drag & drop (`react-dnd` + `HTML5Backend`), filtros de cliente/status/formato, navegação de semana e criação manual de post. Só em `/admin/*`.
+
+### ContentBoardClient — "Meus conteúdos"
+**Arquivo:** `src/pages/Content/ContentBoardClient.tsx`
+
+Lista todas as semanas com conteúdo (mais recente primeiro), sem filtros nem drag & drop — o cliente acompanha e aprova. Mostra aviso `GenerationNotice` enquanto o primeiro conteúdo está sendo gerado (`contentGeneration.active`). Só em `/app/*`. Lazy loading por `IntersectionObserver` (`WEEKS_STEP = 3`).
+
+- **Estado vazio:** "Nenhum conteúdo encontrado."
+
+### StalledPosts — `/admin/content/parados`
+**Arquivo:** `src/pages/Content/StalledPosts.tsx` (537 linhas)
+
+Fila plana (sem janela de datas) de posts "parados", ordenada do mais antigo ao mais recente — o que o Kanban semanal não mostra. Filtro por dias parado (`DAYS_OPTIONS`: 3/7/14/30). Ações por linha e em lote: reenviar cobrança, remarcar, marcar como publicado, excluir. Usa ids fixos de status (`STATUS_SENT = 12`, `STATUS_PUBLISHED = 3`) e csrftoken via cookie. Só em `/admin/*`.
+
+- **Hooks:** `useRoleArea`, `useNotification`.
+
+</Accordion>
+
+<Accordion title="Grid — GridApprovalPage (link público)">
+
+### GridApprovalPage — `/grid/aprovar`
+**Arquivo:** `src/pages/Grid/GridApprovalPage.tsx`
+
+MIG-165. Tela que o cliente abre por link enviado no WhatsApp para aprovar o **estilo visual** (grid 3×3) gerado para a marca. Fica dentro de `ProtectedRoute` mas **fora** dos guards de onboarding/assinatura (exige só login).
+
+- Ao montar, chama `fetchMyGridApproval()` e `onboardingApi.getPhotos()` (`src/hooks/useBrandkit.ts` / `src/services/onboardingApi.ts`) em paralelo. Se o grid já foi aprovado E ainda há próxima etapa (`destino`/`next`) pendente no onboarding, redireciona direto para lá — não mostra a tela de aprovação de novo.
+- Upload/remoção de fotos de referência via `onboardingApi.uploadPhotos` / `deletePhoto` (máx. 6 fotos, `MAX_PHOTOS`).
+- `sendMyGridFeedback(texto)` registra pedido de ajuste (regeração acontece depois, por cron — não na hora).
+- `approveMyGrid()` aprova o estilo; chama `clearOnboardingCache()` (o cache do onboarding pode ter ficado obsoleto) e, se houver `next`, navega para lá.
+
+- **Estados:** `loading` inicial (spinner); `aguardandoGrid` quando o mosaico ainda não foi gerado (`generation_status === 'pending'` ou sem `image_url`) — mostra card de espera em vez do formulário; `error`/`info` textuais.
+
+</Accordion>
+
+<Accordion title="Media — MediaLibrary, MediaDownloadPage">
+
+### MediaLibrary — `/admin/media-library` e `/app/media-library`
+**Arquivo:** `src/pages/Media/MediaLibrary.tsx` (715 linhas)
+
+Galeria de mídias do cliente com upload, edição de descrição, seleção múltipla e exclusão em lote, scroll infinito (`PAGE_SIZE = 30`).
+
+**Endpoints:**
+| Método | Rota | Uso |
+|---|---|---|
+| GET | `/api/v1/client/list/?user=&page_size=100` | resolve cliente do usuário (não-admin) |
+| GET | `/api/v1/media/list/?client_id=&page=&page_size=` | página de mídias |
+| GET | `/api/v1/media/:id/` | detalhe (antes de editar/excluir) |
+| PATCH | `/api/v1/media/update/:id/` | salvar descrição |
+| POST | `/api/v1/media/create/` | upload (`FormData`) |
+| DELETE | `/api/v1/media/:id/` | exclusão |
+
+- **Hooks:** `useAuth`, `usePreview` (preview mode resolve `previewClientId` direto).
+- **Componentes:** `ClientSearchSelect` (admin escolhe o cliente via `?client_id=` na URL).
+- **Estados:** `SkeletonMediaGrid` no carregamento inicial; `loadingMore` no scroll infinito; `uploadError`/`uploadSuccess`.
+
+### MediaDownloadPage — `/midia/:token` (pública)
+**Arquivo:** `src/pages/Media/MediaDownloadPage.tsx`
+
+MIG-235. Página **pública** (sem login) que o cliente abre pelo link do WhatsApp para ver/baixar a mídia de um post — a autorização é o token assinado na própria URL.
+
+- `GET /api/v1/post/media-view/:token/info/` — devolve `{ url, download_url, filename, content_type, is_video }`.
+- Download: faz `fetch(download_url)`, converte para blob e dispara `<a download>` via `URL.createObjectURL` (contorna o Safari/iOS que abre mídia no player nativo em vez de baixar quando aponta direto para a URL).
+
+- **Estados:** `carregando` (mensagem simples, sem skeleton), `erro` ("Não encontramos essa mídia..."), `baixando` (desabilita botão).
+
+</Accordion>
+
+<Accordion title="Agenda — AgendaSugestao, AgendaAdmin, AgendaClient">
+
+### AgendaSugestao (container) — `/admin/agenda/sugestao` e `/app/agenda/sugestao`
+**Arquivo:** `src/pages/Agenda/AgendaSugestao.tsx`
+
+Container: chama `useAgendaSugestao()`, bloqueia clientes com onboarding incompleto via `OnboardingRequiredState`, e escolhe `AgendaAdmin`/`AgendaClient`.
+
+**`useAgendaSugestao` (`src/pages/Agenda/useAgendaSugestao.ts`)**:
+
+| Método | Rota | Uso |
+|---|---|---|
+| GET | `/api/v1/post/format/list/` | formatos disponíveis |
+| GET | `/api/v1/agenda/list/?client_id=` | sugestões (do cliente ou de toda a carteira, se admin) |
+| GET | `/api/v1/subscription/plan/retrieve/:planId/` | metadados do plano (`plan_meta`) — deriva quais redes o plano cobre via chaves `max_{slug}_month` |
+| GET | `/api/v1/agenda/limits/?client_id=&post_format=&suggested_date=` | checa disponibilidade/cota por formato+data antes de habilitar o picker |
+| POST | `/api/v1/agenda/create/` | criar sugestão (`FormData`, aceita múltiplas mídias em `medias`) |
+| PATCH | `/api/v1/agenda/update/:id/` | editar / mudar status (aprovar/reprovar) |
+| DELETE | `/api/v1/agenda/delete/:id/` | excluir |
+
+- **Hooks:** `useOnboarding`, `useSubscription`.
+- **Estados:** `loading` inicial (skeleton de lista), `saving` no submit, `checkingLimits` enquanto consulta cotas, `allFormatsBlocked`+`blockMessage` quando nenhum formato está disponível para a data escolhida.
+
+### AgendaAdmin — visão da equipe
+**Arquivo:** `src/pages/Agenda/AgendaAdmin.tsx`
+
+Vê sugestões de toda a carteira, filtra por cliente e status, cria/edita para qualquer cliente, muda status (aprovar/reprovar). Só em `/admin/*`.
+
+### AgendaClient — visão do cliente
+**Arquivo:** `src/pages/Agenda/AgendaClient.tsx`
+
+Envia ideias e acompanha o retorno; sem filtro de cliente nem controle de status; só pode editar/excluir enquanto `status === "pending"`. Só em `/app/*`.
+
+- **Estado vazio (ambas):** "Nenhuma sugestão enviada ainda." / "Nenhuma sugestão para os filtros selecionados."
+
+</Accordion>
+
+<Accordion title="EditorialCalendar — EditorialCalendar">
+
+### EditorialCalendar — `/admin/editorial-calendar` e `/app/editorial-calendar`
+**Arquivo:** `src/pages/EditorialCalendar/EditorialCalendar.tsx` (892 linhas)
+
+Configura as regras recorrentes do calendário editorial por dia da semana (assunto, formatos, horário, estilo, CTA, tags — vindos de um catálogo, ver `services/editorialCalendarCatalog.ts`).
+
+**Endpoints:**
+| Método | Rota | Uso |
+|---|---|---|
+| GET | `/api/v1/client/list/` | clientes (visão admin) |
+| GET | `/api/v1/post/format/list/` | formatos |
+| GET | `/api/v1/editorial-calendar/list/?client_id=` | regras existentes do cliente |
+| POST | `/api/v1/editorial-calendar/create/` | nova regra |
+| PATCH | `/api/v1/editorial-calendar/update/:id/` | editar regra |
+| DELETE | `/api/v1/editorial-calendar/delete/:id/` | excluir regra |
+
+- **Hooks:** `useAuthContext`, `useClient`, `useClientPlatforms`, `useOnboarding`.
+- **Componentes:** `CtaPicker`, `RuleHints`, `StylePicker` (`src/components/editorial/CatalogPicker.tsx`), `Flatpickr` (seletor de horário, locale `pt-BR`).
+- **Estados:** bloqueia cliente com onboarding incompleto via `OnboardingRequiredState`; `Skeleton` durante carregamento.
+
+</Accordion>
+
+<Accordion title="Brandkit — BrandkitPage, BrandkitAdmin, BrandkitClient">
+
+### BrandkitPage (container) — `/admin/brandkit` e `/app/brandkit`
+**Arquivo:** `src/pages/Brandkit/BrandkitPage.tsx`
+
+Container: `useBrandkitPage()`, bloqueia cliente com onboarding incompleto, escolhe `BrandkitAdmin`/`BrandkitClient`.
+
+**`useBrandkitPage` (`src/pages/Brandkit/useBrandkitPage.ts`)** resolve o `clientId` (deep-link `?client_id=` para admin; para cliente/preview via `GET /api/v1/client/list/?user=` ou sem filtro em preview) e delega o CRUD de brand kit ao hook `useBrandkit` (`src/hooks/useBrandkit.ts` — não documentado aqui, é hook compartilhado): `useBrandkits`, `createBrandkit`, `deleteBrandkit`, `uploadLogo`, `createColor`, `createTypography`, `uploadAsset`, `fetchGrids`, `createGrid`, `deleteGrid`, `regenerateGrid`, `fetchGridStatus`.
+
+Endpoint próprio da tela:
+- `POST /api/v1/client/analyze-profile/` — `{ username, client_id }`, dispara análise de perfil (Instagram) que preenche o briefing; em sucesso navega para `briefing?client_id=`.
+
+Polling de geração do grid (`fetchGridStatus`, a cada 5s) enquanto `generation_status === 'pending'` ou `status === 'running'`, parando em `ready`/`done`/`failed`.
+
+- **Estados:** `resolvingClient`, `loading` (brand kits), `actionLoading`/`actionError` por ação, `regenError` na geração do grid.
+
+### BrandkitAdmin — visão da equipe
+**Arquivo:** `src/pages/Brandkit/BrandkitAdmin.tsx`
+
+Filtro de cliente (`ClientSearchSelect`, com opção "Todos") + grade de cards de todos os brand kits da carteira + editor (`BrandkitEditor`) do kit selecionado. Só em `/admin/*`.
+
+### BrandkitClient — visão do cliente
+**Arquivo:** `src/pages/Brandkit/BrandkitClient.tsx`
+
+Sem filtro nem grade — o cliente tem no máximo um brand kit, que é auto-selecionado e o editor abre direto. Só em `/app/*`.
+
+- **Estado vazio:** "Nenhum Brand Kit encontrado." com botão "Novo Brand Kit" (`BrandkitCreateModal`).
+
+</Accordion>
+
+<Accordion title="Briefing — Briefing">
+
+### Briefing — `/admin/briefing` e `/app/briefing`
+**Arquivo:** `src/pages/Briefing/Briefing.tsx` (694 linhas)
+
+Ficha de briefing da marca (identidade, público, tom, etc.), organizada em seções sanfonadas (`BRIEFING_SECTIONS`, de `src/data/briefingSections.ts`). Inclui um modo de pré-scraping via Instagram antes do preenchimento manual.
+
+**Endpoints:**
+| Método | Rota | Uso |
+|---|---|---|
+| GET | `/api/v1/client/list/` | clientes (admin) |
+| GET | `/api/v1/client/client-meta/list/?client_id=` | respostas já salvas |
+| POST | `/api/v1/client/instagram-scrape/` | pré-preenche a partir do perfil do Instagram |
+| PATCH | `/api/v1/client/client-meta/update/:id/` | atualizar resposta existente |
+| POST | `/api/v1/client/client-meta/create/` | criar nova resposta |
+
+- **Hooks:** `useAuthContext`, `usePreview`, `useClient`.
+- **Componentes:** `PlatformProfileConfigPanel`, `Field`/`ListEditor`/`Section`/`TargetPicker` (`src/components/briefing/ReviewFields.tsx`).
+- **Estados:** `loading`, `saving`, `scraping`, `viewMode` (somente leitura), progresso calculado (`answeredCount / totalFields`).
+
+</Accordion>
+
+<Accordion title="History — HistoryList">
+
+### HistoryList — `/admin/history` e `/app/history`
+**Arquivo:** `src/pages/History/HistoryList.tsx` (305 linhas)
+
+Auditoria de ações (criação/alteração/exclusão) sobre `Client`, `Post` e `Editorial Calendar`, com filtros (ação, modelo, id do objeto, descrição, data, hora — texto com debounce) e paginação.
+
+- `GET /api/v1/history/list/?page=&page_size=&user_id=&action=&model_name=&object_id=&description=&date=&time=` — usuário `client` sempre filtra por `user_id` (o próprio).
+
+- **Hooks:** `useAuth`.
+- **Componentes:** `Table`, `Pagination`, `DatePicker` (Flatpickr).
+- **Estados:** `SkeletonTable` (implícito via `loading`, mesmo padrão das outras listagens).
+
+</Accordion>
+
+<Accordion title="SocialNetworks — SocialNetworksPage">
+
+### SocialNetworksPage — `/admin/social-networks` e `/app/social-networks`
+**Arquivo:** `src/pages/SocialNetworks/SocialNetworksPage.tsx`
+
+Tela fina (19 linhas): só `PageMeta` + `PageBreadcrumb` + o componente compartilhado `SocialConnections` (`src/components/UserProfile/SocialConnections.tsx`, não documentado aqui — é componente, gerencia as conexões OAuth de Instagram/LinkedIn/WhatsApp).
+
+</Accordion>
+
+<Accordion title="Subscription — Plans, ClientBilling, Checkout, Success, Cancel, SubscriptionDashboard">
+
+Todas só em `/app/*` (assinatura é conceito do cliente final).
+
+### Plans — `/app/plans`
+**Arquivo:** `src/pages/Subscription/Plans.tsx` (666 linhas)
+
+Vitrine de planos e preços; permite iniciar trial ou seguir para checkout.
+
+| Método | Rota | Uso |
+|---|---|---|
+| GET | `/api/v1/client/list/?user=` | resolve `clientId` do usuário |
+| GET | `/api/v1/subscription/plan/list/` | planos + preços + features |
+| PATCH | `/api/v1/subscription/update/:id/` | atualizar assinatura existente |
+| POST | `/api/v1/subscription/start-trial/` | iniciar trial gratuito |
+
+- **Hooks:** `useAuthContext`, `useSubscription`.
+
+### ClientBilling — `/app/billing`
+**Arquivo:** `src/pages/Subscription/ClientBilling.tsx`
+
+Tela de faturamento: mostra `SubscriptionDashboard` com a assinatura atual, abre portal de cobrança (Stripe) via `useBillingPortal`.
+
+| Método | Rota | Uso |
+|---|---|---|
+| GET | `/api/v1/client/list/?user=` | resolve `clientId` |
+| GET | `/api/v1/subscription/plan/list/` | planos (para exibir detalhes) |
+
+- **Hooks:** `useAuthContext`, `useSubscription`, `useBillingPortal`.
+
+### SubscriptionDashboard (componente de página, não roteado diretamente)
+**Arquivo:** `src/pages/Subscription/SubscriptionDashboard.tsx` (381 linhas)
+
+Recebe `subscription`/`plans` por prop (de `ClientBilling`). Mostra plano atual, fidelidade, faturas (`useInvoices`) e permite cancelar (com confirmação) e abrir portal de cobrança.
+
+### Checkout — `/app/subscription/checkout`
+**Arquivo:** `src/pages/Subscription/Checkout.tsx`
+
+Exige `state` de navegação (`plan`, `interval`, `priceId`) — sem isso, redireciona para `/app/plans`. Exige aceite de termos (`TermsAcceptModal`) antes do primeiro checkout na sessão.
+
+- `POST /api/v1/subscription/create-checkout-session/` — `{ plan_price_id, user_id, success_url, cancel_url }` → resposta `{ checkout_url }`, redireciona (`window.location.href`) para o Stripe Checkout.
+
+### Success — `/app/subscription/success`
+**Arquivo:** `src/pages/Subscription/Success.tsx`
+
+Retorno do Stripe Checkout. **Não ativa a assinatura** — quem ativa é o webhook `checkout.session.completed` no backend. Faz polling client-side via `useSubscription`/`checkSubscription` (até 10 tentativas, 2s de intervalo) esperando `status === 'ACTIVE'` ou `TRIAL` com `subscription_id` começando com `sub_`.
+
+- **Estados:** `aguardando` (spinner "Confirmando seu pagamento..."), `confirmado` (sucesso), e um terceiro estado após esgotar tentativas ("Pagamento em processamento" — não pede novo pagamento).
+
+### Cancel — `/app/subscription/cancel`
+**Arquivo:** `src/pages/Subscription/Cancel.tsx`
+
+Tela estática: pagamento cancelado/não concluído, sem chamadas de API. Links para `/app/plans` e `/`.
+
+</Accordion>
+
+<Accordion title="Users — UsersList (só /admin)">
+
+### UsersList — `/admin/users`
+**Arquivo:** `src/pages/Users/UsersList.tsx` (498 linhas)
+
+Listagem de usuários/clientes com busca (debounce), paginação, edição de dados de contato, envio de senha genérica e exclusão de conta.
+
+| Método | Rota | Uso |
+|---|---|---|
+| GET | `/api/v1/client/list/?page=&page_size=&search=` | listagem |
+| GET | `/api/v1/client/retrieve/:id/` | detalhe antes de editar |
+| PATCH | `/api/v1/client/update/:id/` | salvar edição / toggle `active` |
+| POST | `/api/v1/client/send-generic-password/` | enviar senha genérica |
+| DELETE | `/api/v1/account/delete/:userId/` | excluir conta |
+
+- **Componentes:** `Table`, `Pagination`, `Switch` ("Ativar cliente").
+- **Estados:** `SkeletonTable`, `error` textual (`getErrorMessage`).
+
+</Accordion>
+
+<Accordion title="Legal — TermsOfUse, PrivacyPolicy (públicas)">
+
+### TermsOfUse — `/terms`
+**Arquivo:** `src/pages/Legal/TermsOfUse.tsx`
+
+Conteúdo estático (texto legal), sem chamadas de API. Pública (fora de `ProtectedRoute`).
+
+### PrivacyPolicy — `/privacy`
+**Arquivo:** `src/pages/Legal/PrivacyPolicy.tsx`
+
+Mesma natureza: conteúdo estático, pública.
+
+</Accordion>
+
+<Accordion title="OtherPage — NotFound, SupportPage">
+
+### NotFound — rota `*` (fallback)
+**Arquivo:** `src/pages/OtherPage/NotFound.tsx`
+
+Tela 404 estática (herdada do template TailAdmin — o texto ainda está em inglês e menciona "TailAdmin"). Link "Back to Home Page" para `/`.
+
+<Note>
+O texto desta tela (`PageMeta`, título "ERROR", copy em inglês, rodapé "TailAdmin") não foi adaptado para a marca Miggo — possível pendência de conteúdo.
+</Note>
+
+### SupportPage — `/app/support`
+**Arquivo:** `src/pages/OtherPage/SupportPage.tsx` (317 linhas)
+
+Chat de suporte com IA (bolhas de mensagem, indicador de digitação, renderizador Markdown simplificado para negrito/links/quebras de linha) mais um formulário de contato (`ContactForm`).
+
+- `POST /api/v1/account/support/chat/` — envia mensagem e recebe resposta do assistente.
+- Mensagem de boas-vindas fixa vem de `src/data/supportPrompt.ts` (`SUPPORT_WELCOME_MESSAGE`).
+
+Só em `/app/*` (a equipe tem `AdminSupportPage`, em `area-admin.mdx`).
+
+</Accordion>
+
+<Accordion title="UserProfiles — perfil do usuário logado">
+
+### UserProfiles — `/admin/profile` e `/app/profile`
+**Arquivo:** `src/pages/UserProfiles.tsx`
+
+Tela fina: agrega `UserMetaCard`, `UserInfoCard`, `ChangePasswordCard` e `SocialConnections` (todos em `src/components/UserProfile/`, não documentados aqui — são componentes). Não faz fetch direto; cada card cuida do próprio dado.
+
+</Accordion>
+
+</AccordionGroup>

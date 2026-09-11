@@ -1,0 +1,116 @@
+---
+title: "Suíte de testes"
+description: "Como rodar os testes automatizados do backend-miggo e o que cada app cobre"
+icon: "flask-conical"
+---
+
+O `backend-miggo` usa o test runner padrão do Django (`django.test.TestCase` / `APITestCase` do DRF). Os testes ficam dentro de cada app, em `app/<app>/tests.py` ou em módulos `tests_*.py` no mesmo diretório — não existe uma pasta central `tests/` no projeto.
+
+<Warning>
+Não confunda com a pasta `testes/` na raiz do repo (`testes/`). Ela **não** é a suíte automatizada: é uma coleção de scripts soltos (`populate_all.py`, `stripe_tests.py`, `tests_manychat.py`, etc.) que fazem chamadas reais a serviços externos (Stripe, ManyChat) e são executados manualmente com `python testes/<script>.py`, não com `manage.py test`. `testes/tests_manychat.py:1-6`, por exemplo, lê `MANYCHAT_API_KEY` via `decouple.config` e chama a API real do ManyChat — não é seguro nem seria correto incluí-lo numa rodada de CI. O único uso documentado dessa pasta no `README.md:8` é `python testes/populate_all.py`, para popular o banco após a configuração inicial do projeto.
+</Warning>
+
+## Como rodar
+
+```bash
+cd backend-miggo
+./venv/Scripts/python.exe manage.py test
+```
+
+Para rodar só um app ou uma classe específica:
+
+```bash
+./venv/Scripts/python.exe manage.py test app.subscription
+./venv/Scripts/python.exe manage.py test app.subscription.tests.FaturaDaStripeTests
+```
+
+<Warning>
+`manage.py test` cria (e depois destrói) um banco de teste no Postgres. No ambiente local isso pode falhar por permissão do usuário do Postgres configurado em `DB_USER`/`DB_PASSWORD` (env vars lidas em `core/settings.py:207-211`), que muitas vezes não tem `CREATEDB` — o comando aborta antes de rodar qualquer teste.
+
+**Alternativa que não depende de criar o banco de teste:**
+
+```bash
+# 1. valida que a configuração do Django carrega sem erro
+./venv/Scripts/python.exe manage.py check
+
+# 2. importa isoladamente o(s) módulo(s) alterado(s) para pegar erro de sintaxe/import
+./venv/Scripts/python.exe -c "import django; django.setup(); from app.subscription import views"
+./venv/Scripts/python.exe -c "import django; django.setup(); from app.subscription import cron, serializers"
+```
+
+Isso não substitui a suíte — só garante que o app importa e que a configuração do Django é válida. Sempre que possível, rode `manage.py test` de fato (em CI, ou em uma conta de Postgres com permissão de `CREATEDB`).
+</Warning>
+
+## O que está coberto
+
+| App | Arquivo(s) de teste | Tipo de teste | Classes |
+|---|---|---|---|
+| `account` | `app/account/tests.py` (38 linhas) | `TestCase` | `TokenRefreshTests` |
+| `brandkit` | `app/brandkit/tests.py` (420 linhas) | `TestCase` | `WebsiteParseTests`, `StylesheetEnrichmentTests`, `NormalizeUrlTests`, `DownloadImageTests`, `ImportWebsiteAssetsTests`, `WebsiteLogoTests`, `AprovacaoDeGridSegueOFluxoTests` |
+| `client` | `app/client/tests.py` (724 linhas), `app/client/tests_trials.py` (314 linhas) | `APITestCase` / `TestCase` | `InstagramScrapeAndFillViewTests`, `CreateBioAgentViewTests`, `ListClientsActiveFilterTests`, `OnboardingStatusCurrentStepTests`, `OnboardingStepFilterTests`, `ClientLifecycleTests`, `PainelDeTrialsTests` |
+| `conversation` | `app/conversation/tests.py` (1067 linhas) | `TestCase` | 14 classes (motor de flow do ManyChat, webhooks, ações) |
+| `editorial_calendar` | `app/editorial_calendar/tests.py` (392 linhas) | `TestCase` | `CatalogSeedTests`, `ValidationTests`, `MirrorAndDerivationTests`, `SerializerTests`, `CoerceSlotTests`, `DefaultCalendarTests`, `MiggoAIPayloadTests` |
+| `emailmarketing` | `app/emailmarketing/tests.py` (421 linhas) | `TestCase` | 14 classes (elegibilidade, rate limit, template, rastreio de clique) |
+| `integration` | `app/integration/tests.py` (3 linhas) | — | Arquivo é só o boilerplate padrão do `startapp` (`from django.test import TestCase` + comentário). **Sem teste nenhum.** |
+| `media` | `app/media/tests.py` (50 linhas), `app/media/tests_analysis.py` (93 linhas), `app/media/tests_cron.py` (127 linhas) | `SimpleTestCase` / `TestCase` | `MediaSizeLimitsTests`, `NormalizeKeywordsTests`, `BuildSearchTextTests`, `SupportedImageTests`, `PrepareImageTests`, `FilaDaAnaliseDeGaleriaTests` |
+| `onboarding` | `app/onboarding/tests.py` (2956 linhas) | `TestCase` | 30+ classes — de longe o app com mais cobertura (calendário editorial, validação de Instagram/LinkedIn, geração de grid, auditoria de análise, esteira de retomada) |
+| `post` | `app/post/tests.py` (460 linhas) | `APITestCase` / `TestCase` | `PostListViewTests`, `StalledPostsFilterTests`, `SyncPlatformConnectionsTests`, `WebhookAccountConnectedTests`, `PostMediaViewTests` |
+| `subscription` | `app/subscription/tests.py` (251 linhas) | `SimpleTestCase` / `TestCase` | `SubscriptionRetrieveViewTests`, `FaturaDaStripeTests`, `ReconciliacaoDeFaturaTests`, `CheckInvoicesTests` |
+| `webhooks` | `app/webhooks/tests.py` (3 linhas) | — | Idem `integration`: só o boilerplate do `startapp`. **Sem teste nenhum.** |
+
+### Detalhe por app
+
+<AccordionGroup>
+  <Accordion title="account — app/account/tests.py">
+    `TokenRefreshTests` (`app/account/tests.py:9-38`): cobre o endpoint de refresh de JWT — token válido devolve novo access token, usuário deletado depois do login devolve 401 (não 500), e refresh token corrompido/inválido é rejeitado.
+  </Accordion>
+  <Accordion title="brandkit — app/brandkit/tests.py">
+    Cobre o pipeline de importação de identidade visual a partir do site do cliente: parsing de HTML (`WebsiteParseTests`, título/descrição/headings, imagens relativas, srcset, paleta CSS, fontes, ranking de logo), enriquecimento via stylesheet externo (`StylesheetEnrichmentTests`), normalização de URL (`NormalizeUrlTests`), download de imagem com filtro de tracking pixel e data URI (`DownloadImageTests`), importação de assets com deduplicação por hash e respeito a deadline (`ImportWebsiteAssetsTests`), promoção do logo do site a `BrandLogo` (`WebsiteLogoTests`) e o fluxo de aprovação de grid (`AprovacaoDeGridSegueOFluxoTests`).
+  </Accordion>
+  <Accordion title="client — app/client/tests.py e tests_trials.py">
+    `app/client/tests.py`: scraping de Instagram e preenchimento automático do cliente com fallback quando a OpenAI falha (`InstagramScrapeAndFillViewTests`), geração de bio via agente de IA com fallback (`CreateBioAgentViewTests`), filtro de clientes ativos com paginação (`ListClientsActiveFilterTests`), etapa atual da esteira de onboarding (`OnboardingStatusCurrentStepTests`, `OnboardingStepFilterTests`) e o ciclo de vida completo do cliente — lead, trial, churn, follow-up (`ClientLifecycleTests`).
+
+    `app/client/tests_trials.py`: `PainelDeTrialsTests` cobre o painel administrativo de trials — cálculo de dias, status (novo/incompleto/urgente/expirado), aviso único aos admins quando o lead fica pronto, e restrição do endpoint à equipe.
+  </Accordion>
+  <Accordion title="conversation — app/conversation/tests.py">
+    O maior conjunto de testes depois de `onboarding`. Cobre o motor de conversas do ManyChat de ponta a ponta: recebimento de webhook e vínculo ao cliente (`ConversationWebhookTests`), envio de conteúdo respeitando a janela de 24h do WhatsApp (`SendContentTests`), log de automação (`AutomationLogTests`), disparo de flows (`SendFlowTests`, `DispatchFlowTests`), catálogo de automações (`AutomationCatalogTests`), montagem de mensagens e opções a partir de blocos (`MessageFlowTests`, `FlowOptionTests`), o motor de flow propriamente dito — estado, ramificação, expiração (`FlowEngineTests`), guarda de nome de variável (`MessageFlowGuardTests`), o endpoint do "dynamic block" do ManyChat (`DynamicBlockContinueTests`, `DynamicBlockContinueContextTests`), blocos de ação (`ActionBlockTests`, `ActionInFlowTests`) e ações sobre post via conversa (`PostActionTests`).
+  </Accordion>
+  <Accordion title="editorial_calendar — app/editorial_calendar/tests.py">
+    Cobre o catálogo/matriz de regras editoriais: seed do catálogo (`CatalogSeedTests`), validação de estilo/CTA conforme a matriz (`ValidationTests`), derivação de espelhos e macro-objetivo (`MirrorAndDerivationTests`), serializer que trava seleção ao catálogo (`SerializerTests`), coerção de slot inválido para opção válida (`CoerceSlotTests`), calendário padrão (`DefaultCalendarTests`) e o payload enviado ao MiggoAI (`MiggoAIPayloadTests`).
+  </Accordion>
+  <Accordion title="emailmarketing — app/emailmarketing/tests.py">
+    Cobre a régua de e-mail marketing: resolução da data-gatilho por evento (`ResolveEventDateTests`), rate limit de envio (`RateLimitTests`), renderização de template (`RenderEmailTests`), filtro de público-alvo (`PublicoTests`), idempotência de campanha+cliente (`IdempotenciaTests`), janela de atraso (`JanelaDeAtrasoTests`), campanha avulsa com data própria (`CampanhaAvulsaTests`), rastreio de clique com assinatura de link (`RastreioDeCliqueTests`), configurações singleton (`ConfiguracoesTests`), bypass de limites para campanhas críticas (`BypassDeLimitesTests`), limites com dados reais (`LimitesComDadosReaisTests`) e limite por template (`LimitePorTemplateTests`, `LimitePorTemplateNaSelecaoTests`).
+  </Accordion>
+  <Accordion title="media — app/media/tests.py, tests_analysis.py, tests_cron.py">
+    `tests.py`: `MediaSizeLimitsTests` (`SimpleTestCase`) valida os limites de tamanho de upload de imagem/vídeo, inclusive o flag de trial.
+
+    `tests_analysis.py`: normalização de palavras-chave (`NormalizeKeywordsTests`), montagem do texto de busca (`BuildSearchTextTests`), formatos de imagem suportados (`SupportedImageTests`) e preparo/conversão de imagem para JPEG, incluindo arquivo corrompido (`PrepareImageTests`).
+
+    `tests_cron.py`: `FilaDaAnaliseDeGaleriaTests` cobre o cron `analyze_media_library` — ordem da fila, item sem arquivo não consome o teto, falha temporária retorna à fila, análise bem-sucedida grava descrição/palavras-chave, e separação de galeria de mídia vs. post no relatório.
+  </Accordion>
+  <Accordion title="onboarding — app/onboarding/tests.py (2956 linhas)">
+    De longe o app com mais teste do repositório — mais de 30 classes. Cobre, entre outras coisas: catálogo do calendário editorial no onboarding, espera do conteúdo pelo MiggoAI, seleção aleatória de referência de grid, sanitização de referral, validação de fonte de marca (Instagram/LinkedIn/site) sem tocar a rede, cache de verificação de perfil do Instagram via Apify (execução única, cache de veredito conclusivo/inconclusivo), endpoints de validação e de brand source, etapa de identidade visual (escolha de logo, paleta), escolha de estilo de grid e sua geração via cron, lembrete de aprovação de grid com throttle de 24h, auditoria de fases da análise com heartbeat/stall, cálculo de conclusão do onboarding por etapa, retomada da esteira (`resume`), formatação de bio/overview por tipo de perfil (pessoal x empresa), heurísticas de logo/paleta (placeholder vs. marca real), edição isolada de item de estratégia sem regenerar o resto, e a lógica de "a esteira volta para a etapa pendente" (`RetomadaVoltaParaAEtapaQueEsperaTests`, `FazerDepoisEhDecisaoTests`).
+  </Accordion>
+  <Accordion title="post — app/post/tests.py">
+    Listagem e filtro de posts (`PostListViewTests`, `StalledPostsFilterTests` — fila de "parados" paginada), sincronização de conexões de plataforma via Zernio (`SyncPlatformConnectionsTests`), webhook de conta conectada (`WebhookAccountConnectedTests`, isolamento entre clientes) e a view de mídia do post — link permanente, redirecionamento de link antigo, download com `Content-Disposition`, token inválido, endpoint público de info, e o link de mídia usado pelo ManyChat (`PostMediaViewTests`).
+  </Accordion>
+  <Accordion title="subscription — app/subscription/tests.py">
+    Retrieve de assinatura pegando a mais recente quando há duplicata (`SubscriptionRetrieveViewTests`), montagem de fatura a partir do payload da Stripe — período, nota de crédito, vencimento de boleto vs. cobrança automática (`FaturaDaStripeTests`, `SimpleTestCase`), reconciliação de fatura (`ReconciliacaoDeFaturaTests`) e o cron `check_invoices` — não marca vencida quando o gateway confirma pagamento, não decide nada se a releitura falha (`CheckInvoicesTests`).
+  </Accordion>
+</AccordionGroup>
+
+## O que NÃO está coberto
+
+<Warning>
+Os seguintes apps do projeto (`app/`) **não têm nenhum teste efetivo**:
+
+- **`agenda`** — nenhum arquivo `tests*.py` no diretório.
+- **`history`** — nenhum arquivo `tests*.py` no diretório.
+- **`notification`** — nenhum arquivo `tests*.py` no diretório.
+- **`integration`** — tem `app/integration/tests.py`, mas é só o boilerplate do `startapp` (3 linhas, nenhuma classe/teste).
+- **`webhooks`** — mesma situação: `app/webhooks/tests.py` (3 linhas) só tem o boilerplate, apesar de `app/webhooks/views.py` concentrar os webhooks de pagamento da Stripe e da conta Zernio (críticos para o fluxo de cobrança).
+</Warning>
+
+<Note>
+`webhooks` sem teste chama atenção porque é onde vive `webhook_stripe` (`core/urls.py:52`), o endpoint que processa eventos de cobrança em produção — qualquer regressão ali não é pega pela suíte automatizada.
+</Note>

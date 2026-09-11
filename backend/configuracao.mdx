@@ -1,0 +1,172 @@
+---
+title: "Configuração"
+description: "Dissecação de core/settings.py: apps, middleware, banco, DRF, JWT, CORS, storage, logging e mais"
+icon: "settings"
+---
+
+Toda a configuração global do `backend-miggo` vive em `core/settings.py` (480 linhas). Esta página organiza o arquivo por área.
+
+## Apps instalados
+
+`INSTALLED_APPS` (`core/settings.py:100-133`):
+
+```python
+'django.contrib.admin', 'django.contrib.auth', 'django.contrib.contenttypes',
+'django.contrib.sessions', 'django.contrib.messages', 'django.contrib.staticfiles',
+'rest_framework', 'rest_framework_api_key', 'corsheaders', 'drf_spectacular',
+'django_crontab', 'gunicorn',
+'app.account.apps.AccountConfig', 'app.client.apps.ClientConfig', 'app.post.apps.PostConfig',
+'app.editorial_calendar.apps.EditorialCalendarConfig', 'app.media.apps.MediaConfig',
+'app.history.apps.HistoryConfig', 'app.integration.apps.IntegrationConfig',
+'app.subscription.apps.SubscriptionConfig', 'app.webhooks.apps.WebhooksConfig',
+'app.brandkit.apps.BrandkitConfig', 'app.agenda.apps.AgendaConfig',
+'app.notification.apps.NotificationConfig', 'app.onboarding.apps.OnboardingConfig',
+'app.conversation.apps.ConversationConfig', 'app.emailmarketing.apps.EmailMarketingConfig',
+'django_filters',
+```
+
+15 apps de negócio próprios, mais `rest_framework`, `rest_framework_api_key` (autenticação por API key para chamadas máquina-a-máquina), `corsheaders`, `drf_spectacular` (schema/Swagger/Redoc), `django_crontab` (agendamento) e `django_filters` (filtros DRF).
+
+## Middleware
+
+`MIDDLEWARE` (`core/settings.py:166-179`), na ordem em que roda:
+
+| Ordem | Middleware | Observação |
+|---|---|---|
+| 1 | `corsheaders.middleware.CorsMiddleware` | Precisa vir cedo para os headers CORS valerem em toda resposta |
+| 2 | `django.middleware.security.SecurityMiddleware` | |
+| 3 | `whitenoise.middleware.WhiteNoiseMiddleware` | Serve estáticos direto do processo Django |
+| 4 | `django.contrib.sessions.middleware.SessionMiddleware` | |
+| 5 | `django.middleware.common.CommonMiddleware` | |
+| 6 | `django.middleware.csrf.CsrfViewMiddleware` | |
+| 7 | `django.contrib.auth.middleware.AuthenticationMiddleware` | |
+| 8 | `django.contrib.messages.middleware.MessageMiddleware` | |
+| 9 | `django.middleware.clickjacking.XFrameOptionsMiddleware` | |
+| 10 | `app.history.middleware.CurrentRequestMiddleware` | Próprio do projeto — precisa vir **depois** da autenticação para expor o autor da request aos signals do app `history` (comentário em `core/settings.py:176-178`) |
+
+## Banco de dados
+
+`DATABASES` (`core/settings.py:204-213`) — sempre PostgreSQL (`django.db.backends.postgresql`), sem alternativa configurada. Todos os campos vêm de env vars obrigatórias: `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT`.
+
+## Django REST Framework
+
+`REST_FRAMEWORK` (`core/settings.py:135-148`):
+
+```python
+'DEFAULT_AUTHENTICATION_CLASSES': ['rest_framework_simplejwt.authentication.JWTAuthentication'],
+'DEFAULT_PERMISSION_CLASSES': ['app.account.permissions.HasAPIKeyOrIsAuthenticated'],
+'DEFAULT_FILTER_BACKENDS': [
+    'django_filters.rest_framework.DjangoFilterBackend',
+    'rest_framework.filters.SearchFilter',
+    'rest_framework.filters.OrderingFilter',
+],
+'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
+```
+
+- **Autenticação padrão**: JWT via `rest_framework_simplejwt` (Bearer token).
+- **Permissão padrão**: `HasAPIKeyOrIsAuthenticated` (`app/account/permissions.py:5-12`) — libera a request se ela trouxer uma API key válida (`rest_framework_api_key`) **ou** um usuário autenticado. Toda view que não sobrescreve `permission_classes` herda essa regra.
+- Views específicas apertam a regra com `IsManagementUser` ou `IsAdminUser` (ver [Autenticação](/backend/autenticacao)).
+
+## Simple JWT
+
+`SIMPLE_JWT` (`core/settings.py:150-157`):
+
+| Chave | Valor | Comentário do código |
+|---|---|---|
+| `ACCESS_TOKEN_LIFETIME` | 30 minutos | "Access token com vida útil maior evita o storm de refresh/401 do frontend (o default do SimpleJWT é de apenas 5 minutos)." |
+| `REFRESH_TOKEN_LIFETIME` | 7 dias | |
+| `ROTATE_REFRESH_TOKENS` | `True` | |
+| `BLACKLIST_AFTER_ROTATION` | `False` | Refresh antigo continua válido após rotação — não há blacklist de token ativa |
+
+## CORS / CSRF
+
+- `CORS_ALLOW_ALL_ORIGINS` (`core/settings.py:40-47`): calculado a partir de `CORS_ALLOWED_ORIGINS` (env, CSV). Se o valor for só `*` (default), libera todas as origens; caso contrário, restringe à lista informada.
+- `CSRF_TRUSTED_ORIGINS` (`core/settings.py:49-67`): default `http://localhost:5173`. O código normaliza cada origem (garante esquema `https://` quando ausente) e adiciona automaticamente a variante `http://` para origens `localhost`/`127.0.0.1`.
+- Em produção (`DEBUG=False`): `CSRF_COOKIE_SECURE=True`, `SESSION_COOKIE_SECURE=True`, `SECURE_PROXY_SSL_HEADER=('HTTP_X_FORWARDED_PROTO', 'https')` (para confiar no HTTPS terminado pelo Traefik), `SECURE_REFERER_POLICY='strict-origin-when-cross-origin'` (`core/settings.py:81-91`).
+- `USE_X_FORWARDED_HOST = True` (`core/settings.py:79`) — necessário atrás de proxy reverso.
+
+## Arquivos estáticos e media
+
+- `STATIC_URL='static/'`, `STATIC_ROOT=BASE_DIR/'static'` — servidos por WhiteNoise (`CompressedManifestStaticFilesStorage`) tanto com quanto sem S3 (`core/settings.py:260-300`).
+- **Media**: controlado por `USE_S3` (env, default `False`).
+  - `USE_S3=True`: usa `storages.backends.s3boto3.S3Boto3Storage`. Exige `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_STORAGE_BUCKET_NAME`; `AWS_S3_REGION_NAME` (default `us-east-1`), `AWS_S3_CUSTOM_DOMAIN` e `AWS_S3_PROJECT_FOLDER` (default `miggo-backend`) ajustam a URL final. `AWS_QUERYSTRING_AUTH=False` e `CacheControl: max-age=86400` fixos no código.
+  - `USE_S3=False`: `FileSystemStorage`, `MEDIA_ROOT=BASE_DIR/'media'`, `MEDIA_URL='/media/'`.
+- Em produção sem Nginx, `core/urls.py:55` serve `/media/<path>` via `django.views.static.serve` diretamente do Django.
+
+## E-mail
+
+`EMAIL_BACKEND` fixo em `django.core.mail.backends.smtp.EmailBackend` (`core/settings.py:224`). Config via `EMAIL_HOST`, `EMAIL_PORT` (int), `EMAIL_USE_TLS`/`EMAIL_USE_SSL` (bool, default `False`), `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD` — todas obrigatórias exceto TLS/SSL.
+
+## drf-spectacular (schema OpenAPI)
+
+`SPECTACULAR_SETTINGS` (`core/settings.py:159-164`):
+```python
+{'TITLE': 'Miggo API', 'DESCRIPTION': 'Documentation for Miggo API endpoints', 'VERSION': '1.0.0', 'SERVE_INCLUDE_SCHEMA': False}
+```
+Rotas em `core/urls.py:44-46` — ver [Referência de API](/backend/api-referencia).
+
+## Cron (django-crontab)
+
+`CRONJOBS` (`core/settings.py:374-377`) tem uma única entrada:
+```python
+[('* * * * *', 'app.post.cron.send_scheduled_reviews')]
+```
+O comentário no código (`core/settings.py:369-373`) explica que os jobs de cobrança (trial/faturas/reconciliação Stripe) **não** ficam aqui — rodam como management commands agendados externamente (Dokploy). Duas entradas antigas usavam formato de 6 campos (`*/30 * * * * *`), que o crontab do Linux recusa, e nunca chegaram a rodar em produção.
+
+## Timezone e i18n
+
+`LANGUAGE_CODE='en-us'`, `TIME_ZONE='UTC'`, `USE_I18N=True`, `USE_TZ=True` (`core/settings.py:248-254`) — apesar do idioma de código/comentários ser pt-BR, o `LANGUAGE_CODE` do Django está em inglês.
+
+## Autenticação de usuário
+
+`AUTH_USER_MODEL = 'account.CustomUser'` (`core/settings.py:302`). Ver [Autenticação](/backend/autenticacao) para o modelo completo e os endpoints.
+
+## Logging
+
+Bloco extenso (`core/settings.py:382-480`) motivado por um bug histórico: sem configuração de `LOGGING`, o Django não instala handler nenhum para os loggers da aplicação, e todo `logger.info(...)` do onboarding era descartado em silêncio.
+
+- `LOG_LEVEL` (env, default `INFO`) controla o nível do logger `app` (raiz de todos os apps do projeto) e do console.
+- `DJANGO_LOG_LEVEL` (env, default `INFO`) controla o logger `django` separadamente.
+- `LOG_FILE` (env, opcional): se preenchido, adiciona um `RotatingFileHandler` (10MB, 5 backups, UTF-8) a todos os loggers, além do console. Antes de registrar o handler, o código testa se consegue abrir o arquivo para escrita — se não conseguir, cai de volta para console-only com um aviso em `stderr`, em vez de derrubar o processo.
+- Loggers de bibliotecas HTTP (`urllib3`, `requests`, `PIL`) ficam fixos em `WARNING` para não afogar o log com ruído de DEBUG.
+- Um ajuste específico reconfigura `sys.stdout`/`sys.stderr` para UTF-8 com `errors='backslashreplace'` (`core/settings.py:410-415`) — o console do Windows abre em `cp1252` e trocava acentos por `?`.
+
+## Uploads
+
+`FILE_UPLOAD_MAX_MEMORY_SIZE` / `DATA_UPLOAD_MAX_MEMORY_SIZE` (env, default 100MB cada — `core/settings.py:307-308`). Limites de negócio adicionais (não Django, aplicados na camada de views): `TRIAL_MEDIA_MAX_FILES` (5), `UPLOAD_MAX_IMAGE_SIZE_MB` (10), `UPLOAD_MAX_VIDEO_SIZE_MB` (50) — protegem custo de storage/IA durante o teste grátis (`core/settings.py:345-349`).
+
+## Integrações externas configuradas em settings
+
+| Integração | Variáveis | Linha |
+|---|---|---|
+| Stripe | `STRIPE_API_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_TRIAL_DAYS`, `BILLING_GRACE_DAYS` | `core/settings.py:311-325` |
+| OpenAI | `OPENAI_API_KEY` | `core/settings.py:326` |
+| Jira (suporte) | `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_PROJECT_KEY`, `JIRA_ISSUE_TYPE` | `core/settings.py:352-356` |
+| Google OAuth | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_AUTH_CLOCK_SKEW` | `core/settings.py:359-364` |
+
+Demais integrações (ManyChat, Asaas, GetLate/Zernio, Apify, HtmlToCssImage, MiggoAI) são lidas via `config(...)` direto nos módulos que as usam, não em `settings.py` — ver a tabela completa em [Instalação](/backend/instalacao).
+
+## Tabela de variáveis por área
+
+| Área | Variáveis |
+|---|---|
+| Core/segurança | `SECRET_KEY`, `DEBUG`, `ALLOWED_HOSTS`, `CORS_ALLOWED_ORIGINS`, `CSRF_TRUSTED_ORIGINS`, `CSRF_COOKIE_DOMAIN`, `SECURE_SSL_REDIRECT` |
+| Banco de dados | `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT` |
+| E-mail | `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_USE_TLS`, `EMAIL_USE_SSL`, `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD` |
+| Storage (S3) | `USE_S3`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_STORAGE_BUCKET_NAME`, `AWS_S3_REGION_NAME`, `AWS_S3_CUSTOM_DOMAIN`, `AWS_S3_PROJECT_FOLDER` |
+| Uploads | `FILE_UPLOAD_MAX_MEMORY_SIZE`, `DATA_UPLOAD_MAX_MEMORY_SIZE`, `TRIAL_MEDIA_MAX_FILES`, `UPLOAD_MAX_IMAGE_SIZE_MB`, `UPLOAD_MAX_VIDEO_SIZE_MB` |
+| Billing | `STRIPE_API_KEY`, `STRIPE_PROD_API_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_TRIAL_DAYS`, `BILLING_GRACE_DAYS`, `ASAAS_API_KEY`, `ASAAS_BASE_URL` |
+| IA | `OPENAI_API_KEY`, `OPENAI_API_URL`, `OPENAI_MODEL`, `OPENAI_IMAGE_MODEL`, `MEDIA_ANALYSIS_MODEL` |
+| Auth social | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_AUTH_CLOCK_SKEW` |
+| Suporte/Jira | `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_PROJECT_KEY`, `JIRA_ISSUE_TYPE` |
+| WhatsApp/ManyChat | `MANYCHAT_API_KEY`, `MANYCHAT_WEBHOOK_TOKEN`, `CONTENT_APPROVATION_FLOW_ID`, `GRID_APPROVAL_FLOW_ID`, `GRID_APPROVAL_REMINDER_INTERVAL_HOURS`, `GRID_APPROVAL_MAX_REMINDERS`, `DYNAMIC_FLOW_STARTER_FLOW_ID`, `WHATSAPP_SEND_FLOW_DELAY`, `WHATSAPP_FLOW_RETRY_ATTEMPTS`, `WHATSAPP_FLOW_RETRY_BACKOFF` |
+| Redes sociais | `LATE_API_KEY` (GetLate/Zernio) |
+| Onboarding/scraping | `APIFY_TOKEN`, `ONBOARDING_IG_MIN_POSTS`, `ONBOARDING_WEBSITE_BUDGET`, `ONBOARDING_ANALYSIS_STALL`, `HTMLTOCSSIMAGE_ID`, `HTMLTOCSSIMAGE_API_KEY` |
+| MiggoAI (serviço de IA) | `MIGGOAI_API_URL`, `MIGGOAI_USERNAME`, `MIGGOAI_PASSWORD` |
+| URLs base | `FRONTEND_URL`, `BACKEND_URL` |
+| Logging | `LOG_LEVEL`, `DJANGO_LOG_LEVEL`, `LOG_FILE` |
+| API interna | `MIGGO_API_KEY` |
+
+<Note>
+  Descrição de cada variável (o que faz, obrigatoriedade) está em [Instalação](/backend/instalacao) para evitar duplicação.
+</Note>

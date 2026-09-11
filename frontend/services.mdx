@@ -1,0 +1,146 @@
+---
+title: "Services e utilitários"
+description: "Módulos de src/services/ (chamadas de API) e src/utils/ (funções puras)"
+icon: "cloud"
+---
+
+## `src/services/jwtAuth.ts`
+
+Documentado por completo em `autenticacao.mdx` (armazenamento de token, interceptor de `fetch`, refresh). Resumo das funções exportadas: `getAccessToken`, `getRefreshToken`, `setTokens`, `clearTokens`, `getAuthorizationHeader`, `saveTokensFromResponse`, `setupAuthFetchInterceptor`.
+
+## `src/services/editorialCalendarCatalog.ts`
+
+Espelha no frontend a matriz Formato × Estilo × CTA do calendário editorial, para a UI só oferecer combinações que o backend aceitaria.
+
+**Endpoint consumido**: `GET /api/v1/editorial-calendar/options/` (sem headers extras), via `fetchCalendarCatalog()`.
+
+| Função | Assinatura | O que faz |
+|---|---|---|
+| `formatKeyForName` | `(name: string \| null \| undefined): string \| null` | Mapeia um nome de formato de post (ex.: `"Reel"`, `"Instagram - Carousel"`) para a chave da coluna da matriz (`stories`/`feed`/`carousel`/`reels`), via o dicionário `FORMAT_NAME_TO_KEY` (`editorialCalendarCatalog.ts:74-106`) |
+| `formatKeysForNames` | `(names: (string \| null \| undefined)[]): string[]` | Aplica `formatKeyForName` a uma lista, sem duplicatas (`:109-116`) |
+| `allowedStyles` | `(catalog, formatKeys: string[]): ContentStyle[]` | Estilos compatíveis com pelo menos um dos formatos (`:119-123`) |
+| `rulesFor` | `(catalog, formatKeys: string[], styleIds: number[]): FormatStyleRule[]` | Regras aplicáveis à combinação formato × estilo (`:126-133`) |
+| `dominantMacro` | `(rules: FormatStyleRule[]): string` | Macro-objetivo predominante entre as regras, com o mesmo desempate do backend (`:136-145`) |
+| `ctaRequiredFor` | `(rules: FormatStyleRule[]): boolean` | CTA obrigatório se qualquer combinação escolhida exigir (`:148-150`) |
+| `suggestedCtaCategoryIds` | `(rules: FormatStyleRule[]): number[]` | IDs das categorias de CTA sugeridas (`:153-159`) |
+| `ctaOptionIdsForCategory` | `(category: CTACategory): number[]` | IDs das opções ativas de uma categoria (`:166-168`) |
+| `selectedCtaCategoryIds` | `(catalog, selectedOptionIds: number[]): number[]` | Categorias marcadas (têm ao menos uma opção selecionada) (`:171-178`) |
+| `allCtaOptions` | `(catalog): CTAOption[]` | Todas as opções de CTA, achatadas (`:181-184`) |
+| `resolveStyleIdsByName` | `(catalog, names: string[], formatKeys: string[]): number[]` | Casa nomes/slugs de estilo (texto legado/onboarding) com IDs do catálogo (`:190-206`) |
+| `resolveCtaIdsByText` | `(catalog, texts: string[]): number[]` | Casa frases de CTA (texto) com IDs de opções (`:209-219`) |
+| `fetchCalendarCatalog` | `(): Promise<CalendarCatalog>` | Busca (e cacheia em memória — cache de módulo, um único fetch por sessão) o catálogo completo (`:233-252`) |
+
+`normalize()` (interno) compara textos de forma tolerante a acento/pontuação/maiúsculas, igual ao backend (`:222-229`).
+
+## `src/services/onboardingApi.ts`
+
+Objeto `onboardingApi` com todas as chamadas do fluxo de onboarding. Helper interno `fetchApi(url, options)` prefixa `/api/v1` a cada `url`, define `Content-Type: application/json` (exceto se `body instanceof FormData`), sempre envia `credentials: 'include'`, e lança `Error(data.error || 'Erro na requisição')` em respostas não-ok (`onboardingApi.ts:53-67`).
+
+| Método | Endpoint | Payload | Observação |
+|---|---|---|---|
+| `signup(data)` | `POST /onboarding/signup/` | livre (`any`) | |
+| `completeSocial(data)` | `POST /onboarding/signup/complete-social/` | livre | |
+| `verifyCode(code)` | `POST /onboarding/verify/` | `{ code }` | |
+| `resendCode()` | `POST /onboarding/verify/resend/` | — | |
+| `changeNumber(whatsapp)` | `PATCH /onboarding/verify/change-number/` | `{ whatsapp }` | |
+| `getState()` | `GET /onboarding/state/` | — | `cache: 'no-store'` |
+| `getPlans()` | `GET /subscription/plan/list/` | — | |
+| `skipOnboarding(clientId)` | `POST /client/onboarding-skip/<clientId>/` | — | Marca `Client.onboarding_skipped` |
+| `setBrandSource(payload)` | `POST /onboarding/brand-source/` | `{ instagram?, website?, manual? }` | |
+| `previewBrandSource(payload)` | `POST /onboarding/brand-source/preview/` | `{ instagram?, website? }` | **Não usa `fetchApi`** — trata 400/422 como respostas esperadas (perfil não confirmado/privado/site inválido), devolve `{ ok, status, ...body }` (`:97-110`) |
+| `getAnalysisStatus()` | `GET /onboarding/analysis-status/` | — | `cache: 'no-store'` |
+| `validateProfile(source, value, deep=false)` | `POST /onboarding/validate-profile/` | `{ source, value, deep }` | **Não usa `fetchApi`** — 404/422 são esperados; falha de rede resolve como `verdict: 'unknown'` sem bloquear (`:121-146`) |
+| `getReview()` | `GET /onboarding/review/` | — | |
+| `updateReview(review, advance=true, fromStep?)` | `PUT /onboarding/review/` | `{ review, advance, from_step }` | |
+| `autofillReview(advance=true, fallbackPalette=false, fromStep?)` | `POST /onboarding/review/autofill/` | `{ advance, fallback_palette, from_step }` | |
+| `getPhotos()` | `GET /onboarding/photos/` | — | `cache: 'no-store'` |
+| `uploadPhotos(files)` | `POST /onboarding/photos/` | `FormData` (`files` repetido) | |
+| `deletePhoto(asset_id)` | `DELETE /onboarding/photos/?asset_id=<id>` | — | |
+| `uploadLogo(file)` | `POST /onboarding/logo/` | `FormData` (`file`) | |
+| `setPlan(plan)` | `POST /onboarding/plan/` | `{ plan }` | |
+| `setReferral(referral, detail?)` | `POST /onboarding/referral/` | `{ referral, detail }` | |
+| `generateStrategy()` | `POST /onboarding/strategy/generate/` | — | |
+| `getStrategy()` | `GET /onboarding/strategy/` | — | `cache: 'no-store'` |
+| `approveStrategy()` | `POST /onboarding/strategy/approve/` | — | |
+| `approveStrategyItem(item_id, approved, content?)` | `POST /onboarding/strategy/approve-item/` | `{ item_id, approved, content }` | |
+| `sendStrategyFeedback(feedback)` | `POST /onboarding/strategy/feedback/` | `{ feedback }` | Refaz a estratégia inteira |
+| `regenerateStrategyItem(item_id, feedback)` | `POST /onboarding/strategy/item/regenerate/` | `{ item_id, feedback }` | Regenera só um item |
+| `getCalendar()` | `GET /onboarding/calendar/` | — | |
+| `updateCalendar(calendar)` | `PUT /onboarding/calendar/` | `{ calendar }` | |
+| `regenerateCalendar(feedback)` | `POST /onboarding/calendar/regenerate/` | `{ feedback }` | |
+| `approveCalendar()` | `POST /onboarding/calendar/approve/` | — | |
+| `getMedia()` | `GET /onboarding/media/` | — | `cache: 'no-store'` |
+| `uploadMedia(files)` | `POST /onboarding/media/` | `FormData` | |
+| `deleteMedia(media_id)` | `DELETE /onboarding/media/?media_id=<id>` | — | |
+| `continueMedia(defer)` | `POST /onboarding/media/continue/` | `{ defer }` | `defer=true` = "enviar depois" |
+| `getGrid()` | `GET /onboarding/grid/` | — | `cache: 'no-store'` |
+| `getGridStyles(refresh=false)` | `GET /onboarding/grid/styles/[?refresh=true]` | — | `cache: 'no-store'` |
+| `selectGridStyle(reference_id)` | `POST /onboarding/grid/styles/` | `{ reference_id }` | |
+| `sendGridFeedback(feedback)` | `POST /onboarding/grid/feedback/` | `{ feedback }` | |
+| `approveGrid()` | `POST /onboarding/grid/approve/` | — | |
+| `getFirstContent()` | `GET /onboarding/first-content/` | — | |
+| `approveFirstContent()` | `POST /onboarding/first-content/approve/` | — | |
+| `requestContentChange(feedback)` | `POST /onboarding/first-content/request-change/` | `{ feedback }` | |
+| `resumeOnboarding(step?)` | `POST /onboarding/resume/` | `{ step }` ou `{}` | Sem `step`, backend escolhe a primeira etapa pendente |
+| `completeOnboarding()` | `POST /onboarding/complete/` | — | |
+| `getSummary()` | `GET /onboarding/summary/` | — | `cache: 'no-store'` |
+
+## `src/services/subscriptionSync.ts`
+
+Sincronização assíncrona (job em background) de assinaturas/faturas.
+
+```ts
+export async function runSubscriptionSyncAsync(options?: {
+  clientId?: number | string | null;
+  onStatus?: (status: "PENDING" | "RUNNING" | "DONE" | "FAILED") => void;
+  intervalMs?: number;   // default 2000
+  timeoutMs?: number;    // default 300000
+}): Promise<SyncResult>;
+```
+
+Fluxo (`subscriptionSync.ts:42-90`):
+1. `POST /api/v1/subscription/sync-subscription-status-invoices/async/` com `{ client_id }` (se informado) → recebe `{ job_id, status }`.
+2. Faz polling em `GET /api/v1/subscription/sync-subscription-status-invoices/status/<job_id>/` a cada `intervalMs`, chamando `onStatus` a cada mudança, até `status === 'DONE'` (resolve com `result`) ou `'FAILED'` (lança erro) ou estourar `timeoutMs` (lança erro de timeout).
+
+## Funções de `src/hooks/useBrandkit.ts` (CRUD de brandkit, não são hooks)
+
+Além do hook `useBrandkits` (ver `hooks.mdx`), o arquivo exporta funções assíncronas diretas de acesso à API — todas sem tratamento de erro estruturado além de `throw new Error(\`Erro ${res.status}\`)`:
+
+| Função | Endpoint |
+|---|---|
+| `createBrandkit(data)` | `POST /api/v1/brandkit/create/` |
+| `updateBrandkit(id, data)` | `PATCH /api/v1/brandkit/update/<id>/` |
+| `deleteBrandkit(id)` | `DELETE /api/v1/brandkit/delete/<id>/` |
+| `uploadLogo(brandkitId, file)` | `POST /api/v1/brandkit/logo/upload/` (`FormData`) |
+| `deleteLogo(id)` | `DELETE /api/v1/brandkit/logo/delete/<id>/` |
+| `reanalyzeLogo(id)` | `POST /api/v1/brandkit/logo/reanalyze/<id>/` |
+| `createColor(data)` | `POST /api/v1/brandkit/color/create/` |
+| `updateColor(id, data)` | `PATCH /api/v1/brandkit/color/update/<id>/` |
+| `deleteColor(id)` | `DELETE /api/v1/brandkit/color/delete/<id>/` |
+| `createTypography(data)` | `POST /api/v1/brandkit/typography/create/` |
+| `deleteTypography(id)` | `DELETE /api/v1/brandkit/typography/delete/<id>/` |
+| `uploadAsset(brandkitId, file, name, asset_type)` | `POST /api/v1/brandkit/asset/create/` (`FormData`) |
+| `deleteAsset(id)` | `DELETE /api/v1/brandkit/asset/delete/<id>/` |
+| `fetchGrids(clientId)` | `GET /api/v1/brandkit/grid/list/?client_id=<id>` |
+| `createGrid(data)` | `POST /api/v1/brandkit/grid/create/` (`FormData`: `client`, `file`?, `url`?) |
+| `deleteGrid(id)` | `DELETE /api/v1/brandkit/grid/delete/<id>/` |
+| `regenerateGrid(clientId, options?)` | `POST /api/v1/brandkit/grid/regenerate/` — `{ client_id, feedback, new_reference }`, responde 202 (geração assíncrona) |
+| `fetchGridStatus(clientId)` | `GET /api/v1/brandkit/grid/status/?client_id=<id>` |
+| `fetchMyGridApproval()` | `GET /api/v1/brandkit/grid/approval/` — grid do cliente autenticado (página de aprovação por link, MIG-165) |
+| `approveMyGrid()` | `POST /api/v1/brandkit/grid/approval/approve/` — devolve também `next` (próximo passo do onboarding, se houver, MIG-185) |
+| `sendMyGridFeedback(feedback)` | `POST /api/v1/brandkit/grid/approval/feedback/` — registra pedido de ajuste sem regerar na hora |
+
+## `src/utils/` — funções puras
+
+| Arquivo | Exports | O que faz |
+|---|---|---|
+| `errors.ts` | `getErrorMessage(err: unknown): string` | Extrai mensagem legível de um `catch (err: unknown)` — checa `Error`, `string`, ou objeto com `.message` (`errors.ts:1-16`) |
+| `clients.ts` | `toClientList`, `findOwnClient`, `ONBOARDING_STEP_OPTIONS`, `ONBOARDING_STAGE_OPTIONS`, `LIFECYCLE_OPTIONS` | `toClientList` normaliza resposta paginada/array de `/api/v1/client/list/`. `findOwnClient` acha o cliente do usuário logado (por `c.id` em preview mode, por `c.user` normalmente). As três constantes são espelhos de choices do backend (`ONBOARDING_STEP_CHOICES`, `ONBOARDING_STEPS`, `LIFECYCLE_CHOICES`) usadas em filtros de tela (`clients.ts:1-89`) |
+| `clientDisplay.ts` | `getClientDisplayName`, `getClientSelectLabel`, `sortClientsByDisplayName`, `matchesClientDisplayName` | Nome de exibição de um cliente (prioriza `company` sobre `name`), rótulo combinado para selects, ordenação com `Intl.Collator('pt-BR')`, e busca tolerante a acento (`clientDisplay.ts`) |
+| `clientMetaCache.ts` | `getClientsWithMetaCache(baseClients, options)` | Enriquece uma lista de clientes com `ClientMeta` (`company`, `brand_name`) buscando **todos** os metadados em uma única chamada a `GET /api/v1/client/client-meta/list/` (evita N+1), com cache em `localStorage` por assinatura de conteúdo (`clientMetaCache.ts`) |
+| `subscriptionStatus.ts` | `SUBSCRIPTION_STATUS_LABELS`, `SUBSCRIPTION_STATUS_COLORS`, `formatBillingDate`, `isTrialOver` | Rótulos/cores pt-BR por `SubscriptionStatus`; `formatBillingDate` formata datas com fallback `'—'`; `isTrialOver` detecta teste grátis encerrado tanto em `TRIAL` vencido quanto em `EXPIRED` com `trial=true` (`subscriptionStatus.ts`) |
+| `countryCodes.ts` | `COUNTRY_CODES` | Lista estática de códigos de país (DDI) para o seletor de telefone |
+
+<Note>
+`src/hooks/useBrandkit.ts` mistura, no mesmo arquivo, um hook React (`useBrandkits`) com funções assíncronas soltas de CRUD — as funções soltas são efetivamente um "service", mas fisicamente moram em `hooks/`. Documentado aqui por serem chamadas de API, não por hook.
+</Note>

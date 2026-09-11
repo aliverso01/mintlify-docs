@@ -1,0 +1,186 @@
+---
+title: "Referência de API"
+description: "Todos os endpoints REST do backend MiggoAI, por app"
+icon: "plug"
+---
+
+Base: `backend/core/urls.py:10-18`. Todas as rotas abaixo são prefixadas por `/api/`. Exceto os endpoints de token, **toda view exige autenticação JWT** (`REST_FRAMEWORK.DEFAULT_PERMISSION_CLASSES = IsAuthenticated`, `backend/core/settings.py:109-111`) — envie `Authorization: Bearer <access_token>`.
+
+## Autenticação
+
+| Método | Rota | View |
+|---|---|---|
+| POST | `/api/token/` | `TokenObtainPairView` (SimpleJWT) |
+| POST | `/api/token/refresh/` | `TokenRefreshView` (SimpleJWT) |
+
+<ParamField path="username" type="string" required>Usuário Django.</ParamField>
+<ParamField path="password" type="string" required>Senha.</ParamField>
+
+<ResponseField name="access" type="string">Access token JWT (expira em 30 min).</ResponseField>
+<ResponseField name="refresh" type="string">Refresh token JWT (expira em 7 dias).</ResponseField>
+
+`/api/token/refresh/` recebe `{"refresh": "<token>"}` e devolve `{"access": "<novo token>"}`.
+
+<AccordionGroup>
+
+<Accordion title="apps.clients — /api/clients/">
+
+Fonte: `backend/apps/clients/urls.py`, `backend/apps/clients/views.py`.
+
+| Método | Rota | View | Descrição |
+|---|---|---|---|
+| GET | `/api/clients/` | `ClientListView` | Lista clientes do backend-miggo. |
+| GET | `/api/clients/<int:client_id>/` | `ClientDetailView` | Detalhe do cliente + briefing embutido. |
+| GET | `/api/clients/<int:client_id>/variables/` | `ClientVariablesView` | Variáveis de prompt já salvas para o cliente. |
+
+**GET `/api/clients/`**
+<ParamField path="search" type="string">Busca livre (query param), repassada ao backend-miggo.</ParamField>
+<ResponseField name="[]" type="array">Lista crua de clientes conforme devolvida pelo backend-miggo (`client/list/`).</ResponseField>
+
+**GET `/api/clients/<client_id>/`**
+<ResponseField name="briefing" type="object">Dict `{key: value}` do client-meta, anexado ao objeto do cliente (`views.py:20-33`).</ResponseField>
+<ResponseField name="error" type="string">`"Cliente não encontrado."`, status 404, se o backend-miggo não devolver nenhum resultado.</ResponseField>
+
+**GET `/api/clients/<client_id>/variables/`**
+<ResponseField name="[]" type="array">Lista de `{key, value}` — respostas de variável já fornecidas antes por este cliente, excluindo chaves voláteis (`views.py:36-43`).</ResponseField>
+
+Qualquer falha de comunicação com o backend-miggo devolve `{"error": "<mensagem>"}` com o status HTTP repassado (ou `502` se o backend-miggo não informou status).
+
+</Accordion>
+
+<Accordion title="apps.posts — /api/posts/">
+
+Fonte: `backend/apps/posts/urls.py`, `backend/apps/posts/views.py`.
+
+| Método | Rota | View | Descrição |
+|---|---|---|---|
+| GET | `/api/posts/` | `PostListView` | Lista posts (cards) do backend-miggo. |
+| GET | `/api/posts/formats/` | `PostFormatListView` | Formatos de post disponíveis (id + nome). |
+| GET | `/api/posts/statuses/` | `PostStatusListView` | Status de post disponíveis (id + nome). |
+| GET | `/api/posts/<int:post_id>/` | `PostDetailView` | Detalhe de um post. |
+
+**GET `/api/posts/`**
+<ParamField path="client_id" type="integer">Filtra por cliente.</ParamField>
+<ParamField path="status" type="string">Nome do status (ex.: `pending`) — não o id.</ParamField>
+<ParamField path="start_date" type="string">Data inicial `YYYY-MM-DD`. Só filtra por data se `start_date` E `end_date` vierem preenchidos.</ParamField>
+<ParamField path="end_date" type="string">Data final `YYYY-MM-DD`.</ParamField>
+
+<ResponseField name="[]" type="array">Lista de posts (campos completos em <a href="/miggoai/frontend">Frontend → tipos</a>: `id`, `post_format`, `suggested_formats`, `subject`, `title`, `content`, `post_date`, `status`, etc.).</ResponseField>
+
+</Accordion>
+
+<Accordion title="apps.prompts — /api/prompts/">
+
+Fonte: `backend/apps/prompts/urls.py`, `backend/apps/prompts/views.py`.
+
+| Método | Rota | View | Descrição |
+|---|---|---|---|
+| GET | `/api/prompts/workflows/` | `WorkflowListView` | Lista workflows ativos (com config aninhada). |
+| GET | `/api/prompts/` | `PromptListCreateView` | Lista prompts (`?workflow=<key>`). |
+| POST | `/api/prompts/` | `PromptListCreateView` | Cria um novo `PromptDefinition`. |
+| GET | `/api/prompts/<int:pk>/` | `PromptDetailView` | Detalhe de um prompt. |
+| PUT | `/api/prompts/<int:pk>/` | `PromptDetailView` | Atualiza um prompt (versiona se `content` mudar). |
+| DELETE | `/api/prompts/<int:pk>/` | `PromptDetailView` | Remove um prompt. |
+| GET | `/api/prompts/<int:pk>/versions/` | `PromptVersionsView` | Histórico de versões do prompt. |
+| POST | `/api/prompts/<int:pk>/activate/` | `PromptActivateView` | Ativa o prompt. |
+| POST | `/api/prompts/<int:pk>/deactivate/` | `PromptDeactivateView` | Desativa o prompt. |
+| GET | `/api/prompts/<int:pk>/variables/` | `PromptVariableListCreateView` | Lista variáveis do prompt. |
+| POST | `/api/prompts/<int:pk>/variables/` | `PromptVariableListCreateView` | Cria variável no prompt. |
+| PUT | `/api/prompts/variables/<int:pk>/` | `PromptVariableDetailView` | Atualiza uma variável. |
+| DELETE | `/api/prompts/variables/<int:pk>/` | `PromptVariableDetailView` | Remove uma variável. |
+| POST | `/api/prompts/<int:pk>/detect-variables/` | `DetectVariablesView` | Compara `{{chaves}}` do conteúdo com as `PromptVariable` cadastradas. |
+| POST | `/api/prompts/<int:pk>/preview/` | `PromptPreviewView` | Renderiza o prompt com valores enviados — nunca chama IA. |
+
+**PUT `/api/prompts/<pk>/`**
+<ParamField path="content" type="string">Novo conteúdo do template. Se diferente do atual, cria uma `PromptVersion` com o conteúdo ANTERIOR antes de salvar (`views.py:49-67`).</ParamField>
+<ParamField path="change_note" type="string">Nota de mudança, salva na versão criada.</ParamField>
+<ResponseField name="current_version" type="integer">Incrementado automaticamente quando `content` muda.</ResponseField>
+
+**POST `/api/prompts/<pk>/detect-variables/`**
+<ResponseField name="new" type="array">Chaves `{{...}}` no template que ainda não têm `PromptVariable` cadastrada.</ResponseField>
+<ResponseField name="removed" type="array">`PromptVariable` cadastradas que não aparecem mais no template.</ResponseField>
+<ResponseField name="unchanged" type="array">Chaves presentes nos dois lados.</ResponseField>
+
+**POST `/api/prompts/<pk>/preview/`**
+<ParamField path="values" type="object">Dict `{chave: valor}` para renderizar o template.</ParamField>
+<ResponseField name="rendered" type="string">Template com as variáveis substituídas.</ResponseField>
+<ResponseField name="structural" type="string">Bloco de formato de saída (JSON schema instruction) que o sistema anexa na hora da geração real — não editável, mas exibido para contexto (`output_contract.instruction_for_slug`).</ResponseField>
+
+</Accordion>
+
+<Accordion title="apps.generations — /api/generations/">
+
+Fonte: `backend/apps/generations/urls.py`, `backend/apps/generations/views.py`.
+
+| Método | Rota | View | Descrição |
+|---|---|---|---|
+| POST | `/api/generations/test/` | `GenerationTestView` | Roda 1 workflow em ambiente TEST. |
+| POST | `/api/generations/production/` | `GenerationProductionView` | Roda 1 workflow em ambiente PRODUCTION. |
+| POST | `/api/generations/test/complete/` | `GenerationCompleteTestView` | Roda os 4 workflows encadeados em TEST. |
+| POST | `/api/generations/production/complete/` | `GenerationCompleteProductionView` | Roda os 4 workflows encadeados em PRODUCTION. |
+| GET | `/api/generations/context/` | `GenerationContextView` | Prévia do contexto (sem chamar IA). |
+| GET | `/api/generations/` | `GenerationListView` | Lista generations (filtros). |
+| GET | `/api/generations/<int:pk>/` | `GenerationDetailView` | Detalhe de uma generation. |
+| DELETE | `/api/generations/<int:pk>/` | `GenerationDetailView` | Remove uma generation (só ambiente TEST). |
+
+**POST `/api/generations/{test,production}/`**
+<ParamField path="workflow_key" type="string" required>`title`, `image`, `caption` ou `hashtags`.</ParamField>
+<ParamField path="client_id" type="integer" required>Id do cliente no backend-miggo.</ParamField>
+<ParamField path="post_id" type="integer" required>Id do post (card) no backend-miggo.</ParamField>
+<ParamField path="variables" type="object">Overrides de variáveis desta chamada (prioridade sobre contexto automático e respostas salvas).</ParamField>
+
+Status HTTP: `201` se `Generation.status == SUCCESS`, senão `502`.
+
+**POST `/api/generations/{test,production}/complete/`**
+<ParamField path="client_id" type="integer" required />
+<ParamField path="post_id" type="integer" required />
+<ParamField path="variables" type="object">Overrides aplicados ao primeiro passo (título); passos seguintes herdam formato/título automaticamente.</ParamField>
+
+<ResponseField name="[]" type="array">Lista de 1 a 4 objetos `Generation` (título, imagem, legenda, hashtags, na ordem — a cadeia para no primeiro que falhar).</ResponseField>
+
+Status HTTP: `201` se todas tiverem `status == SUCCESS`, senão `502`.
+
+**GET `/api/generations/context/`**
+<ParamField path="client_id" type="integer" required />
+<ParamField path="post_id" type="integer" required />
+<ResponseField name="..." type="object">Dict de contexto (ver <a href="/miggoai/workflows">Workflows → context_builder</a>) mesclado com respostas de variável já salvas do cliente. Nunca chama IA — usado para pré-preencher o formulário no frontend.</ResponseField>
+
+**GET `/api/generations/`**
+<ParamField path="environment" type="string">`TEST` ou `PRODUCTION`.</ParamField>
+<ParamField path="workflow" type="string">Chave do workflow (`title`, `image`, `caption`, `hashtags`).</ParamField>
+<ParamField path="client_id" type="integer" />
+<ParamField path="post_id" type="integer" />
+<ParamField path="status" type="string">`PENDING`, `RUNNING`, `SUCCESS`, `FAILED`.</ParamField>
+
+**Objeto `Generation` (serializer)** — `backend/apps/generations/serializers.py:6-24`:
+
+<ResponseField name="id" type="integer" />
+<ResponseField name="workflow" type="integer">FK do `Workflow`.</ResponseField>
+<ResponseField name="workflow_key" type="string">`title`/`image`/`caption`/`hashtags` (via `source='workflow.key'`).</ResponseField>
+<ResponseField name="prompt" type="integer">FK do `PromptDefinition` usado, ou `null`.</ResponseField>
+<ResponseField name="prompt_version_used" type="integer">Versão do prompt no momento da geração.</ResponseField>
+<ResponseField name="client_id" type="integer" />
+<ResponseField name="client_name" type="string">Snapshot do nome, capturado no momento da geração.</ResponseField>
+<ResponseField name="post_id" type="integer" />
+<ResponseField name="environment" type="string">`TEST` ou `PRODUCTION`.</ResponseField>
+<ResponseField name="status" type="string">`PENDING`, `RUNNING`, `SUCCESS`, `FAILED`.</ResponseField>
+<ResponseField name="stage" type="string">Estágio textual ao vivo, atualizado durante a execução (para polling).</ResponseField>
+<ResponseField name="variables_used" type="object">Overrides enviados nesta chamada.</ResponseField>
+<ResponseField name="result" type="object">Resultado do workflow (formato varia — ver <a href="/miggoai/workflows">Workflows</a>).</ResponseField>
+<ResponseField name="image_paths" type="array">Caminhos relativos das imagens salvas em `MEDIA_ROOT`.</ResponseField>
+<ResponseField name="image_urls" type="array">URLs absolutas montadas a partir de `image_paths` (`get_image_urls`, `serializers.py:19-24`).</ResponseField>
+<ResponseField name="error" type="string">Mensagem de erro, se `status == FAILED`.</ResponseField>
+<ResponseField name="created_by" type="integer">Id do usuário Django que disparou, ou `null`.</ResponseField>
+<ResponseField name="created_at" type="string" />
+<ResponseField name="finished_at" type="string" />
+
+**DELETE `/api/generations/<pk>/`** — só permitido para `environment == TEST` (`400` caso contrário). Remove também os arquivos de imagem em disco e a pasta da geração (`views.py:144-158`).
+
+</Accordion>
+
+</AccordionGroup>
+
+<Columns cols={2}>
+  <Card title="Modelo de dados" icon="database" href="/miggoai/modelo-de-dados">Models completos por app.</Card>
+  <Card title="Workflows" icon="diagram-project" href="/miggoai/workflows">O que cada geração faz internamente.</Card>
+</Columns>

@@ -1,0 +1,262 @@
+---
+title: "Agenda"
+description: "Gerencia sugestões de pauta enviadas por clientes ou admins, com validação de limites de plano e calendário editorial, e sincronização automática com o Post."
+icon: "calendar-plus"
+---
+
+## Responsabilidade
+
+O app `agenda` implementa o fluxo de **sugestões de pauta** (`AgendaSuggestion`): clientes (ou admins, em nome de um cliente) propõem um conteúdo — título, descrição, data sugerida, formato e mídias — que passa por um status de aprovação (`pending` → `approved`/`rejected`). Quando uma sugestão é aprovada, ela é sincronizada automaticamente com o modelo `Post` do app `post`, criando ou atualizando um post em modo rascunho no Kanban/Calendário (`app/agenda/views.py:186-218`).
+
+O app também é responsável por validar, antes da criação/edição de uma sugestão, se o cliente pode sugerir aquele formato naquele dia (respeitando as regras de `EditorialCalendar`) e se ainda está dentro da cota mensal definida no `PlanMeta` da assinatura ativa (`app/agenda/views.py:60-183`). Essa mesma lógica de validação é exposta como endpoint próprio (`/limits/`) para o frontend consultar previamente e orientar o usuário antes de enviar o formulário.
+
+É consumido pelo frontend do cliente (tela de sugestão de pauta) e pelo painel admin (aprovação/rejeição de sugestões). Ao criar uma sugestão como cliente, o app dispara notificação para os admins (`notify_admins`, do app `notification`); ao aprovar uma sugestão, notifica o cliente dono dela (`notify`).
+
+## Arquivos
+
+| Arquivo | Conteúdo |
+|---|---|
+| `app/agenda/models.py` | Models `AgendaSuggestion` e `AgendaSuggestionMedia`, e a função de upload path das mídias. |
+| `app/agenda/serializers.py` | `AgendaSuggestionSerializer` e `AgendaSuggestionMediaSerializer`. |
+| `app/agenda/views.py` | Views REST (list/create/detail/update/delete/limits) e as funções de regra de negócio (parsing de data, checagem de admin, validação de limites, sincronização com `Post`). |
+| `app/agenda/urls.py` | Rotas do app, incluídas sob `/api/v1/agenda/` em `core/urls.py:39`. |
+| `app/agenda/admin.py` | Registro de `AgendaSuggestion` no Django Admin. |
+| `app/agenda/apps.py` | Configuração do app (`AgendaConfig`, label `agenda`). |
+
+## Modelos
+
+### AgendaSuggestion
+`app/agenda/models.py:18-37`
+
+Representa uma sugestão de pauta de um cliente, podendo estar vinculada a um `Post` real depois de aprovada.
+
+| Campo | Tipo | Obrigatório | Default/Choices | Descrição |
+|---|---|---|---|---|
+| `client` | `ForeignKey(Client)` | sim | `on_delete=CASCADE`, `related_name='agenda_suggestions'` | Cliente dono da sugestão. |
+| `title` | `CharField(max_length=255)` | sim | — | Título da pauta sugerida. |
+| `description` | `TextField` | sim | — | Descrição/conteúdo da pauta. |
+| `suggested_date` | `DateField` | sim | — | Data sugerida para publicação. |
+| `post_format` | `ForeignKey(PostFormat)` | não | `null=True, blank=True`, `on_delete=SET_NULL`, `related_name='agenda_suggestions'` | Formato do post (do app `post`). |
+| `media` | `FileField` | não | `null=True, blank=True`, `upload_to=agenda_suggestion_upload_path` | Campo de mídia legado (único arquivo). |
+| `status` | `CharField(max_length=20)` | sim | choices `pending`/`approved`/`rejected`, default `pending` | Status de aprovação da sugestão. |
+| `post` | `ForeignKey('post.Post')` | não | `null=True, blank=True`, `on_delete=SET_NULL`, `related_name='agenda_suggestions'` | Post sincronizado após aprovação. |
+| `admin_notes` | `TextField` | não | `null=True, blank=True` | Observações internas do admin. |
+| `created_at` | `DateTimeField` | auto | `auto_now_add=True` | Data de criação. |
+| `updated_at` | `DateTimeField` | auto | `auto_now=True` | Data da última atualização. |
+
+**Relacionamentos**: pertence a um `Client` (`app.client`); referencia opcionalmente um `PostFormat` e um `Post` (`app.post`); tem muitos `AgendaSuggestionMedia` via `medias` (reverse do FK em `AgendaSuggestionMedia.suggestion`).
+
+**Meta** (`app/agenda/models.py:31-34`): `ordering = ['-created_at']`, `verbose_name = 'Agenda Suggestion'`, `verbose_name_plural = 'Agenda Suggestions'`.
+
+**Métodos**: `__str__` retorna `"{client.name} - {title}"` (`app/agenda/models.py:36-37`).
+
+### AgendaSuggestionMedia
+`app/agenda/models.py:40-49`
+
+Mídias adicionais anexadas a uma sugestão (além do campo legado `media`), permitindo múltiplos arquivos por sugestão.
+
+| Campo | Tipo | Obrigatório | Default/Choices | Descrição |
+|---|---|---|---|---|
+| `suggestion` | `ForeignKey(AgendaSuggestion)` | sim | `on_delete=CASCADE`, `related_name='medias'` | Sugestão à qual a mídia pertence. |
+| `file` | `FileField` | sim | `upload_to=agenda_suggestion_upload_path` | Arquivo de mídia. |
+| `created_at` | `DateTimeField` | auto | `auto_now_add=True` | Data de criação. |
+
+**Relacionamentos**: pertence a uma `AgendaSuggestion` (FK `suggestion`, acessível via `agenda_suggestion.medias`).
+
+**Meta** (`app/agenda/models.py:45-46`): `ordering = ['created_at']`.
+
+**Métodos**: `__str__` retorna `"Media for {suggestion_id}"` (`app/agenda/models.py:48-49`).
+
+### Função utilitária de upload
+`agenda_suggestion_upload_path(instance, filename)` (`app/agenda/models.py:7-8`) — gera o caminho de upload `agenda_suggestions/<hash>` usando `generate_hashed_filename` (de `utils.toolkit`), usado como `upload_to` tanto em `AgendaSuggestion.media` quanto em `AgendaSuggestionMedia.file`.
+
+## Endpoints
+
+Todas as rotas abaixo estão sob o prefixo `/api/v1/agenda/` (definido em `core/urls.py:39`) combinado com os paths de `app/agenda/urls.py`. Autenticação/permissão de todas as views vem do default global do projeto — `HasAPIKeyOrIsAuthenticated` (`core/settings.py:139-141`), já que nenhuma view do app sobrescreve `permission_classes`; autenticação via `JWTAuthentication` (`core/settings.py:136-138`).
+
+| Método | Rota completa | View | Permissão |
+|---|---|---|---|
+| GET | `/api/v1/agenda/list/` | `AgendaSuggestionListView` | `HasAPIKeyOrIsAuthenticated` (default) |
+| POST | `/api/v1/agenda/create/` | `AgendaSuggestionCreateView` | `HasAPIKeyOrIsAuthenticated` (default) |
+| GET | `/api/v1/agenda/detail/<int:pk>/` | `AgendaSuggestionDetailView` | `HasAPIKeyOrIsAuthenticated` (default) |
+| PUT/PATCH | `/api/v1/agenda/update/<int:pk>/` | `AgendaSuggestionUpdateView` | `HasAPIKeyOrIsAuthenticated` (default) |
+| DELETE | `/api/v1/agenda/delete/<int:pk>/` | `AgendaSuggestionDeleteView` | `HasAPIKeyOrIsAuthenticated` (default) |
+| GET | `/api/v1/agenda/limits/` | `AgendaSuggestionLimitsView` | `HasAPIKeyOrIsAuthenticated` (default) |
+
+<AccordionGroup>
+<Accordion title="GET /api/v1/agenda/list/ — Lista sugestões de pauta">
+`app/agenda/views.py:222-248`
+
+Retorna as sugestões visíveis para o usuário autenticado. Admins (`is_superuser`, `is_staff` ou `role == 'admin'`) veem todas as sugestões, com filtro opcional por `client_id`; clientes regulares veem apenas as suas próprias (resolvidas via `Client.objects.get(user=user)`). Usa `select_related('client', 'post_format')` + `prefetch_related('medias')` para evitar N+1.
+
+<ParamField query="client_id" type="integer">Filtra por cliente. Só tem efeito para usuários admin.</ParamField>
+
+<ResponseField name="[] (lista)" type="array">Lista de objetos `AgendaSuggestion` serializados (ver seção Serializers). Se o usuário não for admin e não tiver `Client` associado, retorna lista vazia.</ResponseField>
+</Accordion>
+
+<Accordion title="POST /api/v1/agenda/create/ — Cria sugestão de pauta">
+`app/agenda/views.py:252-321`
+
+Cria uma nova sugestão. Se o usuário não for admin, o `client` é resolvido automaticamente a partir do usuário autenticado (ignorando qualquer `client` enviado no payload) e a sugestão passa pela validação de limites (`_validate_suggestion_limits`) antes de ser persistida — admins pulam essa validação. A `suggested_date` recebida é normalizada via `_parse_suggested_date` antes da validação de limites.
+
+Após criar o registro, todos os arquivos enviados no campo `medias` (multipart) são salvos como `AgendaSuggestionMedia`. Em seguida chama `_sync_to_post`, que só tem efeito se `status == 'approved'`. Se o criador não for admin, notifica os admins (`notify_admins`) sobre a nova sugestão — falha na notificação é silenciada (`except: pass`).
+
+<ParamField body="title" type="string" required>Título da pauta.</ParamField>
+<ParamField body="description" type="string" required>Descrição da pauta.</ParamField>
+<ParamField body="suggested_date" type="string" required>Data sugerida. Aceita `YYYY-MM-DD`, ISO datetime, `DD/MM/YYYY`, `YYYY/MM/DD` ou `DD-MM-YYYY` (ver `_parse_suggested_date`).</ParamField>
+<ParamField body="post_format" type="integer">ID do `PostFormat`.</ParamField>
+<ParamField body="client" type="integer">ID do cliente. Ignorado/sobrescrito para usuários não-admin.</ParamField>
+<ParamField body="media" type="file">Arquivo de mídia único (campo legado).</ParamField>
+<ParamField body="medias" type="file[]">Lista de arquivos (multipart) — cada um vira um `AgendaSuggestionMedia`.</ParamField>
+<ParamField body="status" type="string">Um de `pending`, `approved`, `rejected`. Default `pending`.</ParamField>
+<ParamField body="admin_notes" type="string">Notas internas.</ParamField>
+
+<ResponseField name="201" type="object">Objeto `AgendaSuggestion` serializado criado.</ResponseField>
+<ResponseField name="400" type="object">`{"error": "Client record not found for this user."}` quando usuário não-admin sem `Client` associado; ou `{"error": <mensagem de limite excedido/formato não permitido>}` quando a validação de limites falha; ou erro padrão de validação do serializer.</ResponseField>
+</Accordion>
+
+<Accordion title="GET /api/v1/agenda/detail/<int:pk>/ — Detalhe de uma sugestão">
+`app/agenda/views.py:325-340`
+
+Retorna uma sugestão específica. Queryset restrito da mesma forma que a listagem (admin vê tudo, cliente vê só as próprias).
+
+<ResponseField name="200" type="object">Objeto `AgendaSuggestion` serializado.</ResponseField>
+<ResponseField name="404" type="object">Não encontrado (fora do queryset do usuário ou inexistente).</ResponseField>
+</Accordion>
+
+<Accordion title="PUT/PATCH /api/v1/agenda/update/<int:pk>/ — Atualiza sugestão">
+`app/agenda/views.py:344-395`
+
+Atualiza campos da sugestão. Após o update padrão do DRF, processa uploads adicionais em `medias` (multipart) e remoções via `delete_medias` (lista de IDs de `AgendaSuggestionMedia` a excluir — funciona tanto vindo de `QueryDict` multipart quanto de JSON puro). Em seguida chama `_sync_to_post`. Se o `status` mudou para `approved` (comparado ao status anterior à atualização), notifica o cliente dono via `notify` — falha na notificação é logada com `print`, não interrompe a resposta.
+
+<ParamField body="delete_medias" type="integer[]">IDs de `AgendaSuggestionMedia` a excluir desta sugestão.</ParamField>
+<ParamField body="medias" type="file[]">Novos arquivos a anexar.</ParamField>
+<ParamField body="status" type="string">Novo status (`pending`/`approved`/`rejected`). Alterar para `approved` dispara sincronização com `Post` e notificação ao cliente.</ParamField>
+<ParamField body="title" type="string">Novo título.</ParamField>
+<ParamField body="description" type="string">Nova descrição.</ParamField>
+<ParamField body="suggested_date" type="string">Nova data sugerida.</ParamField>
+<ParamField body="post_format" type="integer">Novo formato.</ParamField>
+<ParamField body="admin_notes" type="string">Novas notas internas.</ParamField>
+
+<ResponseField name="200" type="object">Objeto `AgendaSuggestion` serializado atualizado.</ResponseField>
+<ResponseField name="400" type="object">Erro de validação do serializer.</ResponseField>
+<ResponseField name="404" type="object">Fora do queryset do usuário.</ResponseField>
+
+<Note>Esta view **não** chama `_validate_suggestion_limits` — a validação de limites só ocorre na criação (`AgendaSuggestionCreateView`).</Note>
+</Accordion>
+
+<Accordion title="DELETE /api/v1/agenda/delete/<int:pk>/ — Remove sugestão">
+`app/agenda/views.py:399-414`
+
+Exclui a sugestão. Queryset restrito por permissão (admin vs. dono).
+
+<ResponseField name="204" type="object">Sem conteúdo, exclusão bem-sucedida.</ResponseField>
+<ResponseField name="404" type="object">Fora do queryset do usuário.</ResponseField>
+</Accordion>
+
+<Accordion title="GET /api/v1/agenda/limits/ — Consulta limites de sugestão">
+`app/agenda/views.py:417-516`
+
+Retorna, sem criar nada, se o cliente pode sugerir aquele formato naquela data e quanto da cota mensal já foi usado. Para usuários admin, `is_valid` é sempre `True` e `error_message` sempre `None` (a checagem de calendário/limite é pulada, espelhando o comportamento de `AgendaSuggestionCreateView` para admins).
+
+<ParamField query="client_id" type="integer" required>ID do cliente.</ParamField>
+<ParamField query="post_format" type="integer" required>ID do `PostFormat`.</ParamField>
+<ParamField query="suggested_date" type="string" required>Data sugerida (mesmos formatos aceitos por `_parse_suggested_date`).</ParamField>
+<ParamField query="exclude_suggestion_id" type="integer">ID de sugestão a excluir da contagem (usado ao editar uma sugestão existente, para ela não se autobloquear).</ParamField>
+
+<ResponseField name="is_valid" type="boolean">Se a combinação formato/data está dentro do calendário editorial e da cota do plano.</ResponseField>
+<ResponseField name="error_message" type="string">Mensagem explicando o motivo de `is_valid=false`, ou `null`.</ResponseField>
+<ResponseField name="total_used" type="integer">Total de posts + sugestões (não rejeitadas) desse formato no mês da data sugerida.</ResponseField>
+<ResponseField name="max_allowed" type="integer">Limite mensal do plano para o formato, ou `null` se não houver `PlanMeta` correspondente ou assinatura ativa.</ResponseField>
+<ResponseField name="remaining" type="integer">`max_allowed - total_used`, ou `null` se `max_allowed` for `null`.</ResponseField>
+
+<ResponseField name="400" type="object">`{"error": "client_id, post_format e suggested_date são obrigatórios."}` quando algum parâmetro obrigatório falta.</ResponseField>
+<ResponseField name="404" type="object">`{"error": "Cliente ou formato não encontrado."}`.</ResponseField>
+<ResponseField name="500" type="object">`{"error": "Erro ao calcular limites: <mensagem>"}` em caso de exceção no cálculo.</ResponseField>
+</Accordion>
+</AccordionGroup>
+
+## Serializers
+
+### AgendaSuggestionSerializer
+`app/agenda/serializers.py:20-77`
+
+Campos expostos: `id`, `client`, `client_name`, `title`, `description`, `suggested_date`, `post_format`, `post_format_name`, `media`, `media_url`, `media_urls`, `medias`, `status`, `admin_notes`, `created_at`, `updated_at`.
+
+Somente-leitura: `id`, `created_at`, `updated_at`, `media_url`, `media_urls`, `medias` (declarado em `read_only_fields` e/ou como `SerializerMethodField`).
+
+Campos calculados:
+- `client_name` — nome do cliente (`obj.client.name` ou `None`).
+- `post_format_name` — nome do formato (`obj.post_format.name` ou `None`).
+- `media_url` — URL absoluta do campo `media` legado, construída via `request.build_absolute_uri`; `None` se não houver `request` no contexto ou arquivo.
+- `media_urls` — lista achatada e sem duplicatas de todas as URLs de mídia (campo legado `media` + todas as `medias`), em URLs absolutas. Comentário no código marca este como **o campo canônico para o front** consumir (`app/agenda/serializers.py:62-63`).
+- `medias` — lista aninhada serializada via `AgendaSuggestionMediaSerializer`.
+
+Não há `validate_*` customizado nem `create`/`update` sobrescritos neste serializer — a criação/atualização de `medias` e a lógica de negócio ficam nas views (`AgendaSuggestionCreateView.create`, `AgendaSuggestionUpdateView.update`), não no serializer.
+
+### AgendaSuggestionMediaSerializer
+`app/agenda/serializers.py:5-17`
+
+Campos expostos: `id`, `file`, `file_url`, `created_at`. Somente-leitura: `id`, `created_at`, `file_url`.
+
+Campo calculado: `file_url` — URL absoluta do arquivo (via `request.build_absolute_uri`), `None` se não houver `request` no contexto ou arquivo.
+
+## Regras de negócio e funções
+
+### `_parse_suggested_date(value)`
+`app/agenda/views.py:17-40`
+
+Parâmetro: `value` (date, datetime ou string). Retorno: `datetime` (meia-noite do dia). Interpreta a data sugerida vinda do front em múltiplos formatos: objetos `date`/`datetime` diretamente; strings `YYYY-MM-DD` ou ISO datetime (via `parse_date`/`parse_datetime` do Django); e como fallback, tenta os formatos `%Y-%m-%d`, `%d/%m/%Y`, `%Y/%m/%d`, `%d-%m-%Y`. Levanta `ValueError` se nenhum formato for reconhecido.
+
+### `_is_admin(user)`
+`app/agenda/views.py:43-47`
+
+Parâmetro: `user`. Retorno: `bool`. Retorna `True` apenas se o usuário está autenticado (`is_authenticated`) **e** é `is_superuser`, `is_staff`, ou tem `role == 'admin'`.
+
+### `_get_client_for_user(user)`
+`app/agenda/views.py:50-57`
+
+Parâmetro: `user`. Retorno: `Client` ou `None`. Busca `Client.objects.get(user=user)`; retorna `None` se o usuário não está autenticado ou não há `Client` correspondente (`Client.DoesNotExist`).
+
+### `_validate_suggestion_limits(client, post_format, suggested_date, exclude_suggestion_id=None)`
+`app/agenda/views.py:60-183`
+
+Parâmetros: `client` (`Client`), `post_format` (`PostFormat`), `suggested_date` (aceito por `_parse_suggested_date`), `exclude_suggestion_id` (opcional, para excluir a própria sugestão da contagem ao editar). Retorno: tupla `(is_valid: bool, error_message: str | None)`.
+
+Efetua duas checagens, na ordem:
+1. **Calendário editorial** — se `post_format` for `None`, retorna `(True, None)` direto (sem checagem). Caso contrário, mapeia o dia da semana da `suggested_date` e busca regras ativas de `EditorialCalendar` do cliente para aquele dia (`week_day`, `active=True`). Se não houver nenhuma regra cadastrada para o cliente naquele dia, o formato é permitido por padrão. Se houver regras mas nenhuma incluir o `post_format` em `formats`, retorna erro listando (em pt-BR) os dias da semana em que aquele formato é permitido.
+2. **Limite do plano** — busca a `Subscription` ativa (`status='ACTIVE'`) do cliente; se não houver, permite (fail-open, comentário explícito "trial ou outro caso"). Monta a chave `max_{format_slug}_month` (slug = nome do formato em minúsculo, espaços trocados por `_`, `+` removido) e busca o valor correspondente em `PlanMeta`. Se existir um limite, conta no mês da `suggested_date`: sugestões (`AgendaSuggestion`) não rejeitadas daquele cliente/formato/mês, **mais** posts (`Post`) daquele cliente/formato/mês que não vieram de nenhuma sugestão (`agenda_suggestions__isnull=True`) e não estão com status `canceled` — evitando dupla contagem de um post já originado de uma sugestão sincronizada. Se `total_count >= max_allowed`, retorna erro.
+
+Qualquer exceção durante a checagem de limite do plano é capturada, logada via `print`, e a função segue em modo fail-safe (permite a criação) — comportamento explícito no código (`app/agenda/views.py:178-181`).
+
+### `_sync_to_post(agenda_instance)`
+`app/agenda/views.py:186-218`
+
+Parâmetro: `agenda_instance` (`AgendaSuggestion`). Sem retorno relevante (efeito colateral). Não faz nada se `agenda_instance.status != 'approved'`. Caso `approved`: busca (ou usa fallback ao primeiro `PostStatus` existente) o `PostStatus` de nome `'draft'`. Se a sugestão ainda não tem `post` vinculado, cria um novo `Post` (com `subject`, `content`, `post_date`, `post_time='09:00:00'` fixo, `status=draft_status`, `post_format`) e associa via `agenda_instance.post` + `save(update_fields=['post'])`. Se já existe `post`, atualiza `subject`, `content`, `post_date` e `post_format` do post existente e salva.
+
+## Erros comuns / pontos de atenção
+
+- **Validação de limites só na criação.** `AgendaSuggestionUpdateView.update` não chama `_validate_suggestion_limits` — editar `post_format`/`suggested_date` de uma sugestão existente não revalida cota nem calendário editorial (`app/agenda/views.py:356-390`).
+- **Fail-open em múltiplos pontos.** Sem `Subscription` ativa, a checagem de limite é pulada (`app/agenda/views.py:128-129`); qualquer exceção durante o cálculo de limite também é engolida e permite a criação (`app/agenda/views.py:178-181`). Ou seja, falhas na integração com `Subscription`/`PlanMeta` não bloqueiam o cliente.
+- **Notificações silenciosas.** Falha ao notificar admins na criação é totalmente silenciada (`except: pass`, `app/agenda/views.py:313-314`); falha ao notificar o cliente na aprovação apenas loga via `print` (`app/agenda/views.py:387-388`) — nenhuma das duas aparece na resposta HTTP.
+- **`client` no payload de criação é ignorado para não-admins.** Mesmo que o front envie `client` no `POST /create/`, ele é sobrescrito pelo `Client` do usuário autenticado (`app/agenda/views.py:266`) — só admins podem criar sugestão em nome de outro cliente.
+- **`post_time` fixo em `_sync_to_post`.** Todo post criado a partir de uma sugestão aprovada nasce com horário `09:00:00`, independente do horário desejado (`app/agenda/views.py:205`).
+- **Campo `media` é legado; use `media_urls`.** O comentário do próprio serializer indica que `media_urls` é "o campo canônico para o front" (`app/agenda/serializers.py:62-63`), unificando `media` + `medias` — `media`/`media_url` seguem existindo por retrocompatibilidade.
+- **`status='canceled'` depende do nome do `PostStatus`.** A exclusão de posts cancelados na contagem de limite usa `status__name='canceled'` (string fixa) — depende do app `post` manter esse nome de status.
+
+## Relacionados
+
+<Columns cols={2}>
+<Card title="Post" icon="file-text" href="/backend/apps/post">
+Model `Post`/`PostFormat`/`PostStatus`, destino da sincronização das sugestões aprovadas.
+</Card>
+<Card title="Editorial Calendar" icon="calendar" href="/backend/apps/editorial-calendar">
+Regras de dias/formatos permitidos usadas na validação de limites.
+</Card>
+<Card title="Client" icon="users" href="/backend/apps/client">
+Model `Client`, dono das sugestões de pauta.
+</Card>
+<Card title="Subscription" icon="credit-card" href="/backend/apps/subscription">
+`Subscription`/`PlanPrice`/`PlanMeta`, origem dos limites mensais por formato.
+</Card>
+</Columns>

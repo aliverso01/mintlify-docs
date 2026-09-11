@@ -1,0 +1,217 @@
+---
+title: "Instalação"
+description: "Como preparar o ambiente local do backend-miggo (Django) do zero até o runserver"
+icon: "download"
+---
+
+O `backend-miggo` é a API principal da plataforma Miggo, escrita em Django. Esta página cobre a preparação de um ambiente local funcional.
+
+<Note>
+  O ambiente de trabalho oficial deste monorepo usa a venv em `backend-miggo/venv/Scripts/python.exe` (Windows), criada com **Python 3.14**. Já a imagem Docker de produção (`dockerfile:1`) usa `python:3.11-slim`. As duas convivem hoje no projeto — não há um único Python "oficial" documentado no código; use 3.11+ para evitar surpresas de compatibilidade com produção.
+</Note>
+
+## Pré-requisitos
+
+- **Python** 3.11+ (venv local do projeto está em 3.14; a imagem Docker usa 3.11).
+- **PostgreSQL** — `docker-compose.yml:6` sobe `postgres:16`. `DATABASES.default.ENGINE` em `core/settings.py:206` é `django.db.backends.postgresql` (via `psycopg2-binary`, `requirements.txt`).
+- **pip** e capacidade de compilar/instalar `cryptography`, `pillow`, `psycopg2-binary` (dependências nativas).
+- **Playwright + Chromium** — usado pela raspagem de sites como último recurso quando o site recusa GET simples (`dockerfile:11-13`). Rode `playwright install --with-deps chromium` depois de instalar as dependências Python.
+- Acesso às credenciais reais (Stripe, Asaas, OpenAI, ManyChat, Google OAuth, AWS S3, Jira, Apify, HtmlToCssImage) — pergunte à equipe; nenhuma é gerada localmente.
+
+<Warning>
+  `requirements.txt` está salvo em **UTF-16 LE** (confirmado por inspeção binária), não UTF-8. A maioria dos `pip` modernos lida bem com isso, mas se `pip install -r requirements.txt` falhar com erro de parsing, converta o arquivo para UTF-8 antes (`iconv -f UTF-16LE -t UTF-8`) — não é um problema do seu ambiente.
+</Warning>
+
+<Steps>
+  <Step title="Clonar o repositório">
+    ```bash
+    git clone <url-do-repo> backend-miggo
+    cd backend-miggo
+    ```
+  </Step>
+
+  <Step title="Criar e ativar a venv">
+    ```bash
+    python -m venv venv
+    # Windows
+    venv\Scripts\activate
+    # Linux/macOS
+    source venv/bin/activate
+    ```
+  </Step>
+
+  <Step title="Instalar dependências">
+    ```bash
+    pip install -r requirements.txt
+    playwright install --with-deps chromium
+    ```
+    Principais libs (`requirements.txt`): `Django==5.2.7`, `djangorestframework==3.16.0`, `djangorestframework_simplejwt==5.5.1`, `django-cors-headers==4.7.0`, `drf-spectacular==0.29.0`, `django-crontab==0.7.1`, `psycopg2-binary==2.9.11`, `stripe==14.2.0`, `boto3==1.38.35`, `django-storages[s3]==1.14.6`, `google-auth==2.35.0`, `gunicorn==25.1.0`, `whitenoise==6.11.0`, `openai==2.8.1`, `yt-dlp`, `ffmpeg-python`, `playwright==1.61.0`.
+
+    <Note>
+      O docstring de `core/settings.py:4` fala em Django 6.0, mas a versão instalada real via `requirements.txt` é `Django==5.2.7`. Trate o comentário do arquivo como desatualizado.
+    </Note>
+  </Step>
+
+  <Step title="Subir o PostgreSQL">
+    Use o Postgres do `docker-compose.yml` (`postgres:16`) ou uma instância local. Crie o banco e o usuário que serão referenciados nas variáveis `DB_*` do passo seguinte.
+  </Step>
+
+  <Step title="Criar o arquivo .env na raiz do repo">
+    Todas as variáveis abaixo são lidas via `python-decouple` (`from decouple import config`, `core/settings.py:16`). Nunca copie valores reais para fora do `.env` local — use `<valor>` como placeholder em qualquer documentação ou PR.
+
+    #### Obrigatórias (sem `default=` no código — o processo falha ao subir sem elas)
+
+    | Variável | Tipo | Para que serve |
+    |---|---|---|
+    | `DEBUG` | bool | Liga/desliga modo debug Django (`core/settings.py:34`). Sem ela o `manage.py` nem sobe. |
+    | `DB_NAME` | string | Nome do banco Postgres (`core/settings.py:207`) |
+    | `DB_USER` | string | Usuário do Postgres (`core/settings.py:208`) |
+    | `DB_PASSWORD` | string | Senha do Postgres (`core/settings.py:209`) |
+    | `DB_HOST` | string | Host do Postgres (`core/settings.py:210`) |
+    | `DB_PORT` | string | Porta do Postgres (`core/settings.py:211`) |
+    | `EMAIL_HOST` | string | Servidor SMTP (`core/settings.py:218`) |
+    | `EMAIL_PORT` | int | Porta SMTP (`core/settings.py:219`) |
+    | `EMAIL_HOST_USER` | string | Usuário SMTP (`core/settings.py:222`) |
+    | `EMAIL_HOST_PASSWORD` | string | Senha SMTP (`core/settings.py:223`) |
+    | `MIGGO_API_KEY` | string | Chave de API interna do backend (`core/settings.py:311`), usada pelo esquema `rest_framework_api_key` para chamadas máquina-a-máquina |
+
+    #### Com valor padrão (podem ficar de fora do `.env` em dev)
+
+    | Variável | Default | Para que serve |
+    |---|---|---|
+    | `SECRET_KEY` | chave insegura embutida | `core/settings.py:31` — troque em produção |
+    | `ALLOWED_HOSTS` | `[]` (CSV) | `core/settings.py:36` |
+    | `CORS_ALLOWED_ORIGINS` | `*` (CSV) | `core/settings.py:39` |
+    | `CSRF_TRUSTED_ORIGINS` | `http://localhost:5173` (CSV) | `core/settings.py:49` |
+    | `SECURE_SSL_REDIRECT` | `True` (só quando `DEBUG=False`) | `core/settings.py:71` |
+    | `CSRF_COOKIE_DOMAIN` | `None` | `core/settings.py:76` |
+    | `USE_S3` | `False` | `core/settings.py:264` — liga storage S3 (senão usa disco local) |
+    | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_STORAGE_BUCKET_NAME` | — (obrigatórias só se `USE_S3=True`) | `core/settings.py:267-269` |
+    | `AWS_S3_REGION_NAME` | `us-east-1` | `core/settings.py:270` |
+    | `AWS_S3_CUSTOM_DOMAIN` | `''` | `core/settings.py:271` |
+    | `AWS_S3_PROJECT_FOLDER` | `miggo-backend` | `core/settings.py:276` |
+    | `EMAIL_USE_TLS` / `EMAIL_USE_SSL` | `False` | `core/settings.py:220-221` |
+    | `FILE_UPLOAD_MAX_MEMORY_SIZE` / `DATA_UPLOAD_MAX_MEMORY_SIZE` | `104857600` (100MB) | `core/settings.py:307-308` |
+    | `MIGGO_API_KEY`* | — | ver acima |
+    | `STRIPE_API_KEY` | `''` | `core/settings.py:315` — chave de teste da Stripe |
+    | `STRIPE_PROD_API_KEY` | `''` | `app/subscription/stripe_gateway.py:78` — chave de produção Stripe |
+    | `STRIPE_WEBHOOK_SECRET` | `''` | `core/settings.py:319` — valida assinatura do webhook (`stripe listen` em dev) |
+    | `STRIPE_TRIAL_DAYS` | `7` | `core/settings.py:322` |
+    | `BILLING_GRACE_DAYS` | `5` | `core/settings.py:325` — carência antes de cortar acesso |
+    | `ASAAS_API_KEY` | `''` | `app/subscription/asaas_gateway.py:61` — gateway alternativo de cobrança |
+    | `ASAAS_BASE_URL` | `https://api.asaas.com/v3` | `app/subscription/asaas_gateway.py:53` |
+    | `OPENAI_API_KEY` | `''` | `core/settings.py:326` — geração de texto/imagem (brandkit, onboarding, media) |
+    | `OPENAI_API_URL` | `https://api.openai.com/v1/` | `app/brandkit/views.py:50` |
+    | `OPENAI_MODEL` | `gpt-4o-mini` | `app/onboarding/services.py:909` |
+    | `OPENAI_IMAGE_MODEL` | `gpt-image-2` | `app/onboarding/services.py:3950` |
+    | `MEDIA_ANALYSIS_MODEL` | `gpt-4o-mini` | `app/media/analysis.py:114` |
+    | `APIFY_TOKEN` | `''` | `app/client/instagram.py:64` — raspagem de Instagram |
+    | `FRONTEND_URL` | `https://app.miggomkt.com.br` | `core/settings.py:331` — base para links de e-mail/redirects |
+    | `BACKEND_URL` | `''` | `core/settings.py:341` — base para links de mídia via WhatsApp |
+    | `TRIAL_MEDIA_MAX_FILES` | `5` | `core/settings.py:347` |
+    | `UPLOAD_MAX_IMAGE_SIZE_MB` | `10` | `core/settings.py:348` |
+    | `UPLOAD_MAX_VIDEO_SIZE_MB` | `50` | `core/settings.py:349` |
+    | `JIRA_BASE_URL` / `JIRA_EMAIL` / `JIRA_API_TOKEN` | `''` | `core/settings.py:352-354` — integração de suporte → issue (no-op sem credenciais) |
+    | `JIRA_PROJECT_KEY` | `MIG` | `core/settings.py:355` |
+    | `JIRA_ISSUE_TYPE` | `Suporte` | `core/settings.py:356` |
+    | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | `''` | `core/settings.py:359-360` — login social Google |
+    | `GOOGLE_AUTH_CLOCK_SKEW` | `10` | `core/settings.py:364` — tolerância de relógio do ID token |
+    | `LOG_LEVEL` | `INFO` | `core/settings.py:404` |
+    | `DJANGO_LOG_LEVEL` | `INFO` | `core/settings.py:443` |
+    | `LOG_FILE` | `''` | `core/settings.py:405` — espelha logs em arquivo além do terminal |
+    | `MANYCHAT_API_KEY` | — (obrigatória nos pontos de uso) | `app/post/services.py:111`, `app/conversation/services.py:31` — WhatsApp via ManyChat |
+    | `MANYCHAT_WEBHOOK_TOKEN` | `''` | `app/conversation/webhooks.py:27` — valida webhook recebido do ManyChat |
+    | `CONTENT_APPROVATION_FLOW_ID` | — | `app/post/services.py:128` — flow do ManyChat para aprovação de conteúdo |
+    | `GRID_APPROVAL_FLOW_ID` | `content20260806213736_542304` | `app/onboarding/cron.py:48` |
+    | `GRID_APPROVAL_REMINDER_INTERVAL_HOURS` | `24` | `app/onboarding/cron.py:49-51` |
+    | `GRID_APPROVAL_MAX_REMINDERS` | `3` | `app/onboarding/cron.py:53` |
+    | `DYNAMIC_FLOW_STARTER_FLOW_ID` | `''` | `app/conversation/engine.py:58` — flow casca do Dynamic Block |
+    | `LATE_API_KEY` | — | `app/post/zernio.py:27`, `app/post/views.py` — integração GetLate/Zernio (publicação em redes) |
+    | `WHATSAPP_SEND_FLOW_DELAY` | `2.0` | `app/onboarding/services.py:1451` |
+    | `WHATSAPP_FLOW_RETRY_ATTEMPTS` | `8` | `app/onboarding/services.py:1502` |
+    | `WHATSAPP_FLOW_RETRY_BACKOFF` | `10.0` | `app/onboarding/services.py:1503` |
+    | `ONBOARDING_IG_MIN_POSTS` | `3` | `app/onboarding/services.py:1606` |
+    | `ONBOARDING_WEBSITE_BUDGET` | `180` | `app/onboarding/services.py:2216` |
+    | `ONBOARDING_ANALYSIS_STALL` | `900` | `app/onboarding/services.py:2218` |
+    | `HTMLTOCSSIMAGE_ID` / `HTMLTOCSSIMAGE_API_KEY` | — | `app/onboarding/services.py:2442` — geração de imagem a partir de HTML (grid) |
+    | `MIGGOAI_API_URL` | URL padrão interna | `app/onboarding/miggoai.py:56` — endpoint do serviço `miggoai` |
+    | `MIGGOAI_USERNAME` / `MIGGOAI_PASSWORD` | — | `app/onboarding/miggoai.py:69-70` — autenticação de serviço com o `miggoai` |
+
+    Monte o `.env` na raiz de `backend-miggo/` com essas chaves (nomes reais, valores fictícios):
+    ```bash
+    DEBUG=True
+    DB_NAME=<nome_do_banco>
+    DB_USER=<usuario>
+    DB_PASSWORD=<senha>
+    DB_HOST=localhost
+    DB_PORT=5432
+    EMAIL_HOST=<smtp_host>
+    EMAIL_PORT=587
+    EMAIL_HOST_USER=<usuario_smtp>
+    EMAIL_HOST_PASSWORD=<senha_smtp>
+    MIGGO_API_KEY=<chave_interna>
+    # ... demais variáveis conforme necessidade do fluxo que for testar
+    ```
+  </Step>
+
+  <Step title="Rodar as migrations">
+    ```bash
+    python manage.py makemigrations
+    python manage.py migrate
+    ```
+  </Step>
+
+  <Step title="Criar um superusuário">
+    ```bash
+    python manage.py createsuperuser
+    ```
+    `AUTH_USER_MODEL` é `account.CustomUser` (`core/settings.py:302`) — o comando pede `email`, `name` (campo obrigatório extra) e senha.
+  </Step>
+
+  <Step title="Popular dados iniciais (opcional, recomendado)">
+    ```bash
+    python testes/populate_all.py
+    ```
+    Script solto (não é management command) documentado no `README.md` — popula os dados básicos para o projeto funcionar (formatos, status, planos etc.).
+  </Step>
+
+  <Step title="Subir o servidor">
+    ```bash
+    python manage.py runserver
+    ```
+    A API fica em `http://localhost:8000`. O frontend em dev aponta por padrão para origens CSRF em `http://localhost:5173` (`core/settings.py:49`).
+  </Step>
+</Steps>
+
+## Rodando com Docker
+
+O `dockerfile` builda a imagem de produção (`python:3.11-slim`, instala Playwright/Chromium, roda `collectstatic` e sobe via `gunicorn core.wsgi:application`). O `docker-compose.yml` sobe:
+
+- `miggo-db`: Postgres 16 (senha/usuário fixos no compose — troque para segredo real em qualquer ambiente compartilhado).
+- `miggo-api`: build local do `dockerfile`, exposto atrás de Traefik com roteamento por `Host(`api.miggomkt.com.br`)` — voltado a produção, não a uso local direto.
+
+Para desenvolvimento local, prefira o fluxo de venv acima; o compose está desenhado para o servidor de produção (labels do Traefik, domínio fixo).
+
+## Rotinas agendadas (cron) em desenvolvimento
+
+`django-crontab` não funciona no Windows. Em dev, rode `python run_cron.py` para simular os jobs em laço (com intervalos bem mais curtos que produção — cuidado ao avaliar efeitos de cobrança). Para testar um job isolado, prefira `python manage.py <comando>`.
+
+## Problemas comuns
+
+<AccordionGroup>
+  <Accordion title="manage.py test não cria o banco de teste">
+    O usuário do Postgres local pode não ter permissão de `CREATEDB`. Nesse caso, `manage.py test` falha ao criar o banco de teste. Valide as alterações com `python manage.py check` e, quando possível, um import isolado do módulo alterado — não fique bloqueado tentando destravar a permissão do Postgres.
+  </Accordion>
+  <Accordion title="DEBUG sem valor derruba o processo">
+    `DEBUG = config('DEBUG', cast=bool)` (`core/settings.py:34`) não tem `default=`. Sem `DEBUG` no `.env`, o Django falha na inicialização — é a variável mais fácil de esquecer.
+  </Accordion>
+  <Accordion title="requirements.txt em UTF-16">
+    O arquivo está salvo em UTF-16 LE com CRLF. Se seu editor ou `pip` reclamar de caracteres inválidos, reabra/salve o arquivo como UTF-8 antes de instalar.
+  </Accordion>
+  <Accordion title="Login com Google falhando com 'Token used too early'">
+    Ajuste via `GOOGLE_AUTH_CLOCK_SKEW` (`core/settings.py:364`) — o padrão do `google-auth` é zero de tolerância a diferença de relógio.
+  </Accordion>
+  <Accordion title="Playwright sem Chromium instalado">
+    A raspagem de sites do onboarding cai para Playwright só quando o GET simples recebe 403 do site do cliente. Sem `playwright install --with-deps chromium`, esse fallback falha com "navegador de leitura não está disponível".
+  </Accordion>
+</AccordionGroup>

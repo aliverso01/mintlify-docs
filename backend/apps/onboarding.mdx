@@ -1,0 +1,1084 @@
+---
+title: "Onboarding"
+description: "Fluxo guiado de entrada do cliente: cadastro, verificação por WhatsApp, análise da marca, estratégia, calendário editorial e estilo visual."
+icon: "rocket"
+---
+
+## Responsabilidade
+
+O app `app/onboarding` conduz o cliente do cadastro até o primeiro conteúdo produzido. Ele mantém **uma sessão por cliente** (`OnboardingSession`, 1-para-1 com `Client`) que guarda a etapa atual, as fontes de dados da marca, o status das tarefas assíncronas (análise e estratégia) e um `JSONField` livre (`data`) onde vivem revisão do briefing, itens de estratégia, calendário proposto, estado do grid e o primeiro conteúdo. O app substitui o fluxo legado baseado em `Client.onboarding_step`, mas ainda o atualiza por compatibilidade com o painel admin antigo (`app/onboarding/views.py:2371`).
+
+Ele é consumido por quatro frentes: (1) o **frontend** do cliente, que retoma o fluxo por `GET /state/` e navega pelas etapas (`app/onboarding/views.py:373`); (2) **crons do Dokploy**, através de dois management commands — geração dos grids pendentes e cobrança de aprovação via ManyChat; (3) **ManyChat/WhatsApp**, para envio do código de verificação e dos lembretes (`app/onboarding/services.py:1413`, `app/onboarding/cron.py:43`); e (4) o **MiggoAI**, serviço de IA em repositório separado, que é quem realmente produz o primeiro post — este backend apenas cria os cards, habilita o cliente e dispara o job (`app/onboarding/miggoai.py:1`, `app/onboarding/services.py:4535`). Outras integrações externas usadas diretamente: OpenAI (briefing, estratégia, calendário e imagem do grid), Apify (raspagem do Instagram, via `app.client.instagram`) e HTML/CSS to Image (capas de destaque e banner do LinkedIn).
+
+<Note>
+O app **não tem** `serializers.py`. A serialização é feita à mão nas views (`_serialize_session`, `app/onboarding/views.py:84`) e, quando precisa de persistência complexa, reusa serializers de outros apps (`CustomUserSerializer`, `MediaSerializer`).
+</Note>
+
+## Arquivos
+
+| Arquivo | O que contém |
+| --- | --- |
+| `app/onboarding/models.py` | `OnboardingSession` e as listas de constantes do fluxo (`ONBOARDING_STEPS`, `BRAND_SOURCES`, `ACTIVE_BRAND_SOURCES`, `TASK_STATUS`, `LEGACY_PLAN_CHOICES`). |
+| `app/onboarding/views.py` | As 40 views `APIView` do fluxo, os helpers de sessão (`_get_session`, `_set_step`, `_serialize_session`) e os mapas de campo da tela de revisão (`REVIEW_META_MAP`, `REVIEW_LIST_META_MAP`). |
+| `app/onboarding/urls.py` | `urlpatterns` do app (incluído em `core/urls.py:41` sob `api/v1/onboarding/`). |
+| `app/onboarding/services.py` | Toda a regra de negócio: validação de fontes, análise da marca, geração de estratégia/calendário/grid, WhatsApp/ManyChat, pendências do onboarding, handoff para o MiggoAI. |
+| `app/onboarding/miggoai.py` | Cliente HTTP da API do MiggoAI (token, sync/enable de cliente, disparo de geração e regeração, consulta de job). |
+| `app/onboarding/cron.py` | `send_grid_approval_reminders()` — cobrança da aprovação do grid via flow do ManyChat. |
+| `app/onboarding/admin.py` | `OnboardingSessionAdmin` (listagem, filtros e busca da sessão). |
+| `app/onboarding/apps.py` | `OnboardingConfig` (`name = 'app.onboarding'`). |
+| `app/onboarding/management/commands/generate_pending_grids.py` | Command que chama `services.generate_pending_grids(limit=...)`. |
+| `app/onboarding/management/commands/send_grid_approval_reminders.py` | Command que chama `cron.send_grid_approval_reminders()`. |
+| `app/onboarding/tests.py` | Suíte de testes do app (não documentada aqui). |
+
+## Modelos
+
+Há **um único model** no app.
+
+### `OnboardingSession`
+
+`app/onboarding/models.py:68` — estado do onboarding de um cliente. Uma sessão por cliente; o frontend retoma de onde parou via `GET /state/`.
+
+#### Campos
+
+| Campo | Tipo | Obrigatório | Default / choices | Descrição |
+| --- | --- | --- | --- | --- |
+| `client` | `OneToOneField(Client, on_delete=CASCADE)` | Sim | `related_name='onboarding_session'` | Cliente dono da sessão. |
+| `current_step` | `CharField(max_length=20)` | Sim | default `'verify'`; choices `ONBOARDING_STEPS` | Etapa em que a pessoa está. |
+| `brand_source` | `CharField(max_length=20)` | Não | `blank/null`; choices `BRAND_SOURCES` | Fonte de dados da marca (campo legado, mantido para o front antigo e relatórios). |
+| `brand_source_value` | `CharField(max_length=500)` | Não | `blank/null` | Valor da fonte legada (@ ou URL). |
+| `instagram_handle` | `CharField(max_length=100)` | Não | `blank/null` | @ do Instagram informado (normalizado). |
+| `instagram_verified` | `BooleanField` | Sim | `False` | O perfil foi confirmado como existente/público por um dos gateways. |
+| `website_url` | `CharField(max_length=500)` | Não | `blank/null` | Site informado. |
+| `analysis_status` | `CharField(max_length=10)` | Sim | default `'pending'`; choices `TASK_STATUS` | Status da análise da marca em background. |
+| `analysis_step` | `PositiveSmallIntegerField` | Sim | `0` | Índice do passo exibido na tela de análise. |
+| `analysis_error` | `TextField` | Não | `blank/null` | Mensagem de erro da análise (ou falhas parciais). |
+| `strategy_status` | `CharField(max_length=10)` | Sim | default `'pending'`; choices `TASK_STATUS` | Status da geração da estratégia. |
+| `strategy_error` | `TextField` | Não | `blank/null` | Erro da geração da estratégia. |
+| `plan_choice` | `CharField(max_length=20)` | Não | `blank/null`, sem `choices` | **ID do `PlanPrice`** escolhido; aceita também slugs legados (`instagram`/`linkedin`/`both`). |
+| `referral` | `CharField(max_length=150)` | Não | `blank/null` | Como a pessoa conheceu a Miggo. |
+| `data` | `JSONField` | Sim | `default=dict, blank=True` | Estado flexível: revisão, estratégia, calendário, grid, primeiro conteúdo, marcadores de etapa. |
+| `completed_at` | `DateTimeField` | Não | `blank/null` | Gravado por `OnboardingCompleteView` apenas quando não há etapa **bloqueante** pendente. |
+| `created_at` | `DateTimeField` | Sim | `auto_now_add` | — |
+| `updated_at` | `DateTimeField` | Sim | `auto_now` | — |
+
+<Warning>
+`plan_choice` **não** tem `choices` de propósito (`app/onboarding/models.py:55`): a etapa `/plan/` grava o ID do `PlanPrice`, e declarar os slugs como `choices` rejeitava o valor na validação. Para saber a rede contratada use `services.network_type_for_session(session)` — ler o campo cru como slug devolve o plano errado.
+</Warning>
+
+#### `Meta`, propriedades e métodos
+
+| Membro | Assinatura | O que faz |
+| --- | --- | --- |
+| `Meta.ordering` | `['-created_at']` | Sessões mais recentes primeiro (`app/onboarding/models.py:137`). |
+| `__str__` | `__str__(self) -> str` | `"Onboarding [<current_step>] — <client.name>"` (`app/onboarding/models.py:140`). |
+| `is_complete` | `@property is_complete -> bool` | `True` só quando `current_step == 'done'` **e** `completed_at` está preenchido — chegar em `done` não basta (`app/onboarding/models.py:143`). |
+
+#### Constantes do fluxo
+
+<AccordionGroup>
+<Accordion title="ONBOARDING_STEPS — as 15 etapas, na ordem">
+
+`app/onboarding/models.py:7`
+
+| Chave | Rótulo |
+| --- | --- |
+| `signup` | Cadastro |
+| `verify` | Verificação WhatsApp |
+| `plan` | Escolha do plano |
+| `source` | Como nos conheceu |
+| `brand` | Fonte de dados da marca |
+| `analyzing` | Analisando marca |
+| `identity` | Identidade Visual |
+| `review` | Revisão das informações |
+| `generating` | Gerando estratégia |
+| `strategy` | Estratégia |
+| `calendar` | Calendário editorial |
+| `media` | Suas fotos |
+| `grid` | Estilo visual (a chave interna segue `grid`) |
+| `publish` | Conectar redes sociais |
+| `done` | Concluído |
+
+</Accordion>
+<Accordion title="BRAND_SOURCES / ACTIVE_BRAND_SOURCES">
+
+`app/onboarding/models.py:38` e `app/onboarding/models.py:46`
+
+`BRAND_SOURCES` = `instagram`, `instagram_website`, `website` (legado), `manual` (legado), `linkedin` (legado — mantido só para não invalidar sessões já gravadas).
+
+`ACTIVE_BRAND_SOURCES` = `('instagram', 'instagram_website', 'website', 'manual')` — é o que a API aceita hoje.
+
+</Accordion>
+<Accordion title="TASK_STATUS e LEGACY_PLAN_CHOICES">
+
+`TASK_STATUS` (`app/onboarding/models.py:48`): `pending`, `running`, `done`, `failed`.
+
+`LEGACY_PLAN_CHOICES` (`app/onboarding/models.py:59`): `instagram`, `linkedin`, `both` — aceitos apenas na **leitura** (`services.resolve_network_type`), não são mais o formato gravado.
+
+</Accordion>
+</AccordionGroup>
+
+#### Chaves usadas em `session.data`
+
+Não há schema declarado; estas são as chaves efetivamente escritas/lidas pelo código.
+
+| Chave | Escrita em | Conteúdo |
+| --- | --- | --- |
+| `review` | `views.py:993` | Dict do briefing confirmado na tela de revisão. |
+| `review_step` | `views.py:999` | `{confirmed_at}` — marca que a tela de confirmação foi percorrida. |
+| `identity_step` | `views.py:1170`, `views.py:1829` | `{deferred, confirmed_logo, at}`. |
+| `media_step` | `views.py:1789` | `{deferred, at}`. |
+| `analysis` | `services.py:2221` | `{phase, heartbeat, retries, browser_render, last_error, started_at}`. |
+| `strategy` | `services.py:3016` | `{items: [...], briefing_signature}`. |
+| `strategy_started_at` | `services.py:3089` | ISO do início da geração (usado para detectar thread órfã). |
+| `calendar` | `views.py:1574` | Lista de slots semanais. |
+| `calendar_briefing_signature` | `views.py:1578` | Hash do briefing que gerou a grade. |
+| `calendar_feedback` | `views.py:1607` | Histórico de feedbacks de regeração. |
+| `calendar_approved_at` | `views.py:1581` | ISO da aprovação (painel de trials). |
+| `grid` | `services.py:3774` | `{reference_id, image_url, status, generation_status, feedback[], offered_reference_ids, current_option_ids, client_approved, client_approved_at, style_chosen_at, generated_at, generation_attempts, error, exclude_reference_id}`. |
+| `grid_image_url` | `services.py:3791` | Atalho de primeiro nível com a URL do grid. |
+| `first_content` | `services.py:4462` | `{status, post_id, job_id, caption, image_url, steps, current_step, suggested_slot, awaiting_miggoai, generation_error, feedback[]}`. |
+
+## Endpoints
+
+Todas as rotas abaixo são prefixadas por `/api/v1/onboarding/` (`core/urls.py:41`).
+
+**Permissão padrão do projeto**: `app.account.permissions.HasAPIKeyOrIsAuthenticated` com autenticação JWT (`core/settings.py:135`). Nenhuma view do app declara `permission_classes` própria, **exceto** `OnboardingSignupView`, que usa `AllowAny` e `authentication_classes = []` (`app/onboarding/views.py:173`).
+
+<Info>
+Todas as views (menos o signup) resolvem a sessão por `_get_session(request)` (`app/onboarding/views.py:125`): primeiro pelo `Client` do usuário autenticado; se não houver, por `client_id` em query string ou no corpo (caminho para chamadas administrativas/API key). A sessão é criada sob demanda com `get_or_create`, nascendo em `verify` se o cliente tem telefone e em `signup` se não tem. Sem cliente resolvido, responde **404** `{"error": "Cliente não encontrado para esta sessão."}`.
+</Info>
+
+### Tabela mestre
+
+| Método | Rota completa | View | Permissão |
+| --- | --- | --- | --- |
+| POST | `/api/v1/onboarding/signup/` | `OnboardingSignupView` | `AllowAny`, sem autenticação |
+| POST | `/api/v1/onboarding/signup/complete-social/` | `OnboardingSocialCompleteView` | Padrão (JWT/API key) |
+| POST | `/api/v1/onboarding/verify/` | `OnboardingVerifyView` | Padrão |
+| POST | `/api/v1/onboarding/verify/resend/` | `OnboardingResendCodeView` | Padrão |
+| PATCH | `/api/v1/onboarding/verify/change-number/` | `OnboardingChangeNumberView` | Padrão |
+| GET | `/api/v1/onboarding/state/` | `OnboardingStateView` | Padrão |
+| POST | `/api/v1/onboarding/resume/` | `OnboardingResumeView` | Padrão |
+| POST | `/api/v1/onboarding/validate-profile/` | `OnboardingValidateProfileView` | Padrão |
+| POST | `/api/v1/onboarding/brand-source/` | `OnboardingBrandSourceView` | Padrão |
+| POST | `/api/v1/onboarding/brand-source/preview/` | `OnboardingBrandPreviewView` | Padrão |
+| GET, POST | `/api/v1/onboarding/analysis-status/` | `OnboardingAnalysisStatusView` | Padrão |
+| GET, PUT | `/api/v1/onboarding/review/` | `OnboardingReviewView` | Padrão |
+| POST | `/api/v1/onboarding/review/autofill/` | `OnboardingReviewAutofillView` | Padrão |
+| GET | `/api/v1/onboarding/identity/candidates/` | `OnboardingLogoCandidatesView` | Padrão |
+| POST | `/api/v1/onboarding/identity/select-logo/` | `OnboardingLogoSelectView` | Padrão |
+| POST | `/api/v1/onboarding/identity/continue/` | `OnboardingIdentityContinueView` | Padrão |
+| POST | `/api/v1/onboarding/logo/` | `OnboardingLogoUploadView` | Padrão |
+| GET, POST, DELETE | `/api/v1/onboarding/photos/` | `OnboardingPhotosView` | Padrão |
+| POST | `/api/v1/onboarding/plan/` | `OnboardingPlanView` | Padrão |
+| POST | `/api/v1/onboarding/referral/` | `OnboardingReferralView` | Padrão |
+| POST | `/api/v1/onboarding/strategy/generate/` | `OnboardingStrategyGenerateView` | Padrão |
+| GET | `/api/v1/onboarding/strategy/` | `OnboardingStrategyView` | Padrão |
+| POST | `/api/v1/onboarding/strategy/approve/` | `OnboardingStrategyApproveView` | Padrão |
+| POST | `/api/v1/onboarding/strategy/approve-item/` | `OnboardingStrategyApproveItemView` | Padrão |
+| POST | `/api/v1/onboarding/strategy/feedback/` | `OnboardingStrategyFeedbackView` | Padrão |
+| POST | `/api/v1/onboarding/strategy/item/regenerate/` | `OnboardingStrategyItemRegenerateView` | Padrão |
+| GET, PUT | `/api/v1/onboarding/calendar/` | `OnboardingCalendarView` | Padrão |
+| POST | `/api/v1/onboarding/calendar/regenerate/` | `OnboardingCalendarRegenerateView` | Padrão |
+| POST | `/api/v1/onboarding/calendar/approve/` | `OnboardingCalendarApproveView` | Padrão |
+| GET, POST, DELETE | `/api/v1/onboarding/media/` | `OnboardingMediaView` | Padrão |
+| POST | `/api/v1/onboarding/media/continue/` | `OnboardingMediaContinueView` | Padrão |
+| GET | `/api/v1/onboarding/grid/` | `OnboardingGridView` | Padrão |
+| GET, POST | `/api/v1/onboarding/grid/styles/` | `OnboardingGridStylesView` | Padrão |
+| POST | `/api/v1/onboarding/grid/feedback/` | `OnboardingGridFeedbackView` | Padrão |
+| POST | `/api/v1/onboarding/grid/approve/` | `OnboardingGridApproveView` | Padrão |
+| GET | `/api/v1/onboarding/first-content/` | `OnboardingFirstContentView` | Padrão |
+| POST | `/api/v1/onboarding/first-content/approve/` | `OnboardingFirstContentApproveView` | Padrão |
+| POST | `/api/v1/onboarding/first-content/request-change/` | `OnboardingFirstContentChangeView` | Padrão |
+| POST | `/api/v1/onboarding/complete/` | `OnboardingCompleteView` | Padrão |
+| GET | `/api/v1/onboarding/summary/` | `OnboardingSummaryView` | Padrão |
+
+### Cadastro e verificação
+
+<AccordionGroup>
+
+<Accordion title="POST /signup/ — cria conta, cliente e sessão">
+
+`app/onboarding/views.py:164`. Único endpoint público do app. Cria `CustomUser` (role `client`) via `CustomUserSerializer`, zera `client.onboarding_step`, cria a `OnboardingSession` em `verify`, gera um código de 4 dígitos, dispara o envio por WhatsApp, faz `login()` na sessão Django e devolve tokens JWT.
+
+<ParamField body="name" type="string">Nome do cliente.</ParamField>
+<ParamField body="whatsapp" type="string" required>Número de WhatsApp. Aceita também a chave `phone`.</ParamField>
+<ParamField body="email" type="string">E-mail (normalizado para minúsculas).</ParamField>
+<ParamField body="password" type="string">Senha.</ParamField>
+
+**201**
+
+<ResponseField name="message" type="string">`"Conta criada."`</ResponseField>
+<ResponseField name="user" type="object">Saída de `CustomUserSerializer`.</ResponseField>
+<ResponseField name="access" type="string">Access token JWT.</ResponseField>
+<ResponseField name="refresh" type="string">Refresh token JWT.</ResponseField>
+<ResponseField name="whatsapp_sent" type="boolean">Se o disparo do código foi aceito.</ResponseField>
+<ResponseField name="whatsapp_masked" type="string">Número mascarado (`services.mask_phone`).</ResponseField>
+<ResponseField name="session" type="object">Sessão serializada (ver `GET /state/`).</ResponseField>
+
+**Erros** — `400` quando `whatsapp` está vazio ou quando o e-mail já existe em `CustomUser` ou `Client`. A validação do `CustomUserSerializer` usa `raise_exception=True` (erros de campo do DRF).
+
+</Accordion>
+
+<Accordion title="POST /signup/complete-social/ — completa cadastro do login Google">
+
+`app/onboarding/views.py:219`. Para quem entrou por login social: o Google autentica a pessoa, mas não o WhatsApp. Atualiza/cria o `Client` (com `active=True`), grava o telefone no `CustomUser`, garante a sessão em `verify` e dispara o código.
+
+<ParamField body="whatsapp" type="string" required>Número de WhatsApp.</ParamField>
+<ParamField body="name" type="string">Nome (opcional; sobrescreve o do cliente/usuário quando informado).</ParamField>
+
+**200** — `message`, `whatsapp_sent`, `whatsapp_masked`, `session`.
+
+**Erros** — `401` sem usuário autenticado; `400` sem `whatsapp`.
+
+</Accordion>
+
+<Accordion title="POST /verify/ — valida o código e conecta o WhatsApp">
+
+`app/onboarding/views.py:283`. Compara o código com o `UserMeta` gravado no envio. Em caso de sucesso: ativa o cliente, garante `onboarding_step >= 1`, ativa o `PlatformIntegration` do WhatsApp (`services.activate_whatsapp_integration`) e avança a sessão para `plan`.
+
+<ParamField body="code" type="string" required>Código de 4 dígitos.</ParamField>
+
+**200** — `message`, `whatsapp_connected` (booleano), `session`.
+
+**Erros** — `400` se o código não tiver 4 dígitos numéricos, ou se não bater com o gravado (`"Código inválido. Verifique e tente novamente."`).
+
+</Accordion>
+
+<Accordion title="POST /verify/resend/ e PATCH /verify/change-number/">
+
+`app/onboarding/views.py:320` e `app/onboarding/views.py:338`.
+
+O **reenvio** gera um novo código e redispara o flow; responde `200` com `message`, `code_sent`, `whatsapp_sent`, `whatsapp_masked`.
+
+A **troca de número** (`PATCH`, corpo `{whatsapp}`) atualiza `Client.phone` e `CustomUser.phone`, **apaga** a integração anterior de WhatsApp (`services.reset_whatsapp_integration` — o subscriber antigo do ManyChat não vale mais) e reenvia o código. `400` quando `whatsapp` está vazio.
+
+</Accordion>
+
+</AccordionGroup>
+
+### Estado e retomada
+
+<AccordionGroup>
+
+<Accordion title="GET /state/ — estado completo da sessão">
+
+`app/onboarding/views.py:373`, serializado por `_serialize_session` (`app/onboarding/views.py:84`).
+
+<ResponseField name="onboarding_completed" type="boolean">`True` quando não há nenhuma etapa pendente.</ResponseField>
+<ResponseField name="pending_steps" type="array">Lista `{id, label}` das etapas pendentes (`services.pending_onboarding_steps`).</ResponseField>
+<ResponseField name="resume_step" type="string">Destino de quem volta pelo dashboard (`services.resume_step_for`). O front **não** deve navegar por `current_step` nesse caso.</ResponseField>
+<ResponseField name="id" type="integer">ID da sessão.</ResponseField>
+<ResponseField name="client_id" type="integer">ID do cliente.</ResponseField>
+<ResponseField name="current_step" type="string">Etapa atual.</ResponseField>
+<ResponseField name="steps" type="array">Etapas visíveis na barra de progresso (`_visible_steps`; hoje `HIDDEN_STEPS` está vazio).</ResponseField>
+<ResponseField name="brand_source" type="string">Fonte legada.</ResponseField>
+<ResponseField name="brand_source_value" type="string">Valor da fonte legada.</ResponseField>
+<ResponseField name="instagram_handle" type="string">@ informado.</ResponseField>
+<ResponseField name="instagram_verified" type="boolean">Perfil confirmado como público.</ResponseField>
+<ResponseField name="website_url" type="string">Site informado.</ResponseField>
+<ResponseField name="brand_logo" type="object">Logo detectada (`_detected_logo`): `{id, url, logo_type, description, source}` ou `null`.</ResponseField>
+<ResponseField name="analysis_status" type="string">`pending` \| `running` \| `done` \| `failed`.</ResponseField>
+<ResponseField name="strategy_status" type="string">Idem, para a estratégia.</ResponseField>
+<ResponseField name="plan_choice" type="string">ID do `PlanPrice` escolhido.</ResponseField>
+<ResponseField name="network_type" type="string">`instagram` \| `linkedin` \| `both`, resolvido com fallback pela meta `selected_plan`.</ResponseField>
+<ResponseField name="referral" type="string">Origem informada.</ResponseField>
+<ResponseField name="data" type="object">O `JSONField` cru da sessão.</ResponseField>
+<ResponseField name="completed_at" type="string">Data de conclusão ou `null`.</ResponseField>
+<ResponseField name="whatsapp" type="string">Telefone do cliente.</ResponseField>
+<ResponseField name="whatsapp_masked" type="string">Telefone mascarado.</ResponseField>
+<ResponseField name="whatsapp_connected" type="boolean">Se existe `PlatformIntegration` de WhatsApp ativa.</ResponseField>
+
+</Accordion>
+
+<Accordion title="POST /resume/ — reabre o fluxo numa etapa pendente">
+
+`app/onboarding/views.py:2396`. Só aceita etapa **realmente pendente** — permitir reabrir etapa concluída transformaria o atalho do dashboard numa porta para reescrever dado já aprovado.
+
+<ParamField body="step" type="string">Etapa a reabrir. Omitido, usa a primeira pendente na ordem do fluxo.</ParamField>
+
+**200** — `message`, `step`, `session`. Zera `completed_at` ao reabrir.
+
+**Erros** — `400` quando não há pendências (`"Não há etapas pendentes neste onboarding."`); `400` com mensagens distintas quando a etapa já foi concluída (`"A etapa 'X' já foi concluída."`) ou não existe (`"Etapa 'X' não existe."`), acompanhadas de `pending_steps`.
+
+</Accordion>
+
+</AccordionGroup>
+
+### Fonte da marca e análise
+
+<AccordionGroup>
+
+<Accordion title="POST /validate-profile/ — checagem prévia (blur do input)">
+
+`app/onboarding/views.py:389`. **Nunca bloqueia o formulário.** Toda resposta ecoa `source` e `value` crus, para o front descartar respostas atrasadas que pertencem a outro campo.
+
+<ParamField body="source" type="string" required>`instagram`, `website` ou `linkedin`.</ParamField>
+<ParamField body="value" type="string" required>@ do perfil ou URL.</ParamField>
+<ParamField body="deep" type="boolean">`true` volta ao modo bloqueante (usado no submit, não no blur). Default `false`.</ParamField>
+
+Para `instagram` sem `deep`, o caminho `_instagram_non_blocking` (`app/onboarding/views.py:448`) **não faz nenhuma chamada de rede**: valida o formato por regex, consulta o cache e, se não houver veredito, dispara `services.warm_instagram_verdict` em background e responde `verdict: "checking"` com `retry_after: 8`.
+
+<ResponseField name="valid" type="boolean">`True` para os vereditos `found` e `unknown`.</ResponseField>
+<ResponseField name="verified" type="boolean">`True` só no veredito `found`.</ResponseField>
+<ResponseField name="verdict" type="string">`found`, `not_found`, `private`, `generic`, `invalid`, `unknown` ou `checking`.</ResponseField>
+<ResponseField name="normalized_value" type="string">@ ou URL normalizados.</ResponseField>
+<ResponseField name="profile_url" type="string">URL montada do perfil.</ResponseField>
+<ResponseField name="error" type="string">Mensagem, quando há.</ResponseField>
+<ResponseField name="retry_after" type="integer">Só no `checking`: segundos até consultar de novo.</ResponseField>
+
+**Códigos** (mapa em `app/onboarding/views.py:505`): `400` para `invalid` e para `source`/`value` ausentes ou inválidos; `404` para `not_found`; `422` para `private` e `generic`; `200` nos demais.
+
+</Accordion>
+
+<Accordion title="POST /brand-source/ — grava as fontes e inicia a análise">
+
+`app/onboarding/views.py:517`. As fontes **não são exclusivas nem obrigatórias individualmente**: quem informa Instagram e site tem os dois raspados.
+
+<ParamField body="instagram" type="string">@ ou URL do perfil.</ParamField>
+<ParamField body="website" type="string">URL do site.</ParamField>
+<ParamField body="manual" type="boolean">Preenchimento manual (sem raspagem).</ParamField>
+<ParamField body="source" type="string">Formato legado `{source, value}` — traduzido para os campos acima por `_legacy_payload`. Precisa estar em `ACTIVE_BRAND_SOURCES`.</ParamField>
+<ParamField body="value" type="string">Valor do formato legado.</ParamField>
+
+Cada fonte informada é revalidada no servidor: o Instagram só passa com veredito `found`; o site é barrado apenas nos vereditos `invalid`/`not_found`. Em seguida grava `instagram_handle`, `instagram_verified`, `website_url` e deriva o `brand_source` legado (`instagram_website`, `instagram`, `website` ou `manual`).
+
+**200** (preenchimento manual) — `current_step` vai para `identity`, `analysis_status` vira `done` e a resposta traz `message`, `sources: []`, `session`.
+
+**202** (com fonte) — `current_step` vai para `analyzing`, `services.start_brand_analysis` é disparado e a resposta traz `message`, `instagram`, `instagram_verified`, `website`, `sources`, `analysis_steps`, `session`.
+
+**Erros** — `400` quando nada foi informado (`fields: ['instagram','website']`), quando o `source` legado não é ativo, ou quando o @ não pôde ser confirmado; `422` quando o perfil é `private` ou `generic`. Erros de fonte trazem `verdict` e `field`.
+
+</Accordion>
+
+<Accordion title="POST /brand-source/preview/ — confirmação antes de gastar a análise">
+
+`app/onboarding/views.py:663`. Valida as fontes com as mesmas regras do submit e devolve o material de confirmação — mock do perfil do Instagram e metadados do site — **sem iniciar a análise**.
+
+<ParamField body="instagram" type="string">@ do perfil.</ParamField>
+<ParamField body="website" type="string">URL do site.</ParamField>
+
+**200** — `{instagram: {value, profile_url, handle, profile_pic_url, full_name, biography, followers, posts, is_verified, is_private, partial}, website: {value, url, og_image, title, favicon}}` (cada chave é `null` quando a fonte não foi informada).
+
+**Erros** — `400` quando nenhuma fonte foi informada, quando o site tem formato inválido, ou quando o Instagram não pôde ser confirmado; `422` para perfil `private`/`generic`.
+
+</Accordion>
+
+<Accordion title="GET/POST /analysis-status/ — progresso e retomada da análise">
+
+`app/onboarding/views.py:733`.
+
+**GET** devolve `status`, `current_step_index`, `steps` (`services.ANALYSIS_STEPS`), `error`, `onboarding_step`, `phase`, `heartbeat`, `browser_render`, `notice`, `retries` e `can_retry`. Se `services.analysis_looks_stalled(session)` for verdadeiro, o GET **marca a sessão como `failed`** com a mensagem "A análise foi interrompida antes de terminar…", liberando o botão "Tentar de novo".
+
+**POST** reinicia a análise sem refazer a etapa da fonte: coloca a sessão em `analyzing` e chama `services.retry_brand_analysis`.
+
+**202** — `message`, `status: "running"`, `steps`, `session`.
+**409** — quando a análise já está em andamento e não parece travada.
+**400** — quando não há fonte para analisar (`services.can_retry_analysis` retorna `False`).
+
+</Accordion>
+
+</AccordionGroup>
+
+### Revisão do briefing e identidade visual
+
+<AccordionGroup>
+
+<Accordion title="GET/PUT /review/ — briefing + Brand Kit da tela de revisão">
+
+`app/onboarding/views.py:854`.
+
+**GET** agrega `ClientMeta` + `Brandkit` no formato do front (`_aggregate_review`) e responde `{review, briefing_raw}`. O `review` contém os campos de `REVIEW_META_MAP` (texto) e `REVIEW_LIST_META_MAP` (listas), mais `logoUrl`, `colors` e `deducedFields` (campos que a IA deduziu, usados para os selos "Gerado por IA").
+
+**PUT** persiste em `ClientMeta`/`BrandColor` e opcionalmente avança a etapa.
+
+<ParamField body="review" type="object">Dict com os campos do review. Se ausente, o corpo inteiro é usado como review.</ParamField>
+<ParamField body="advance" type="boolean">Default `true`. `false` é o "Salvar alterações" — persiste sem sair da revisão.</ParamField>
+<ParamField body="from_step" type="string">Tela de origem (`identity` ou `review`). Torna a transição absoluta: reenviar o mesmo formulário é idempotente.</ParamField>
+
+**200** — `message`, `session`. **400** quando o payload não é um dict.
+
+</Accordion>
+
+<Accordion title="POST /review/autofill/ — Modo Automático (IA)">
+
+`app/onboarding/views.py:1117` (herda de `OnboardingReviewView`). Deduz com IA **apenas os campos vazios** do review (e uma paleta, se não houver cores), persiste e, com `advance=true`, avança.
+
+<ParamField body="advance" type="boolean">Default `true`.</ParamField>
+<ParamField body="fallback_palette" type="boolean">"Enviar depois" na identidade: quando não há paleta e a IA também não deduziu cores, grava `services.DEFAULT_BRAND_PALETTE` e registra `identity_step.deferred = true`.</ParamField>
+<ParamField body="from_step" type="string">Tela de origem.</ParamField>
+
+**200** — `review`, `deduced_fields`, `advanced`, `needs_palette`, `session`. O avanço só acontece com paleta válida: sem cores a etapa continua barrada (a estratégia e o grid dependem delas).
+
+</Accordion>
+
+<Accordion title="GET /identity/candidates/ — imagens raspadas candidatas a logo">
+
+`app/onboarding/views.py:1849`. Lista os `BrandAsset` de `origin='website'` (exceto favicons), ordenados pela mesma régua do palpite automático (tipo `logo` primeiro, depois por área). **200** — `{current_logo, candidates: [{asset_id, url, name, asset_type, width, height, source_url, selected}], count}`.
+
+</Accordion>
+
+<Accordion title="POST /identity/select-logo/ — promove a imagem escolhida a logotipo">
+
+`app/onboarding/views.py:1902`. Lê os bytes do asset, **apaga as `BrandLogo` anteriores do brandkit**, cria a nova logo e roda a mesma análise Vision do upload manual (`_analyze_logo_with_gpt` + `_apply_analysis_to_logo` com `replace_colors=True`). Se a Vision classificar a imagem como placeholder, o flag é desfeito — a escolha explícita da pessoa prevalece.
+
+<ParamField body="asset_id" type="integer" required>ID do `BrandAsset` escolhido.</ParamField>
+
+**200** — `message`, `replaced_logos`, `brand_logo`, `session`.
+**Erros** — `400` sem `asset_id` ou quando o asset não tem arquivo baixado; `404` quando o asset não é do cliente; `500` quando não foi possível ler o arquivo. Falha na análise Vision é apenas logada.
+
+</Accordion>
+
+<Accordion title="POST /identity/continue/ — conclui a identidade visual">
+
+`app/onboarding/views.py:1802`.
+
+<ParamField body="defer" type="boolean">"Enviar depois". Default `false`.</ParamField>
+
+Sem logo e sem `defer`, responde **400** com `field: "logo"`. Caso contrário grava `identity_step` e vai para `review` — ou direto para `done`, se `services.has_pending_steps_after(session, 'identity')` for falso (quem voltou a uma etapa isolada não refaz a esteira inteira).
+
+**200** — `message`, `brand_logo`, `session`.
+
+</Accordion>
+
+<Accordion title="POST /logo/ — upload de logo (multipart)">
+
+`app/onboarding/views.py:1972`. Campo `file`. Cria (ou reusa) o `Brandkit`, salva a `BrandLogo` e roda a análise Vision **síncrona**, substituindo as cores. **Não altera o `current_step`** — serve o Brand Kit da tela de revisão. Limpa `data.grid` e `data.grid_image_url`: a logo nova invalida qualquer estilo escolhido antes.
+
+**200** — `message`, `grid_generation_started: false`.
+**Erros** — `400` sem arquivo; `500` com `"Falha na análise da logo: …"`.
+
+</Accordion>
+
+<Accordion title="GET/POST/DELETE /photos/ — fotos de referência (BrandAsset)">
+
+`app/onboarding/views.py:1193`. Máximo de **6** fotos (`MAX_PHOTOS`), gravadas como `BrandAsset` com `asset_type='other'` e nome `onboarding_photo_<n>`.
+
+- **GET** → `{photos: [{id, url, name}]}`.
+- **POST** (multipart, campo `files` ou `file`) → `201` com `message` e `photos`. `400` sem arquivos ou ao estourar o limite.
+- **DELETE** `?asset_id=<id>` → `200` com `photos`. `400` sem `asset_id`, `404` se a foto não for do cliente.
+
+</Accordion>
+
+</AccordionGroup>
+
+### Plano, origem e estratégia
+
+<AccordionGroup>
+
+<Accordion title="POST /plan/ — escolha do plano">
+
+`app/onboarding/views.py:1271`. Grava `plan_choice` (o ID do `PlanPrice` enviado pelo front), espelha na meta `selected_plan`, avança para `source`, garante `client.onboarding_step >= 2` e cria **imediatamente** uma assinatura TRIAL (`services.ensure_trial_subscription`, idempotente).
+
+<ParamField body="plan" type="string" required>ID do `PlanPrice`. Aceita também os slugs legados.</ParamField>
+
+**200** — `message`, `trial_active`, `session`. **400** sem `plan`.
+
+</Accordion>
+
+<Accordion title="POST /referral/ — como nos conheceu">
+
+`app/onboarding/views.py:1303`. Sanitiza o texto (`services.sanitize_free_text`, teto `REFERRAL_MAX_LENGTH = 150`) e grava em `session.referral` + meta `referer`. Quando `referral == 'outro'`, o valor gravado vira `"Outro: <detail>"`. Avança para `brand`.
+
+<ParamField body="referral" type="string" required>Origem escolhida.</ParamField>
+<ParamField body="detail" type="string">Detalhe livre quando a origem é `outro`.</ParamField>
+
+**200** — `message`, `session`.
+**400** — texto acima de 150 caracteres (recusa explícita, sem truncar em silêncio) ou `referral` vazio.
+
+</Accordion>
+
+<Accordion title="POST /strategy/generate/ e GET /strategy/">
+
+`app/onboarding/views.py:1339` e `app/onboarding/views.py:1360`.
+
+O **POST** não regera à toa: com `strategy_status == 'done'` e itens presentes, responde `200` `"Estratégia já gerada."`; com `running` e progresso saudável, `202` `"Geração já em andamento."`; caso contrário dispara `services.start_strategy_generation` e responde `202` com `generating_steps`.
+
+O **GET** faz três autocorreções antes de responder: redispara a geração se a thread morreu (`ensure_strategy_progress`), auto-dispara quando a etapa é aberta em `pending`/`failed` sem itens (caso de quem retoma pelo dashboard) e corrige `current_step` preso em `generating` quando já há itens.
+
+**200** — `status`, `error`, `items`, `all_approved`.
+
+</Accordion>
+
+<Accordion title="POST /strategy/approve/ e /strategy/approve-item/">
+
+`app/onboarding/views.py:1460` e `app/onboarding/views.py:1493`.
+
+`/approve/` marca **todos** os itens como aprovados e avança para `calendar` — a aprovação item a item era uma barreira desnecessária. Responde `200` com `message`, `approved_items`, `session`.
+
+`/approve-item/` altera um item: corpo `{item_id, approved (default true), content?}`. Quando todos ficam aprovados, avança para `calendar`. **200** com `message` e `all_approved`; **404** se o `item_id` não existir na estratégia.
+
+</Accordion>
+
+<Accordion title="POST /strategy/feedback/ e /strategy/item/regenerate/">
+
+`app/onboarding/views.py:1402` e `app/onboarding/views.py:1420`.
+
+`/feedback/` refaz a **estratégia inteira** com o feedback e volta a sessão para `generating`. `400` sem `feedback`; `200` com `"Gerando nova estratégia com feedback..."`.
+
+`/item/regenerate/` refaz **um único item** com prompt isolado (`services.regenerate_strategy_item`), preservando os demais.
+
+<ParamField body="item_id" type="string" required>`ig-bio`, `ig-highlights`, `li-overview` ou `li-banner`.</ParamField>
+<ParamField body="feedback" type="string">Pedido do cliente; sanitizado com teto de 1000 caracteres.</ParamField>
+
+**200** — `message`, `item`, `items`.
+**404** — item inexistente ou não regenerável (`ValueError` do service).
+**502** — qualquer outra falha (IA sem conteúdo utilizável, falha de renderização): `"Não foi possível regenerar este item agora. Tente novamente."` O conteúdo anterior é preservado.
+
+</Accordion>
+
+</AccordionGroup>
+
+### Calendário, mídias, grid e conclusão
+
+<AccordionGroup>
+
+<Accordion title="GET/PUT /calendar/ — grade semanal proposta">
+
+`app/onboarding/views.py:1527`.
+
+**GET** devolve a grade já recortada para a rede contratada (`services.enforce_plan_networks`) e travada no catálogo (`services.coerce_calendar_slot`): `{calendar, network_type}`. Usa `deepcopy` para não contaminar o template de módulo `DEFAULT_CALENDAR`.
+
+**PUT** valida que `calendar` é uma lista não vazia e que cada slot tem `day` e `subject`, trava cada slot no catálogo, atualiza `calendar_briefing_signature`, registra `calendar_approved_at` e chama `trials.check_trial_ready`.
+
+<ParamField body="calendar" type="array" required>Lista de slots `{day, subject, ...}`.</ParamField>
+
+**200** — `message`, `calendar`. **400** com `"calendar deve ser uma lista de slots."` ou `"Cada slot precisa de day e subject."`
+
+</Accordion>
+
+<Accordion title="POST /calendar/regenerate/ — regera os temas com IA">
+
+`app/onboarding/views.py:1591`. Chama `services.regenerate_calendar_subjects`, persiste a grade e registra o feedback em `data.calendar_feedback` com o flag `applied`.
+
+<ParamField body="feedback" type="string" required>O que mudar.</ParamField>
+
+**200** — `message` (varia se a IA não respondeu), `regenerated`, `calendar`. **400** sem feedback. Uma falha da IA **não** é erro HTTP: o calendário é mantido e `regenerated` volta `false`.
+
+</Accordion>
+
+<Accordion title="POST /calendar/approve/ — materializa em EditorialCalendar">
+
+`app/onboarding/views.py:1620`. **Apaga todos os `EditorialCalendar` do cliente** antes de recriar (evita duplicação em reaprovações) e chama `services.materialize_editorial_calendar`. Avança para `media` — as fotos vêm antes do grid porque o primeiro post é disparado na aprovação do grid.
+
+**200** — `message` com a contagem de dias ativos, `editorial_calendar_ids`, `session`.
+
+</Accordion>
+
+<Accordion title="GET/POST/DELETE /media/ — biblioteca de fotos reais">
+
+`app/onboarding/views.py:1647`. Alimenta a **mesma** biblioteca de mídias da plataforma (`Media`, aba "Minhas fotos"), de onde o MiggoAI tira imagem real para os posts. Não confundir com `/photos/`, que grava referências de estilo no Brandkit.
+
+- **GET** → `{media: [{id, url, thumbnail, description}], deferred, limits}` (limites de `app.media.limits.media_limits_info`).
+- **POST** (multipart, `files` ou `file`, no máximo `MAX_PER_REQUEST = 20`) → `201` com `message`, `media`, `errors`. Em teste grátis, aplica limite de tamanho por arquivo e teto de `settings.TRIAL_MEDIA_MAX_FILES` arquivos na conta. Cada arquivo é salvo pelo `MediaSerializer` e recebe descrição por IA (`generate_media_description_async`, best-effort). `400` sem arquivos, acima de 20 por requisição, com arquivo grande demais no trial, ou quando **nenhum** arquivo pôde ser enviado (com `details`).
+- **DELETE** `?media_id=<id>` → `200`. `400` sem `media_id`, `404` se a mídia não for do cliente.
+
+</Accordion>
+
+<Accordion title="POST /media/continue/ — conclui (ou adia) o passo das fotos">
+
+`app/onboarding/views.py:1773`. Grava `media_step = {deferred, at}` e avança para `grid`.
+
+<ParamField body="defer" type="boolean">"Enviar depois". Default `false`.</ParamField>
+
+**200** — `message`, `deferred`, `session`.
+
+</Accordion>
+
+<Accordion title="GET /grid/ e GET/POST /grid/styles/">
+
+`app/onboarding/views.py:2038` e `app/onboarding/views.py:2075`.
+
+`GET /grid/` **não dispara geração**. Sem estilo escolhido, responde `{grid: {status: "awaiting_style", feedback: []}, options: [...]}`; com estilo escolhido, responde `{grid}`.
+
+`GET /grid/styles/` devolve `{options: [{id, image_url, description}], selected_reference_id}`. Recarregar devolve **as mesmas três** opções (guardadas em `grid.current_option_ids`); `?refresh=true` (ou `1`/`yes`) sorteia outras, sem repetir nada já mostrado (`grid.offered_reference_ids`). Se o trio gravado ficou incompleto (referência excluída do catálogo), o trio é completado com um sorteio novo. **404** quando não há nenhum estilo cadastrado: `"Nenhum estilo de grid cadastrado. Fale com o suporte."`
+
+`POST /grid/styles/` fixa a escolha.
+
+<ParamField body="reference_id" type="integer" required>ID da `DesignReference` escolhida.</ParamField>
+
+**200** — `message`, `grid`. **400** se o `reference_id` não for numérico; **404** se a referência não existir. Ao escolher, `trials.check_trial_ready` é reavaliado.
+
+</Accordion>
+
+<Accordion title="POST /grid/feedback/ e POST /grid/approve/">
+
+`app/onboarding/views.py:2169` e `app/onboarding/views.py:2217`.
+
+`/grid/feedback/` anexa o pedido em `grid.feedback` e chama `services.start_grid_mosaic_generation` (regeração **imediata**, em thread). **400** sem feedback; **200** com `message` e `grid`.
+
+`/grid/approve/` exige `grid.reference_id` (a etapa se conclui pela escolha do estilo). Marca `status='approved'`, `generation_status='pending'` — o marcador que o cron `generate_pending_grids` busca — e avança para `publish`.
+
+**202** — `message`, `session`. **400** com `field: "reference_id"` quando nenhum estilo foi escolhido.
+
+</Accordion>
+
+<Accordion title="GET /first-content/ e aprovação/alteração">
+
+`app/onboarding/views.py:2267`, `2290` e `2313`.
+
+**GET** reconcilia o estado a partir do card real (`services.sync_first_content_from_card`) antes de responder `{first_content, onboarding_step}` — assim o conteúdo aparece mesmo se a thread que disparou a geração tiver morrido.
+
+**POST `/approve/`** — corpo opcional `{caption}`; marca `first_content.status = 'approved'` e **não** mexe no `current_step`. `200` com `message` e `session`.
+
+**POST `/request-change/`** — corpo `{feedback}`; registra o pedido, marca `status='creating'` e dispara `services.start_first_post_generation` com o feedback (ou `"Gere uma nova versão diferente da anterior."` quando vazio). `202` com `message` e `first_content`.
+
+</Accordion>
+
+<Accordion title="POST /complete/ e GET /summary/">
+
+`app/onboarding/views.py:2338` e `app/onboarding/views.py:2459`.
+
+**`/complete/`** separa duas noções: `current_step = 'done'` marca a saída do fluxo, mas `completed_at` só é gravado quando **não há etapas bloqueantes** (`services.blocking_onboarding_steps`). As opcionais (`media`, `grid`, `publish`) continuam aparecendo em `pending_steps` para o nudge, sem prender a pessoa na tela final. Também atualiza `client.onboarding_step` (5 sem bloqueio, senão no mínimo 4) e reforça o trial (`ensure_trial_subscription`, com erro apenas logado).
+
+**200** — `message`, `onboarding_completed`, `pending_steps`, `session`.
+
+**`/summary/`** — tela final: `{strategy_created, first_content_status, connected_platforms, whatsapp_approval_time: "08:00", next_contents, completed_at}`. `next_contents` traz as próximas 4 datas dos slots ativos (`_next_calendar_dates`, janela de 21 dias).
+
+</Accordion>
+
+</AccordionGroup>
+
+## Serializers
+
+O app **não define nenhum serializer próprio**. A serialização acontece de três formas:
+
+| Mecanismo | Onde | Observação |
+| --- | --- | --- |
+| `_serialize_session(session)` | `app/onboarding/views.py:84` | Monta à mão o dict de estado da sessão (ver `GET /state/`). Inclui campos derivados: `onboarding_completed`, `pending_steps`, `resume_step`, `network_type`, `brand_logo`, `whatsapp_masked`, `whatsapp_connected`. |
+| `CustomUserSerializer` (`app.account.serializers`) | `app/onboarding/views.py:192` | Cria o usuário no signup com `is_valid(raise_exception=True)` e serializa o usuário na resposta. |
+| `MediaSerializer` (`app.media.serializers`) | `app/onboarding/views.py:1732` | Reusado no upload de mídias — é ele que resolve `client_hash`, pasta, nome hasheado e thumbnail. Os erros de validação por arquivo voltam no array `errors` da resposta, não como erro HTTP (salvo quando **todos** falham). |
+
+Validações e normalizações que, em outros apps, viveriam em `validate_*`, aqui estão nas views e no `services`: `sanitize_free_text` (controle/HTML/whitespace + corte no `max_length`), `normalize_instagram_handle`, `normalize_linkedin_slug`, `_validate_website`, `coerce_calendar_slot`.
+
+## Regras de negócio e funções
+
+### Sanitização e escrita concorrente
+
+| Função | O que faz |
+| --- | --- |
+| `sanitize_free_text(value, max_length=REFERRAL_MAX_LENGTH) -> str` (`services.py:43`) | Remove caracteres de controle, aplica `strip_tags`, normaliza espaços e corta no `max_length`. O risco tratado é conteúdo colado que volta para o front e estouro de coluna — o ORM já parametriza as queries. |
+| `_merge_session_data(session_id, mutate) -> dict` (`services.py:61`) | Aplica `mutate(data)` sobre `session.data` sob `select_for_update()`, relendo o estado do banco antes de gravar. **É o que evita lost-update** entre as threads de estratégia e de grid, que escrevem no mesmo `JSONField`. Retorna o `data` final. |
+
+### Identidade visual e plano
+
+| Função | O que faz |
+| --- | --- |
+| `get_brand_context(client) -> dict` (`services.py:82`) | Reúne `{colors, primary, secondary, tertiary, fonts, logo_url}` do Brandkit para injetar nos prompts. Ignora logos com `is_placeholder=True` (avatar automático não é logo). Qualquer exceção é logada e devolve o contexto parcial. |
+| `brand_palette_prompt(ctx) -> str` (`services.py:132`) | Bloco de texto que trava paleta e tipografia nos prompts de IA. |
+| `resolve_plan_price(plan_choice)` (`services.py:151`) | Resolve o valor gravado para um `PlanPrice`: tenta ID de `PlanPrice`, depois ID de `Plan` (pegando o preço visível mais barato), depois palavra-chave (`instagram`/`linkedin`/`both`) por `plan__name__icontains`. |
+| `ensure_trial_subscription(client, plan_choice, trial_days=7)` (`services.py:186`) | **Idempotente**: se já existe `Subscription` `ACTIVE`/`TRIAL`, devolve a existente. Senão cria uma com `subscription_id='TRIAL-<hex8>'`, `trial=True`, `status='TRIAL'` e fim em 7 dias. Retorna `None` (com log de erro) se o plano não pôde ser resolvido. |
+| `resolve_network_type(plan_choice) -> str` (`services.py:424`) | Traduz para `instagram`/`linkedin`/`both`. Delega a resolução numérica a `resolve_plan_price` — interpretar o ID como `Plan` lia a linha errada da outra tabela. Default `both`. |
+| `network_type_for_session(session) -> str` (`services.py:464`) | Igual ao anterior, com **fallback** para a meta `selected_plan` quando `plan_choice` está vazio. É a função que o resto do app deve usar. |
+| `strategy_items_for_plan(plan_choice) -> list` (`services.py:492`) | Itens da estratégia da rede contratada (`STRATEGY_ITEMS_BY_PLAN`). |
+| `has_brand_logo(client) -> bool` (`services.py:577`) | Existe `BrandLogo` com `is_placeholder=False`. |
+| `has_brand_colors(client) -> bool` (`services.py:597`) | Existe alguma `BrandColor` **fora** de `DEFAULT_BRAND_PALETTE` — a paleta neutra de fallback não conta como cor de marca. |
+
+### Composição do calendário por plano
+
+`services.py:357`–`services.py:574`. A composição semanal é **imposta por código**, não sugerida ao modelo.
+
+| Função | Comportamento |
+| --- | --- |
+| `day_type_for(network_type, day)` (`services.py:387`) | `story` só no Instagram/`both`, nas terças e quintas (`IG_STORY_WEEKDAYS`); os demais dias são `feed`. |
+| `allowed_formats_for_day(network_type, day)` (`services.py:394`) | Dia de story aceita só `Instagram - stories`. No `linkedin`, feed aceita `post` e `carrossel`; no `both`, só `post` do LinkedIn (o carrossel existe apenas no plano LinkedIn puro). |
+| `default_formats_for_day(network_type, day)` (`services.py:414`) | Formato inicial do dia. No LinkedIn, sexta = carrossel, demais = post. |
+| `_enforce_single_linkedin_carousel(calendar)` (`services.py:498`) | No máximo 1 `LinkedIn - carrossel` por semana; os excedentes viram `LinkedIn - post`. Muta in-place. |
+| `enforce_plan_networks(calendar, plan_choice) -> list` (`services.py:516`) | Recorta a grade: no LinkedIn mantém só seg/qua/sex; carimba `day_type`; dia de story fica exclusivo; no `both` cada dia de feed leva 1 formato de Instagram + `LinkedIn - post`. |
+| `default_calendar_for(plan_choice) -> list` (`services.py:572`) | `deepcopy(DEFAULT_CALENDAR)` já restrito ao plano. |
+
+`DEFAULT_CALENDAR` (`services.py:259`) é a grade seg–sex às 08:00, com `subject`, `objetivo`, `macro_objetivo`, `tags` e `cta` por dia. `tags` e `cta` **não são texto livre**: cada tag precisa bater com um `ContentStyle` do catálogo e cada CTA é um **tipo** (`CTACategory`), não uma frase.
+
+### Pendências, conclusão e retomada
+
+<AccordionGroup>
+<Accordion title="pending_onboarding_steps(session) -> list">
+
+`services.py:711`. Devolve `[{id, label}]` das etapas sem preenchimento efetivo, na ordem do fluxo. Lista vazia = onboarding realmente completo. Critério por etapa:
+
+| Etapa | Considerada concluída quando |
+| --- | --- |
+| `verify` | `is_whatsapp_connected(client)` — a conexão real, não `client.active` (todo `Client` nasce ativo). |
+| `plan` | `session.plan_choice` preenchido **ou** existe assinatura `ACTIVE`/`TRIAL`. |
+| `source` | `session.referral` preenchido. |
+| `brand` | Há `instagram_handle`, `website_url` ou `brand_source`. |
+| `identity` | `has_brand_logo` **ou** `has_brand_colors`. |
+| `review` | Todos os `REQUIRED_BRIEFING_KEYS` (`company`, `business`, `target`, `services`) preenchidos **e** `_review_confirmado` (a pessoa passou pela tela). |
+| `strategy` | Há itens e **todos** estão `approved`. |
+| `calendar` | `data.calendar` existe. |
+| `media` | `_has_uploaded_media(client)`. |
+| `grid` | `grid.client_approved` — escolher a referência **não** é aprovar o grid. |
+| `publish` | `_has_connected_social(client)`. |
+
+</Accordion>
+<Accordion title="blocking_onboarding_steps, _pendencia_adiada, resume_step_for, has_pending_steps_after">
+
+- `blocking_onboarding_steps(session)` (`services.py:662`): as pendências **menos** `OPTIONAL_ONBOARDING_STEPS = {'media', 'grid', 'publish'}`. É o que o `OnboardingGuard` deve olhar; o widget do dashboard continua usando a lista completa.
+- `_pendencia_adiada(step_id, data)` (`services.py:780`): a pendência foi decisão da pessoa? `publish` sempre conta como adiada (acontece fora do fluxo); `grid` conta quando há `reference_id`; as demais seguem a **convenção** `data['<etapa>_step']['deferred'] == True`.
+- `resume_step_for(session)` (`services.py:806`): sem telefone devolve `'signup'`; sem pendências devolve `None`; com `current_step == 'done'` (ou fora da ordem) devolve a primeira pendência **real** (não opcional e não adiada) ou `'done'`; caso contrário devolve a primeira pendência **anterior** à posição atual, ou o próprio `current_step`.
+- `has_pending_steps_after(session, step)` (`services.py:867`): ainda falta etapa real depois de `step`? Evita empurrar pela esteira inteira quem voltou a uma etapa isolada.
+- `is_onboarding_complete(session)` (`services.py:775`): açúcar sobre `pending_onboarding_steps`.
+
+</Accordion>
+</AccordionGroup>
+
+### Briefing e OpenAI
+
+| Função | O que faz |
+| --- | --- |
+| `get_briefing(client) -> dict` (`services.py:894`) | Todos os `ClientMeta` do cliente como `{key: value}`. |
+| `upsert_meta(client, key, value)` (`services.py:898`) | `update_or_create` de um `ClientMeta`. |
+| `openai_json(prompt, max_tokens=1500, temperature=0.4)` (`services.py:904`) | `POST` em `<OPENAI_API_URL>/chat/completions` com o modelo de `OPENAI_MODEL` (default `gpt-4o-mini`), timeout 90s. Remove cercas de markdown e devolve o JSON parseado; **retorna `None` em qualquer falha** (a chamada é auditada em `Integration`). |
+| `deduce_missing_review_fields(review, empty_fields, need_colors) -> dict` (`services.py:976`) | Monta um prompt com o que já se sabe da marca e pede **apenas** os campos vazios (rótulos em `REVIEW_FIELD_LABELS`). Valida os tipos na volta (lista para `REVIEW_LIST_FIELDS`, string nos demais) e normaliza a paleta em `{name, hex, category}`. Retorna `{}` em falha. |
+
+### WhatsApp e ManyChat
+
+<AccordionGroup>
+<Accordion title="Envio e validação do código">
+
+- `generate_verification_code() -> str` (`services.py:1049`): `random.randint(1000, 9999)`.
+- `mask_phone(phone)` (`services.py:1063`): mantém os 4 últimos dígitos, mascara o resto; `''` com menos de 4 dígitos.
+- `send_whatsapp_verification_code(client, code) -> bool` (`services.py:1413`): grava o código em `UserMeta[VERIFICATION_CODE_META_KEY]`, resolve o subscriber, registra a conexão como **pendente**, faz `setCustomField` (o flow lê o código dali) e só então `sendFlow`, com uma pausa configurável por `WHATSAPP_SEND_FLOW_DELAY` (default 2.0s). Registra o disparo no módulo Conversas. **Sempre retorna `True`**: se o `sendFlow` falhar, um worker de retentativa em background assume.
+- `_spawn_verification_flow_retry(client, subscriber_id, flow_url, flow_body)` (`services.py:1486`): thread com lock em cache (um worker por subscriber, TTL 300s), até `WHATSAPP_FLOW_RETRY_ATTEMPTS` tentativas (default 8) com `WHATSAPP_FLOW_RETRY_BACKOFF` segundos entre elas (default 10.0). Para na primeira aceitação ou quando o WhatsApp já foi verificado — nunca envia código duplicado.
+- `check_verification_code(client, code) -> bool` (`services.py:1541`): compara com o `UserMeta`. Retorna `False` se o cliente não tem usuário.
+
+</Accordion>
+<Accordion title="Conexão (PlatformIntegration) e subscriber">
+
+- `get_whatsapp_platform()` (`services.py:1058`): `SocialNetwork` com `name__iexact='whatsapp'`.
+- `upsert_pending_whatsapp_integration(client, subscriber_id, code)` (`services.py:1071`): cria/atualiza o `PlatformIntegration` com `status='inactive'` e `connection_url='pending_code:<código>'`.
+- `activate_whatsapp_integration(client)` (`services.py:1093`): conclui a conexão após a validação; se a integração pendente não existir (falha do ManyChat no envio), tenta resolver o subscriber na hora. Retorna `None` se a `SocialNetwork` "whatsapp" não estiver cadastrada.
+- `is_whatsapp_connected(client)` (`services.py:1126`) / `reset_whatsapp_integration(client)` (`services.py:1136`).
+- `find_or_create_manychat_subscriber(client)` (`services.py:1330`): prefere o `profile_id` já salvo (o `phone` do ManyChat volta vazio, então a busca por telefone costuma falhar); senão `findBySystemField`, senão `createSubscriber`, com uma re-busca quando a criação não devolve o id. Sempre termina em `_finalize_whatsapp_registration` (um `updateSubscriber` que assenta o número no canal de WhatsApp — sem ele a primeira mensagem não chega).
+- `_manychat_ok(resp)` (`services.py:1225`): o ManyChat responde HTTP 200 mesmo quando o envio falha; o veredito real está em `{"status": "success"|"error"}` no corpo.
+- `_manychat_post(client, path_label, url, body, retries=2, delay=1.5)` (`services.py:1240`): POST com retentativa (o subscriber recém-criado ainda está sendo provisionado no canal). Retorna `(ok, response|None)`.
+
+</Accordion>
+<Accordion title="Auditoria de chamadas externas">
+
+`_log_integration`, `_safe_payload`, `_response_summary` e `_audit_external` (`services.py:1148`–`services.py:1222`) gravam cada chamada externa na tabela `Integration`. São **blindadas**: qualquer falha na auditoria é engolida e logada, nunca derruba o fluxo real. Respostas não-JSON viram `{content_type, text|bytes}`; respostas serializadas acima de 4000 caracteres viram `{truncated: true, preview}` — foi o que impediu o `b64_json` de imagens da OpenAI de inchar a tabela.
+
+</Accordion>
+</AccordionGroup>
+
+### Validação das fontes da marca
+
+| Símbolo | O que faz |
+| --- | --- |
+| `PROFILE_FOUND` / `NOT_FOUND` / `PRIVATE` / `GENERIC` / `INVALID` / `UNKNOWN` / `CHECKING` (`services.py:1565`, `1670`) | Vereditos. `unknown` existe porque Instagram e LinkedIn respondem 401/403/429 para IPs de datacenter — barrar cliente legítimo por anti-bot é pior que deixar passar um @ errado. |
+| `normalize_instagram_handle(value)` (`services.py:1576`) | `'@marca'`, `'instagram.com/marca/'`, URL com querystring → `'marca'`. |
+| `normalize_linkedin_slug(value) -> (slug, kind)` (`services.py:1585`) | `kind` é `'in'` (pessoa) ou `'company'`. |
+| `instagram_profile_is_generic(profile)` (`services.py:1614`) | `True` sem bio **ou** com menos de `IG_MIN_POSTS` publicações (env `ONBOARDING_IG_MIN_POSTS`, default 3). Quando o actor não informa a contagem, ela não conta contra o perfil. |
+| `instagram_verdict_from_profile(profile, answered=True)` (`services.py:1629`) | Traduz o retorno do Apify em `(veredito, mensagem)`. `answered=False` (sem token, timeout) devolve `unknown`. |
+| `_instagram_apify_verdict(handle)` (`services.py:1648`) | Usa a **mesma** corrida do Apify que a análise vai consumir (`instagram_lib.fetch_profile_items`). |
+| `is_valid_instagram_handle` / `cached_instagram_verdict` / `_ig_cache_key` / `_ig_lock_key` (`services.py:1673`–`1690`) | Checagem local de formato e cache do veredito (TTL `IG_VERDICT_CACHE_TTL = 3600s`). |
+| `_await_inflight_verdict(handle, timeout=45, interval=1.0)` (`services.py:1693`) | Espera por uma apuração já em andamento em vez de disparar um segundo run do Apify (cobrado). |
+| `warm_instagram_verdict(handle) -> bool` (`services.py:1721`) | Dispara o gateway definitivo em **background**, com lock em cache (TTL 300s) para garantir um worker por @. |
+| `_validate_instagram_profile(handle, use_gateway=True)` (`services.py:1761`) | Formato → cache → apuração em voo → Apify. Com `use_gateway=False` não roda nada e devolve `unknown`. |
+| `_validate_linkedin_profile(slug, kind)` (`services.py:1802`) | Só formato + um GET; `404` = não existe, `200` = existe, qualquer outro = `unknown`. |
+| `_validate_website(value)` (`services.py:1830`) | **Só formato.** Site fora do ar, atrás de WAF ou recusando o User-Agent não significa endereço errado — quem reporta inacessibilidade é a raspagem. |
+| `validate_brand_source(source, value, use_gateway=True) -> dict` (`services.py:1852`) | Fachada: devolve `{verdict, message, normalized, url}`. Fonte não suportada → `invalid`. |
+
+### Preview de confirmação
+
+| Função | O que faz |
+| --- | --- |
+| `fetch_instagram_preview(handle) -> dict` (`services.py:1916`) | Monta o mock do perfil com o resultado da corrida do Apify que a validação já fez — **sem nenhuma requisição nova**. Sem perfil, devolve um mock mínimo com `partial: True`. Resultado cacheado por 1h. |
+| `_image_url_to_data_uri(url) -> str` (`services.py:1962`) | Baixa a foto de perfil (o CDN do Instagram bloqueia hotlink) e a embute como `data:<mime>;base64,…`. Teto de `IG_PROFILE_PIC_MAX_BYTES = 3 MB`; `''` em qualquer falha. |
+| `fetch_website_preview(url) -> dict` (`services.py:1989`) | Um GET (timeout 8s) e parse com BeautifulSoup: `title`, `og:image` (ou `twitter:image`). O favicon vem do serviço do Google por domínio. Sem screenshot renderizado. Cacheado por 1h. |
+
+### Análise da marca em background
+
+<AccordionGroup>
+<Accordion title="Orquestração">
+
+- `start_brand_analysis(session)` (`services.py:2417`): coloca a sessão em `running`, zera `analysis_step`/`analysis_error`, grava o heartbeat inicial (zerando `browser_render`) e dispara `_analysis_worker` em thread daemon.
+- `_analysis_worker(session_id)` (`services.py:2328`): Instagram e site **não são alternativas** — quem informou os dois tem os dois raspados. O Instagram roda primeiro (tom de voz e público); o site entra depois **complementando** o que ficou vazio (`fill_only_empty`) e trazendo os assets. Falha de uma só fonte não reprova a análise: o motivo fica em `analysis_error` e o status vai a `done`. Ao final, `current_step` vai para `identity` — a análise **sempre** entrega na etapa de identidade, porque a logo extraída é um palpite que precisa ser confirmado.
+- `retry_brand_analysis(session)` (`services.py:2311`): incrementa `analysis.retries`, limpa `last_error` e redispara.
+- `can_retry_analysis(session)` (`services.py:2297`): só com alguma fonte informada, e só quando o status é `failed` ou a análise parece travada.
+
+</Accordion>
+<Accordion title="Heartbeat e detecção de travamento">
+
+- `analysis_phase(session, label, step=None)` (`services.py:2239`): context manager que loga início/fim/falha com duração e grava o heartbeat. Produz `-> fase`, `<- fase (12.4s)` ou `!! fase (3.1s) - erro`.
+- `_record_analysis_phase(session_id, phase, step=None, **extra)` (`services.py:2221`): grava `data.analysis.{phase, heartbeat, ...}` via `_merge_session_data`.
+- `analysis_last_heartbeat(session)` (`services.py:2271`) e `analysis_looks_stalled(session)` (`services.py:2279`): sem heartbeat há mais de `ANALYSIS_STALL_TIMEOUT` (env `ONBOARDING_ANALYSIS_STALL`, default 900s) **e** com status `running`, a análise é considerada morta — é o caso de uma thread daemon que morreu com o processo (deploy, restart do gunicorn, reload do runserver).
+
+</Accordion>
+<Accordion title="Análise de Instagram e de site">
+
+- `_run_instagram_analysis(session)` (`services.py:2050`): reusa `app.client.views.InstagramScrapeAndFillView` (Apify + preenchimento do briefing por OpenAI) chamando-a com um `SimpleNamespace` no lugar do request. Levanta `RuntimeError` se a resposta vier com status ≥ 400.
+- `_run_website_analysis(session, fill_only_empty=False)` (`services.py:2071`): GET do HTML (`app.brandkit.website.scrape_website`) → importa assets e logo para o Brandkit → monta o briefing com OpenAI sobre as chaves de `WEBSITE_BRIEFING_KEYS`. Falha no download de assets **não** derruba a análise (briefing vale mais que asset). O orçamento de tempo das fases seguintes (`WEBSITE_PHASE_BUDGET`, env `ONBOARDING_WEBSITE_BUDGET`, default 180s) começa **depois** da leitura da página.
+- `_mark_browser_render(session, url)` (`services.py:2187`): quando o site recusa o GET e a leitura cai no navegador, marca `analysis.browser_render = True` — é o que permite a tela exibir `BROWSER_RENDER_NOTICE` ("pode levar alguns minutos") em vez de deixar a pessoa achando que travou.
+
+</Accordion>
+</AccordionGroup>
+
+### Geração da estratégia
+
+<AccordionGroup>
+<Accordion title="Itens, formatação e fallback">
+
+Itens por plano (`STRATEGY_ITEMS_BY_PLAN`, `services.py:317`): `instagram` → `ig-bio`, `ig-highlights`; `linkedin` → `li-overview`, `li-banner`; `both` → os quatro.
+
+- `format_instagram_bio(text, cta=DEFAULT_BIO_CTA)` (`services.py:2539`): impõe o formato **depois** da geração — uma frase por linha, CTA obrigatória na última e teto de `IG_BIO_MAX_LENGTH = 150` contando as quebras. A primeira linha é a última a ser sacrificada.
+- `format_linkedin_overview(text, max_length=None)` (`services.py:2578`): mesma ideia, cortando frases do fim até caber.
+- `linkedin_profile_type(briefing)` (`services.py:347`): `'personal'` ou `'business'` (default), pela meta `linkedin_profile_type`. Define o template, o título (`LINKEDIN_OVERVIEW_TITLES`) e o teto (`LINKEDIN_OVERVIEW_MAX`: 500 business, 800 pessoal).
+- `_fallback_strategy(client, briefing, item_ids)` (`services.py:2679`): conteúdo mínimo montado do briefing, sem IA nem serviços externos.
+- `generate_highlight_covers_hcti(...)` (`services.py:2440`) e `generate_linkedin_banner_hcti(...)` (`services.py:2476`): geram as imagens via HTML/CSS to Image (`hcti.io`, timeout 30s, credenciais `HTMLTOCSSIMAGE_ID`/`HTMLTOCSSIMAGE_API_KEY`). Falha devolve lista vazia / string vazia e é logada.
+- `render_strategy_item(client, item_id, content_obj, brand_ctx, fallback) -> str` (`services.py:2779`): transforma o conteúdo cru no valor final e espelha em `PlatformProfileConfig` (`highlights` para o Instagram, `cover` para o LinkedIn). Falha do HCTI **não derruba a estratégia inteira** — o item cai para o fallback textual.
+
+</Accordion>
+<Accordion title="Workers e obsolescência">
+
+- `start_strategy_generation(session, feedback=None)` (`services.py:3082`): carimba `strategy_started_at` no JSON (as transições usam `QuerySet.update()`, que não dispara `auto_now`), põe o status em `running` e dispara `_strategy_worker` em thread.
+- `_strategy_worker(session_id, feedback=None)` (`services.py:2943`): monta o prompt com as specs dos itens da rede contratada + paleta da marca, chama `openai_json`, renderiza cada item e grava `data.strategy = {items, briefing_signature}`. Se ainda não houver calendário, gera um a partir de `default_calendar_for` e tenta customizar os temas com IA. Em exceção, grava a **estratégia de fallback** e libera a etapa — o onboarding não pode ficar preso; o erro fica em `strategy_error`.
+- `_persist_fallback_strategy(session_id, error_message)` (`services.py:3047`): grava a estratégia mínima e marca `strategy_status='done'` com o erro registrado.
+- `ensure_strategy_progress(session) -> bool` (`services.py:3099`): redispara a geração quando ela está `running` há mais de `STRATEGY_STALE_SECONDS = 240` sem nenhum item. Retorna `True` se redisparou.
+- `regenerate_strategy_item(session, item_id, feedback='') -> dict` (`services.py:2859`): prompt isolado do item. Faz **extração tolerante** da resposta (o modelo às vezes devolve outra chave; com um único par no JSON, usa o valor dele). Se a IA não devolver conteúdo utilizável ou a renderização falhar, levanta `RuntimeError` **sem sobrescrever** o item bom que já estava lá. Grava sob `_merge_session_data` e marca `approved = False` — conteúdo novo volta para revisão. Levanta `ValueError` para item inexistente ou não regenerável.
+- `briefing_signature(review) -> str` (`services.py:2626`): SHA-256 do review (ignorando `deducedFields`, que é marcação de UI). `calendar_is_stale` (`services.py:2645`) e `strategy_is_stale` (`services.py:2665`) comparam essa assinatura para detectar que o briefing mudou **depois** da geração. Sem assinatura anterior, nada é invalidado.
+
+</Accordion>
+</AccordionGroup>
+
+### Calendário editorial
+
+| Função | O que faz |
+| --- | --- |
+| `briefing_macro_objetivo(briefing) -> str` (`services.py:3171`) | Casa os objetivos declarados (`goals`/`objectives`) contra `BRIEFING_OBJECTIVE_KEYWORDS` e devolve a lente de funil (`convencer`, `educar`, `entreter`, `inspirar`) ou `''`. |
+| `enforce_macro_objetivo_mix(calendar, briefing) -> list` (`services.py:3193`) | Garante `MACRO_OBJETIVO_MIN_DIAS = 2` dias com o macro-objetivo do briefing, promovendo primeiro os dias cujo objetivo já está repetido e adotando uma tag da matriz `FormatStyleRule` compatível com os formatos do dia. Falha no acesso ao catálogo apenas loga e devolve a grade inalterada. |
+| `subject_e_enviesado(subject)` / `generalize_subject(subject)` (`services.py:3273`, `3279`) | Detectam e removem do tema estatística/valor inventado (`50%`, `R$ 2 mil`, `3x`) e título de estrutura fechada (`3 passos`, `5 erros`). Se o vício era o tema inteiro, o texto original é mantido e o caso é logado. |
+| `regenerate_calendar_subjects(session, feedback) -> (calendar, bool)` (`services.py:3303`) | Prompt longo com a matriz Formato × Estilo e os tipos de CTA do catálogo, mais a composição fixa do plano. Aplica na volta: `generalize_subject`, filtro de formatos válidos, listas de tags/CTAs normalizadas (`_clean_str_list`), `enforce_macro_objetivo_mix`, `coerce_calendar_slot` e `enforce_plan_networks`. Resposta que não é lista devolve `(calendar, False)`. |
+| `coerce_calendar_slot(slot)` (`services.py:3450`) | Trava o slot no catálogo in-place via `app.editorial_calendar.selection.coerce_slot`: define `tags`, `style_ids`, `cta`, `cta_ids`, `cta_categories`, `macro_objetivo` e `cta_required`. Exceção (catálogo não semeado) apenas loga e devolve o slot cru. |
+| `resolve_post_format(label)` (`services.py:3502`) | Mapeia o rótulo do onboarding para o `PostFormat` **canônico** com `social_network` (`ONBOARDING_FORMAT_MAP`). Ordem: mapa → nome canônico com rede → nome canônico → `get_or_create` como último recurso. |
+| `materialize_editorial_calendar(session) -> list` (`services.py:3538`) | Cria os `EditorialCalendar` dos slots `active`, vincula os formatos resolvidos e aplica o catálogo na entrada (`apply_slot_to_entry`, best-effort). Retorna os IDs criados. Reimpõe `enforce_plan_networks` na aprovação. |
+
+### Grid (estilo visual)
+
+<AccordionGroup>
+<Accordion title="Escolha do estilo">
+
+- `list_grid_style_options(count=3, exclude_ids=None) -> list` (`services.py:3666`): sorteia `DesignReference` de `reference_type='grid'`, evitando as já mostradas. Se faltarem referências novas, completa com as excluídas — repetir é melhor que a tela ficar sem opção.
+- `remember_offered_grid_styles(session, offered_ids, accumulate=False)` (`services.py:3701`): guarda `current_option_ids` (o trio na tela agora, para o F5 não trocar as opções) e `offered_reference_ids` (tudo que já foi mostrado).
+- `grid_style_options_by_ids(ids)` (`services.py:3724`) e `grid_style_chosen(session)` (`services.py:3745`).
+- `select_grid_style(session, reference_id) -> dict` (`services.py:3750`): fixa a referência como o grid da marca (`image_url` = a própria referência, como placeholder), marca `generation_status='pending'` — o marcador que o cron busca —, **limpa `client_approved`** (é um grid novo) e espelha em `SocialNetworkGrid(generated=True)`. Levanta `ValueError` se a referência não existir.
+- `pick_grid_reference(reference_type='grid', reference_id=None, exclude_id=None)` (`services.py:3602`): escolha **aleatória** (o match semântico por LLM foi removido: era determinístico e dava sempre a mesma referência para o mesmo nicho). Retorna `(bytes, technical_description, reference_id)`.
+
+</Accordion>
+<Accordion title="Geração do mosaico">
+
+- `generate_grid_mosaic(session, brandkit_colors, logo_url) -> (image_url, reference_id)` (`services.py:3856`): monta um prompt que instrui o modelo a **recriar** a referência anexada (o primeiro anexo é o molde, não inspiração) trocando só paleta, logo e assunto. Envia para `https://api.openai.com/v1/images/edits` com os anexos (referência + logo), `size=1024x1024`, `quality=high`, `timeout=300`. Sem nenhuma referência na biblioteca, cai para `/v1/images/generations`. O parâmetro `input_fidelity: high` só entra quando o modelo é da família `gpt-image-1` (`_supports_input_fidelity`) — a família `gpt-image-2` rejeita com HTTP 400. Modelo por env `OPENAI_IMAGE_MODEL` (default `gpt-image-2`). **Propaga a exceção**: nunca cai para uma imagem genérica que sobrescreveria um grid bom.
+- `_store_grid_mosaic(session, image_bytes)` (`services.py:4021`): salva o PNG no `default_storage` em `onboarding/grid/<pk>-<timestamp>.png` e devolve a URL pública.
+- `_run_grid_generation(session) -> str` (`services.py:4032`): pipeline síncrono — coleta cores/logo, gera, espelha em `SocialNetworkGrid`, atualiza `data.grid` (`image_url`, `generation_status='done'`, `generated_at`, `reference_id`) sem sobrescrever `status='approved'`, notifica o cliente e reavalia `trials.check_trial_ready`.
+- `notify_grid_ready(client, image_url)` (`services.py:3809`): notificação `grid_ready` com link `/brandkit?tab=grid`.
+- `_mark_grid_generation_failed(session_id, exc)` (`services.py:4116`): incrementa `generation_attempts`, grava `status='failed'` e `error`, **preserva a imagem anterior** e só tira de `pending` ao atingir `_GRID_GENERATION_MAX_ATTEMPTS = 3` — falha da OpenAI costuma ser transitória, mas não pode virar loop infinito no cron.
+- `start_grid_mosaic_generation(session)` (`services.py:4297`) e `_grid_mosaic_worker(session_id)` (`services.py:4134`): versão em thread.
+- `generate_pending_grids(limit=20) -> dict` (`services.py:4151`): consulta `data__grid__generation_status='pending'` (filtro por chave aninhada, sem varrer a tabela), roda `_run_grid_generation` **síncrono** em cada sessão e devolve `{processed, generated, failed}`.
+
+</Accordion>
+<Accordion title="Grid fora do onboarding (aba Grid do Brandkit)">
+
+- `regenerate_grid_for_client(client, feedback='', new_reference=False) -> dict` (`services.py:4187`): reaproveita o mesmo pipeline, criando a sessão sob demanda para quem nunca passou pelo onboarding. Com `new_reference=True`, move a referência atual para `exclude_reference_id` para o sorteio não repetir.
+- `get_grid_state_for_client(client)` (`services.py:4223`).
+- `approve_grid_for_client(client) -> dict` (`services.py:4233`): registra `client_approved`/`client_approved_at` (a aprovação por link do MIG-165) e, se a sessão ainda estava em `grid`, **emenda o fluxo** avançando para `publish`.
+- `register_grid_feedback_for_client(client, feedback) -> dict` (`services.py:4263`): anexa o pedido e marca `generation_status='pending'` para o cron regerar depois. **Levanta `ValueError`** se o grid já foi aprovado pelo cliente.
+
+</Accordion>
+</AccordionGroup>
+
+### Primeiro conteúdo: handoff para o MiggoAI
+
+<Note>
+Nenhum post é produzido neste backend. O MiggoAI consome os cards (`Post`) com status `pending`, escreve título, legenda e arte, e devolve o card como `scheduled` (`app/onboarding/services.py:4310`).
+</Note>
+
+| Função | O que faz |
+| --- | --- |
+| `ensure_week_cards(client) -> list` (`services.py:4335`) | Cria, a partir do `EditorialCalendar` ativo, os `Post` com status `pending` das semanas atual, seguinte e a próxima (janela de ~14 dias). Idempotente: pula o que já existe. Copia `subject`, `tags`, `objetivo`, `macro_objetivo`, `cta`, `cta_required` e os `suggested_formats`. Retorna os `pending` futuros ordenados por data. |
+| `set_card_status(post_id, status_name)` (`services.py:4395`) | Define o `PostStatus` por nome, se existir. Best-effort. |
+| `_first_post_image_url(post)` (`services.py:4405`) | URL da primeira mídia vinculada ao post, ou `generated_url`. |
+| `_slot_for_post(post) -> dict` (`services.py:4420`) | `{date, time, subject, formats}` do card. |
+| `sync_first_content_from_card(session) -> dict` (`services.py:4478`) | **Fecha o ciclo**: lê o status real do card e reflete no `first_content`. Card `scheduled` → `status='ready'` com `caption`, `image_url` e `suggested_slot`; senão continua `creating`. É o que faz o conteúdo aparecer mesmo se a thread tiver morrido. |
+| `run_first_post_generation(session_id, feedback=None)` (`services.py:4535`) | Handoff em 3 passos: garante os cards, marca o card alvo como `processing`, obtém token, habilita o workflow do cliente (falha só é logada) e dispara `trigger_generate_image` (ou `trigger_regenerate` com o feedback). Exige `job_id` na resposta, senão levanta erro. Em falha chama `_first_content_awaiting_miggoai`. |
+| `_first_content_awaiting_miggoai(session_id, error_message, dispatched)` (`services.py:4433`) | Em falha, o card **nunca** fica órfão: com `dispatched=True` permanece `processing` (há geração lá); com `False` volta a `pending`, que é o status consumido pelo worker em lote do MiggoAI na próxima rodada. O `first_content` fica `creating` com `awaiting_miggoai=True`. |
+| `start_first_post_generation(session, feedback=None)` (`services.py:4629`) | Dispara `run_first_post_generation` em thread daemon. |
+
+### Cliente do MiggoAI (`miggoai.py`)
+
+Base URL por `MIGGOAI_API_URL` (default `http://localhost:10000`); credenciais por `MIGGOAI_USERNAME` / `MIGGOAI_PASSWORD`.
+
+| Função | Rota chamada | Descrição |
+| --- | --- | --- |
+| `get_token() -> str` (`miggoai.py:63`) | `POST /api/token/` | SimpleJWT; devolve o `access`. Timeout 30s. A auditoria grava só o `username` — **nunca a senha**. Levanta `MiggoAIError` se não vier token. |
+| `enable_client_workflow(token, miggo_client_id) -> dict` (`miggoai.py:83`) | `POST /api/generate/clients/sync/` (timeout 90s, best-effort) + `POST /api/generate/clients/workflow/` com `{miggo_client_ids: [id], enable: true}` | Obrigatório: o worker do MiggoAI ignora posts de clientes sem `enable_workflow=True`. |
+| `trigger_generate_image(token, miggo_post_id) -> dict` (`miggoai.py:108`) | `POST /api/generate/image/` com `{post_id}` | Retorna `{job_id, status, status_url}`. |
+| `trigger_regenerate(token, miggo_post_id, target='legenda', instruction='') -> dict` (`miggoai.py:117`) | `POST /api/generate/regenerate/` com `{post_id, target, instruction}` | `target` aceita `titulo`, `imagem` ou `legenda`. |
+| `get_job(token, job_id) -> dict` (`miggoai.py:130`) | `GET /api/generate/jobs/{job_id}/` | `{status, logs:[{stage,message,level,ts}], result, error}`. **Intencionalmente fora da auditoria** — é chamada em polling e encheria a tabela `Integration` de ruído. |
+
+Todas as chamadas passam por `_audit(...)` (`miggoai.py:27`), que grava em `Integration` de forma blindada. `MiggoAIError` (`miggoai.py:51`) sinaliza falha de comunicação.
+
+### Cron e management commands
+
+<AccordionGroup>
+<Accordion title="generate_pending_grids — geração dos grids pendentes">
+
+```bash
+python manage.py generate_pending_grids --limit 20
+```
+
+`app/onboarding/management/commands/generate_pending_grids.py:20`. Argumento `--limit` (int, default 20). Chama `services.generate_pending_grids(limit=limit)` e imprime `{processed, generated, failed}`, em verde quando não há falhas e em amarelo quando há. Agendado no Dokploy.
+
+</Accordion>
+<Accordion title="send_grid_approval_reminders — cobrança da aprovação via ManyChat">
+
+```bash
+python manage.py send_grid_approval_reminders
+```
+
+`app/onboarding/management/commands/send_grid_approval_reminders.py:19` → `cron.send_grid_approval_reminders()` (`app/onboarding/cron.py:43`). Rodado a cada 5 minutos pelo schedule do Dokploy.
+
+**Como decide quem cobrar**, por sessão de cliente ativo:
+
+1. **Pula clientes pagantes** (`app.client.trials.purchased_client_ids()`, consulta única fora do laço) — quem já comprou não é cobrado, e o lembrete vai por WhatsApp.
+2. Exige `grid.image_url` (sinal confiável de que existe grid; grids antigos podem não ter `reference_id`).
+3. Pula grids em (re)geração (`generation_status == 'pending'`) e os já aprovados (`client_approved`).
+4. **Intervalo**: reenvia só se o último lembrete bem-sucedido tiver mais de `GRID_APPROVAL_REMINDER_INTERVAL_HOURS` (default 24). A fonte da verdade é o próprio log em `Integration` (`service='ManyChat'`, `payload__flow_ns=<flow>`, `status_code in [200,201]`) — não há marcador próprio. Falhas não contam, para permitir nova tentativa.
+5. **Exceção ao intervalo**: se o cliente pediu alteração **depois** do último lembrete (`grid.feedback[].at` > `Integration.updated_at`), o grid foi regerado e ele recebe o aviso no mesmo dia.
+6. **Teto**: depois de `GRID_APPROVAL_MAX_REMINDERS` cobranças (default 3) para de insistir. A contagem só considera as cobranças feitas **depois** do último pedido de alteração — quem pediu ajuste tem grid novo para ver e a régua recomeça. `0` desliga o teto.
+7. Exige um `PlatformIntegration` de WhatsApp com `profile_id`.
+
+Envia `POST https://api.manychat.com/fb/sending/sendFlow/` (timeout 15s) com `{subscriber_id, flow_ns}` e `Authorization: MANYCHAT_API_KEY`, grava o disparo em `Integration` (`method='POST_WHATSAPP'`) e registra na conversa do cliente (`conversation_services.log_automation`, automação `cobranca_aprovacao_grid`).
+
+**Retorno**: `{processed, sent, skipped, exhausted, failed}`. Se a `SocialNetwork` "WhatsApp" não existir, devolve tudo zerado sem fazer nada. Exceções por cliente são capturadas — um cliente com problema não derruba o ciclo.
+
+</Accordion>
+</AccordionGroup>
+
+### Variáveis de ambiente lidas pelo app
+
+| Variável | Onde | Propósito |
+| --- | --- | --- |
+| `OPENAI_API_KEY` | `services.py:915`, `3951` | Chave da OpenAI (texto e imagem). |
+| `OPENAI_API_URL` | `services.py:906` | Base da API (default `https://api.openai.com/v1/`). |
+| `OPENAI_MODEL` | `services.py:909` | Modelo de texto (default `gpt-4o-mini`). |
+| `OPENAI_IMAGE_MODEL` | `services.py:3950` | Modelo de imagem do grid (default `gpt-image-2`). |
+| `MANYCHAT_API_KEY` | `services.py:1145`, `cron.py:156` | Autenticação do ManyChat. |
+| `MIGGOAI_API_URL` | `miggoai.py:56` | Base do MiggoAI (default `http://localhost:10000`). |
+| `MIGGOAI_USERNAME` / `MIGGOAI_PASSWORD` | `miggoai.py:69` | Credenciais do MiggoAI. |
+| `HTMLTOCSSIMAGE_ID` / `HTMLTOCSSIMAGE_API_KEY` | `services.py:2442`, `2478` | Credenciais do hcti.io. |
+| `WHATSAPP_SEND_FLOW_DELAY` | `services.py:1451` | Pausa antes do `sendFlow` (default `2.0`; `0` desliga). |
+| `WHATSAPP_FLOW_RETRY_ATTEMPTS` / `WHATSAPP_FLOW_RETRY_BACKOFF` | `services.py:1502` | Retentativa do código em background (default `8` / `10.0`). |
+| `ONBOARDING_IG_MIN_POSTS` | `services.py:1606` | Mínimo de publicações para o perfil não ser `generic` (default `3`). |
+| `ONBOARDING_WEBSITE_BUDGET` | `services.py:2216` | Teto de tempo das fases de site, em segundos (default `180`). |
+| `ONBOARDING_ANALYSIS_STALL` | `services.py:2218` | Sem heartbeat por esse tempo, a análise é considerada travada (default `900`). |
+| `GRID_APPROVAL_FLOW_ID` | `cron.py:48` | `flow_ns` do flow de cobrança no ManyChat. |
+| `GRID_APPROVAL_REMINDER_INTERVAL_HOURS` | `cron.py:49` | Intervalo entre cobranças (default `24`). |
+| `GRID_APPROVAL_MAX_REMINDERS` | `cron.py:53` | Teto de cobranças (default `3`; `0` desliga). |
+
+Também são lidos de `settings`: `TRIAL_MEDIA_MAX_FILES` (`views.py:1715`).
+
+## Erros comuns / pontos de atenção
+
+<AccordionGroup>
+
+<Accordion title="Threads daemon morrem com o processo">
+
+Análise (`_analysis_worker`), estratégia (`_strategy_worker`), grid (`_grid_mosaic_worker`) e primeiro post rodam em `threading.Thread(daemon=True)`. Um deploy, restart do gunicorn ou reload do runserver mata a thread e deixa a sessão em `running` para sempre. As três defesas existentes:
+
+- **Análise**: heartbeat + `analysis_looks_stalled` (`ANALYSIS_STALL_TIMEOUT`, default 900s); o `GET /analysis-status/` marca `failed` e libera o retry.
+- **Estratégia**: `ensure_strategy_progress` redispara após `STRATEGY_STALE_SECONDS = 240` sem itens; o `GET /strategy/` também auto-dispara quando a etapa abre em `pending`/`failed` sem itens.
+- **Primeiro conteúdo**: nenhum acompanhamento por thread — o estado é reconciliado do card por `sync_first_content_from_card` a cada `GET /first-content/`.
+
+O grid **não** tem detector de travamento próprio: uma falha é registrada em `grid.error` e o cron `generate_pending_grids` reprocessa enquanto `generation_status == 'pending'`, até `_GRID_GENERATION_MAX_ATTEMPTS = 3`.
+</Accordion>
+
+<Accordion title="Escrita concorrente em session.data">
+
+As threads de estratégia e de grid gravam o **mesmo** `JSONField`. Toda escrita em background passa por `_merge_session_data` (`select_for_update` + releitura). Escritas feitas diretamente nas views (`session.data = ...; session.save(...)`) **não** têm esse lock — é o caso de `/calendar/`, `/grid/feedback/`, `/first-content/*` e `_persist_review`.
+</Accordion>
+
+<Accordion title="'Concluir' não é 'completo'">
+
+`current_step == 'done'` marca só a saída da esteira. Quem responde "o onboarding está completo?" é `pending_onboarding_steps`; quem decide **bloqueio** é `blocking_onboarding_steps` (exclui `media`, `grid` e `publish`). `completed_at` só é gravado quando não há bloqueante. Consequência prática: um cliente pode ter `current_step='done'` e `completed_at=None`, e o `resume_step` — não o `current_step` — é o campo que o front deve usar para navegar.
+</Accordion>
+
+<Accordion title="Escolher o estilo não é aprovar o grid">
+
+`POST /grid/styles/` fixa `reference_id` e marca `status='ready'`; `POST /grid/approve/` marca `status='approved'` e enfileira a geração. Mas a etapa `grid` só sai das pendências com `grid.client_approved`, que é gravado **fora do onboarding**, por `approve_grid_for_client` (página de aprovação enviada por link). São três "aprovações" distintas no mesmo dicionário.
+</Accordion>
+
+<Accordion title="Vereditos de perfil e anti-bot">
+
+`unknown` é deliberado: Instagram e LinkedIn respondem 401/403/429 a IPs de datacenter. No **blur** (`/validate-profile/`), `unknown` deixa passar; no **submit** (`/brand-source/`), só `found` passa — `unknown` ali significa "nem o gateway definitivo confirmou". Perfil privado (`private`) e sem conteúdo (`generic`) são recusados com `422`: a análise nasceria vazia. Site nunca é checado por liveness, só por formato.
+</Accordion>
+
+<Accordion title="Limites e timeouts">
+
+| Limite | Valor | Onde |
+| --- | --- | --- |
+| Fotos de referência (`/photos/`) | 6 no total | `views.py:1200` |
+| Mídias por requisição (`/media/`) | 20 | `views.py:1658` |
+| Mídias na conta (trial) | `settings.TRIAL_MEDIA_MAX_FILES` | `views.py:1715` |
+| Texto de `referral`/`detail` | 150 caracteres (recusa, não trunca) | `views.py:1316` |
+| Feedback de item de estratégia | 1000 caracteres (sanitizado) | `views.py:1436` |
+| Bio do Instagram | 150 caracteres | `services.py:2509` |
+| Visão Geral do LinkedIn | 500 (business) / 800 (pessoal) | `services.py:337` |
+| Foto de perfil embutida como data URI | 3 MB | `services.py:1959` |
+| Geração de imagem do grid | timeout 300s | `services.py:3984` |
+| OpenAI texto | timeout 90s | `services.py:920` |
+| ManyChat | timeout 20s (15s no cron) | `services.py:1253`, `cron.py:166` |
+| MiggoAI | 30s (90s no sync de clientes) | `miggoai.py:72`, `94` |
+| Cache de veredito e preview | 1 hora | `services.py:1667` |
+
+</Accordion>
+
+<Accordion title="Efeitos colaterais destrutivos">
+
+- `POST /calendar/approve/` **apaga todos** os `EditorialCalendar` do cliente antes de recriar (`views.py:1630`).
+- `POST /identity/select-logo/` **apaga todas** as `BrandLogo` do brandkit antes de criar a escolhida (`views.py:1945`).
+- `PUT /review/` **apaga todas** as `BrandColor` do brandkit antes de regravar a paleta enviada (`views.py:979`).
+- `PATCH /verify/change-number/` **apaga** o `PlatformIntegration` de WhatsApp (`services.py:1141`).
+- `POST /logo/` remove `data.grid` e `data.grid_image_url` — a logo nova invalida o estilo escolhido (`views.py:2018`).
+- `POST /grid/styles/` limpa `client_approved`/`client_approved_at` — é um grid novo (`services.py:3784`).
+
+</Accordion>
+
+<Accordion title="Inconsistências observadas no código">
+
+Reportadas como achados de leitura, não corrigidas:
+
+- `views.py:217-218` — o decorador `@extend_schema(tags=['Onboarding'])` está duplicado em `OnboardingSocialCompleteView`.
+- `views.py:1272` — a docstring de `OnboardingPlanView` diz `Body: {"plan": "instagram|linkedin|both"}`, mas o código grava o **ID do `PlanPrice`** (comportamento documentado em `models.py:55`).
+- `views.py:2306` — o comentário de `OnboardingFirstContentApproveView` afirma que "'publish' saiu do fluxo e a sessão já está em 'done' desde a aprovação do grid", enquanto `OnboardingGridApproveView` (`views.py:2255`) coloca a sessão em `publish`.
+- `services.py:4156` — a docstring de `generate_pending_grids` diz "rodado por cron (via `OnboardingGridGeneratePendingView`)", mas essa view não existe no app; quem roda é o management command `generate_pending_grids`.
+- `cron.py:12` — o cabeçalho diz que só cobra quem tem `data.grid.reference_id`, mas o código (`cron.py:90`) filtra por `grid.image_url` (o próprio comentário no código explica a troca).
+- `models.py:38` vs `views.py:428` — `linkedin` continua aceito em `POST /validate-profile/` mas **não** em `POST /brand-source/`, que valida contra `ACTIVE_BRAND_SOURCES`.
+- `services.py:3885` — o comentário diz "na primeira geração, faz match semântico (LLM) baseado no nicho", mas `pick_grid_reference` sorteia aleatoriamente desde a remoção do match (o próprio docstring da função, `services.py:3604`, descreve o comportamento atual).
+- `views.py:2188` — `/grid/feedback/` dispara a regeração **imediata** em thread, enquanto o fluxo MIG-165 (`register_grid_feedback_for_client`) apenas marca `generation_status='pending'` para o cron. São dois caminhos diferentes para o mesmo efeito.
+
+</Accordion>
+
+</AccordionGroup>
+
+## Relacionados
+
+<Columns cols={2}>
+<Card title="Client" icon="users" href="/backend/apps/client">
+Cliente, `ClientMeta` (o briefing), trials e a raspagem do Instagram reusada na análise.
+</Card>
+<Card title="Brandkit" icon="palette" href="/backend/apps/brandkit">
+`Brandkit`, `BrandLogo`, `BrandColor`, `BrandAsset`, `DesignReference` e `SocialNetworkGrid`.
+</Card>
+<Card title="Editorial Calendar" icon="calendar-days" href="/backend/apps/editorial-calendar">
+Catálogo de estilos e CTAs, matriz Formato × Estilo e os registros materializados na aprovação.
+</Card>
+<Card title="Post" icon="send" href="/backend/apps/post">
+`Post`, `PostStatus`, `PostFormat`, `SocialNetwork` e `PlatformIntegration` (a conexão do WhatsApp).
+</Card>
+<Card title="Media" icon="image" href="/backend/apps/media">
+Biblioteca de mídias alimentada pela etapa "Suas fotos" e seus limites de trial.
+</Card>
+<Card title="Subscription" icon="credit-card" href="/backend/apps/subscription">
+`Plan`, `PlanPrice` e `Subscription` — resolução do plano e criação do trial.
+</Card>
+</Columns>

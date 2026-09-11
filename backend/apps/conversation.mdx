@@ -1,0 +1,598 @@
+---
+title: "Conversation"
+description: "Histórico e automação das conversas de WhatsApp via ManyChat"
+icon: "messages-square"
+---
+
+## Responsabilidade
+
+O app `app/conversation` guarda, num único lugar, as duas pontas da conversa de WhatsApp com o cliente: o que o ManyChat entrega (`inbound`, via webhook) e o que a Miggo envia (`outbound`, resposta manual da equipe ou automação de conteúdo). Além do histórico, o app é dono de um motor de flows com decisão (`engine.py`) que permite montar conversas ramificadas (ex.: "Aprovar" / "Pedir ajuste") sem depender de configurar cada ramo dentro do builder do ManyChat (`app/conversation/models.py:1-13`).
+
+O ManyChat é sempre o canal de WhatsApp: ele dispara `sendFlow`/`sendContent` para falar com o cliente e chama nossos webhooks para entregar respostas e servir conteúdo dinâmico (Dynamic Block).
+
+## Arquivos
+
+| Arquivo | Conteúdo |
+|---|---|
+| `app/conversation/models.py` | `Conversation`, `Message`, `MessageFlow`, `MessageFlowStep`, `ConversationFlowState` |
+| `app/conversation/views.py` | Endpoints internos (admin) de conversas, automações e construtor de flows |
+| `app/conversation/serializers.py` | Serializers de `Message`, `Conversation`, `MessageFlow`/`MessageFlowStep` |
+| `app/conversation/urls.py` | Rotas montadas sob `/api/v1/conversation/` |
+| `app/conversation/webhooks.py` | Views de webhook do ManyChat: mensagens (`webhook_manychat`) e Dynamic Block (`manychat_dynamic_block_continue`) |
+| `app/conversation/engine.py` | Motor dos flows com decisão — estado da conversa, ramificação, envio via flow casca |
+| `app/conversation/flows.py` | Montagem/validação dos blocos de mensagem e conversão para o `content` v2 do ManyChat |
+| `app/conversation/actions.py` | Catálogo fechado de ações do sistema que um passo de flow pode executar |
+| `app/conversation/automations.py` | Ponte de compatibilidade com o catálogo antigo de automações (agora em `MessageFlow`) |
+| `app/conversation/services.py` | Regras de negócio: resolução de cliente, gravação de mensagem, chamadas à API do ManyChat |
+| `app/conversation/signals.py` | Cria conversa automaticamente quando um cliente conecta o WhatsApp |
+| `app/conversation/admin.py` | Registro no Django Admin (`Conversation`, `Message`, `MessageFlow`, `ConversationFlowState`) |
+| `app/conversation/apps.py` | `AppConfig` — registra o signal em `ready()` |
+| `app/conversation/management/commands/sync_conversations.py` | Backfill: cria conversas para clientes com WhatsApp já conectado |
+| `app/conversation/management/commands/trigger_manychat_webhook.py` | Simula uma chamada do ManyChat contra o backend local |
+
+## Modelos
+
+### Conversation (`app/conversation/models.py:60-102`)
+
+Uma thread por subscriber do ManyChat.
+
+| Campo | Tipo | Obrigatório | Default/choices | Descrição |
+|---|---|---|---|---|
+| `client` | FK → `Client` | Não | `SET_NULL`, `null=True` | Cliente dono da conversa, quando resolvido (`services.resolve_client`) |
+| `manychat_id` | CharField(64) | Sim | `unique=True`, indexado | Id do subscriber no ManyChat |
+| `name` | CharField(255) | Não | — | Nome do contato |
+| `phone` / `whatsapp_phone` | CharField(32) | Não | — | Telefones espelhados do ManyChat |
+| `email` | EmailField | Não | — | E-mail do contato |
+| `profile_pic` | URLField(1000) | Não | — | Foto de perfil |
+| `live_chat_url` | URLField(1000) | Não | — | Link do live chat do ManyChat |
+| `subscriber_data` | JSONField | Não | — | Espelho do último payload do subscriber (inclui `custom_fields`) |
+| `last_message_at` | DateTimeField | Não | indexado | Data da última mensagem (qualquer direção) |
+| `last_inbound_at` | DateTimeField | Não | — | Data da última mensagem do cliente — base da janela de 24h |
+| `last_message_preview` | CharField(280) | Não | — | Prévia da última mensagem, para a lista |
+| `unread_count` | IntegerField | Não | `0` | Contador de não lidas |
+| `created_at` / `updated_at` | DateTimeField | — | auto | — |
+
+**Meta**: `ordering = ['-last_message_at', '-created_at']`.
+
+**Propriedades**:
+- `window_expires_at` (`models.py:90-96`) — `last_inbound_at + 24h`, ou `None` se o cliente nunca escreveu.
+- `is_window_open` (`models.py:98-102`) — `True` se `window_expires_at` ainda não passou. É a janela de 24h do WhatsApp: fora dela, `sendContent` (mensagem livre) é recusado.
+
+### Message (`app/conversation/models.py:105-136`)
+
+Cada mensagem de uma thread.
+
+| Campo | Tipo | Obrigatório | Default/choices | Descrição |
+|---|---|---|---|---|
+| `conversation` | FK → `Conversation` | Sim | `CASCADE`, `related_name='messages'` | Thread dona |
+| `direction` | CharField(10) | Sim | `inbound`/`outbound` | Sentido da mensagem |
+| `message_type` | CharField(10) | Não | `text` (default); `text`/`image`/`video`/`audio`/`file`/`link`/`flow` | Tipo de conteúdo |
+| `source` | CharField(32) | Sim | ver tabela abaixo | Origem da mensagem |
+| `status` | CharField(10) | Não | `received` (default); `received`/`sent`/`failed` | Estado do envio/recebimento |
+| `text` | TextField | Não | — | Texto da mensagem |
+| `media_url` | URLField(1000) | Não | — | URL de mídia |
+| `flow_ns` | CharField(255) | Não | — | `flow_ns` do ManyChat disparado (quando aplicável) |
+| `automation` | CharField(100) | Não | — | Slug da automação/flow disparado |
+| `error` | TextField | Não | — | Detalhe de falha de envio |
+| `raw` | JSONField | Não | — | Payload bruto (request/response do ManyChat) |
+| `sent_by` | FK → `CustomUser` | Não | `SET_NULL` | Quem enviou manualmente (quando aplicável) |
+| `sent_at` | DateTimeField | Sim | indexado | Data efetiva da mensagem |
+| `created_at` | DateTimeField | — | auto | Data de gravação no banco |
+
+**Meta**: `ordering = ['sent_at', 'id']`; índice composto `(conversation, id)`.
+
+`SOURCE_CHOICES` (`models.py:38-48`):
+
+| Valor | Significado |
+|---|---|
+| `manychat_webhook` | Recebida do cliente via webhook |
+| `manychat_send_content` | Envio manual da equipe (`sendContent`) |
+| `manychat_send_flow` | Automação de conteúdo (`sendFlow`) — conteúdo opaco, montado no builder do ManyChat |
+| `manychat_dynamic_block` | Bloco dinâmico — o ManyChat buscou o conteúdo na nossa URL |
+| `manychat_dynamic_flow` | Flow dinâmico — conteúdo nosso, entregue pelo flow casca do Dynamic Block |
+| `system_action` | Ação do sistema executada por um passo de flow |
+
+### MessageFlow (`app/conversation/models.py:152-252`)
+
+Um disparo que a equipe pode acionar numa conversa. `kind` decide quem monta a mensagem.
+
+| Campo | Tipo | Obrigatório | Default/choices | Descrição |
+|---|---|---|---|---|
+| `name` | CharField(120) | Sim | — | Nome de exibição |
+| `slug` | SlugField(100) | Sim | `unique=True`, indexado | Identificador — gravado em `Message.automation` |
+| `description` | TextField | Não | — | Descrição livre |
+| `kind` | CharField(10) | Não | `dynamic` (default); `manychat`/`dynamic` | Onde o conteúdo é montado |
+| `flow_ns` | CharField(255) | Não | — | `flow_ns` do ManyChat (`kind='manychat'`) |
+| `flow_ns_key` | CharField(100) | Não | — | Nome de env var `*_FLOW_ID` que sobrescreve `flow_ns` |
+| `requires_post` | BooleanField | Não | `False` | Automação legada que depende de um post |
+| `endpoint` | CharField(255) | Não | — | Endpoint que dispara essa automação (quando `requires_post`) |
+| `is_active` | BooleanField | Não | `True` | Flow disponível para disparo |
+| `created_by` | FK → `CustomUser` | Não | `SET_NULL` | Autor |
+| `created_at` / `updated_at` | DateTimeField | — | auto | — |
+
+**Meta**: `ordering = ['name']`.
+
+**Validação de `flow_ns_key`**: `FLOW_NS_KEY_PATTERN = re.compile(r'^[A-Z][A-Z0-9_]*_FLOW_ID$')` (`models.py:149`) — só nomes de env var terminados em `_FLOW_ID` são aceitos; é a fronteira entre "ler o id de um flow" e "ler qualquer segredo do `.env`" (comentário em `models.py:146-149`).
+
+**Propriedades**:
+- `effective_flow_ns` (`models.py:212-224`) — a env var (quando `flow_ns_key` válido) ganha do `flow_ns` gravado; usa `decouple.config`.
+- `entry_step` (`models.py:226-232`) — passo marcado `is_entry`, senão o primeiro da lista.
+- `is_available` (`models.py:234-252`) — `False` se inativo; para `manychat`, exige `effective_flow_ns`; para `dynamic`, exige passo de entrada com blocos **e** `engine.starter_flow_ns()` configurado.
+
+### MessageFlowStep (`app/conversation/models.py:255-293`)
+
+Um passo do flow dinâmico: o que é dito e para onde cada resposta leva.
+
+| Campo | Tipo | Obrigatório | Default/choices | Descrição |
+|---|---|---|---|---|
+| `flow` | FK → `MessageFlow` | Sim | `CASCADE`, `related_name='steps'` | Flow dono |
+| `key` | SlugField(50) | Sim | — | Identificador do passo dentro do flow |
+| `name` | CharField(120) | Não | — | Nome de exibição |
+| `blocks` | JSONField | Não | `list` | Blocos de mensagem (ver `flows.py`) |
+| `options` | JSONField | Não | `list` | Opções de decisão (ver `flows.py`) |
+| `fallback_text` | TextField | Não | — | Resposta quando nada casa com as opções |
+| `is_entry` | BooleanField | Não | `False` | Passo por onde o flow começa |
+| `order` | IntegerField | Não | `0` | Ordem de exibição no construtor |
+
+**Meta**: `ordering = ['order', 'id']`; `unique_together = [('flow', 'key')]`.
+
+**Propriedade**: `is_terminal` (`models.py:291-293`) — `True` quando o passo não tem `options` (ponta do grafo).
+
+### ConversationFlowState — a máquina de estados da conversa (`app/conversation/models.py:296-331`)
+
+Onde a conversa está dentro de um flow com decisão. **Só existe enquanto o fluxo está de pé**: some ao chegar num passo terminal ou ao expirar. Uma conversa participa de **um** flow por vez (`OneToOneField` com `Conversation`).
+
+| Campo | Tipo | Obrigatório | Default/choices | Descrição |
+|---|---|---|---|---|
+| `conversation` | O2O → `Conversation` | Sim | `CASCADE`, `related_name='flow_state'` | Conversa dona (um estado por vez) |
+| `flow` | FK → `MessageFlow` | Sim | `CASCADE`, `related_name='states'` | Flow em andamento |
+| `step` | FK → `MessageFlowStep` | Não | `CASCADE`, `null=True` | Passo atual |
+| `context` | JSONField | Não | `dict` | Respostas já dadas (`resposta.<passo>`) para interpolação nos passos seguintes |
+| `started_at` | DateTimeField | — | auto | — |
+| `updated_at` | DateTimeField | — | auto | — |
+| `expires_at` | DateTimeField | Sim | indexado | Fim de vida do estado (24h — `engine.FLOW_STATE_TTL_HOURS`) |
+
+**Propriedade**: `is_expired` (`models.py:328-331`) — `expires_at <= timezone.now()`.
+
+<Note>
+Não existe um campo `status`/enum de "estados possíveis" no sentido clássico de máquina de estados fixa — o estado real da conversa é **qual `MessageFlowStep`** o registro aponta (campo `step`), dentro de um grafo definido dinamicamente por `MessageFlow`/`MessageFlowStep`. Os "estados" possíveis, portanto, são os passos cadastrados de cada flow, mais dois estados implícitos: **sem estado** (nenhum `ConversationFlowState`, ou expirado — conversa fora de qualquer flow) e **terminal** (o registro é apagado assim que um passo sem `options` é alcançado e entregue). Veja a tabela de transições completa na seção [Engine](#o-motor-de-flows-engine-py) abaixo.
+</Note>
+
+**Onde `ConversationFlowState` é criado/alterado/apagado** (todas em `engine.py`):
+
+| Operação | Função | Linha |
+|---|---|---|
+| Criar/atualizar (`update_or_create`) | `_save_state` | `engine.py:85-92` |
+| Ler estado vivo (apaga se expirado) | `active_state` | `engine.py:65-78` |
+| Apagar | `clear_state` | `engine.py:81-82` |
+| Avançar `step`/`context`/`expires_at` (passo intermediário) | `resolve_reply` | `engine.py:301-305` |
+| Apagar ao alcançar passo terminal | `resolve_reply` | `engine.py:299-300` |
+| Apagar ao entregar a um flow do ManyChat (`flow_ns` na opção) | `resolve_reply` | `engine.py:283-286` |
+| Apagar quando o `next_step` da opção não existe mais | `resolve_reply` | `engine.py:292-297` |
+| Apagar após render de passo terminal no Dynamic Block | `webhooks.manychat_dynamic_block_continue` | `webhooks.py:161-164` |
+
+## Endpoints
+
+Prefixo confirmado em `core/urls.py`: rotas do app em `path('api/v1/conversation/', include('app.conversation.urls'))` (`core/urls.py:42`); webhooks fora do prefixo `/api/`, em `path('webhooks/manychat/', ...)` e `path('webhooks/manychat/dynamic-block/continue/', ...)` (`core/urls.py:49-53`).
+
+| Método | Rota completa | View | Permissão |
+|---|---|---|---|
+| GET | `/api/v1/conversation/list/` | `ConversationListView` | `IsManagementUser` |
+| GET | `/api/v1/conversation/<id>/` | `ConversationDetailView` | `IsManagementUser` |
+| GET | `/api/v1/conversation/<id>/messages/` | `ConversationMessagesView` | `IsManagementUser` |
+| POST | `/api/v1/conversation/<id>/send/` | `ConversationSendView` | `IsManagementUser` |
+| POST | `/api/v1/conversation/<id>/read/` | `ConversationReadView` | `IsManagementUser` |
+| POST | `/api/v1/conversation/<id>/automation/` | `ConversationAutomationView` | `IsManagementUser` |
+| GET | `/api/v1/conversation/<id>/posts/` | `ConversationPostsView` | `IsManagementUser` |
+| GET | `/api/v1/conversation/automations/` | `AutomationCatalogView` | `IsManagementUser` |
+| GET, POST | `/api/v1/conversation/flows/` | `MessageFlowListView` | `IsManagementUser` |
+| GET | `/api/v1/conversation/flows/preview/` (POST na prática) | `MessageFlowPreviewView` | `IsManagementUser` |
+| GET | `/api/v1/conversation/flows/variables/` | `MessageFlowVariablesView` | `IsManagementUser` |
+| GET, PATCH, DELETE | `/api/v1/conversation/flows/<id>/` | `MessageFlowDetailView` | `IsManagementUser` |
+| POST | `/webhooks/manychat/` | `webhook_manychat` | Nenhuma (DRF) — token compartilhado no header |
+| POST | `/webhooks/manychat/dynamic-block/continue/` | `manychat_dynamic_block_continue` | Nenhuma (DRF) — token compartilhado no header |
+
+Todas as views internas herdam `ConversationBaseView` (`views.py:36-42`), que fixa `permission_classes = [IsManagementUser]` — o módulo é operação interna da equipe Miggo, nunca exposto ao cliente final.
+
+<AccordionGroup>
+<Accordion title="GET /api/v1/conversation/list/ — lista de conversas">
+Suporta busca, filtro por cliente, não lidas e dois modos: paginado (padrão) ou `since=` (polling incremental, `views.py:78-90`).
+
+<ParamField query="search" type="string">Busca por nome, telefone, e-mail, `manychat_id` ou nome do cliente</ParamField>
+<ParamField query="client_id" type="integer">Filtra pelo cliente</ParamField>
+<ParamField query="unread_only" type="boolean">Só threads com `unread_count > 0`</ParamField>
+<ParamField query="since" type="string">ISO 8601 — devolve só threads com `updated_at` maior que esse instante, sem paginação (modo de polling da barra lateral)</ParamField>
+<ParamField query="page" type="integer" default="1">Página (ignorado se `since` for usado)</ParamField>
+<ParamField query="page_size" type="integer" default="30">Tamanho de página (máx. 100)</ParamField>
+
+<ResponseField name="results" type="array">Lista de conversas (`ConversationSerializer`)</ResponseField>
+<ResponseField name="count" type="integer">Total de resultados</ResponseField>
+<ResponseField name="page" type="integer">Página atual (modo paginado)</ResponseField>
+<ResponseField name="total_pages" type="integer">Total de páginas (modo paginado)</ResponseField>
+<ResponseField name="unread_total" type="integer">Total de conversas com não lidas (modo paginado)</ResponseField>
+
+Erros: `400` se `since` não for ISO 8601 válido, ou se paginação não for inteiro (`views.py:81-96`).
+</Accordion>
+
+<Accordion title="GET /api/v1/conversation/<id>/ — detalhe do contato">
+Devolve `ConversationDetailSerializer`, que estende `ConversationSerializer` com `subscriber_data` (custom fields crus do ManyChat).
+
+<ResponseField name="is_window_open" type="boolean">Se ainda dá para usar `sendContent` (janela de 24h)</ResponseField>
+<ResponseField name="window_expires_at" type="string">Fim da janela de 24h</ResponseField>
+<ResponseField name="subscriber_data" type="object">Último payload cru do subscriber, incluindo `custom_fields`</ResponseField>
+
+`404` se a conversa não existir (`views.py:113-117`).
+</Accordion>
+
+<Accordion title="GET /api/v1/conversation/<id>/messages/ — histórico de mensagens">
+<ParamField query="after_id" type="integer">Com este parâmetro, devolve só mensagens com `id` maior — ciclo de polling do chat aberto</ParamField>
+<ParamField query="limit" type="integer" default="100">Máx. 200. Sem `after_id`, últimas N mensagens em ordem cronológica</ParamField>
+
+<ResponseField name="results" type="array">Mensagens (`MessageSerializer`)</ResponseField>
+<ResponseField name="conversation" type="object">Conversa (`ConversationSerializer`)</ResponseField>
+</Accordion>
+
+<Accordion title="POST /api/v1/conversation/<id>/send/ — envio manual">
+Usa `sendContent` do ManyChat — só funciona dentro da janela de 24h.
+
+<ParamField body="text" type="string">Texto a enviar</ParamField>
+<ParamField body="media_url" type="string">URL de mídia a enviar</ParamField>
+<ParamField body="message_type" type="string" default="text">`text`/`image`/`video`/`audio`/`file`</ParamField>
+
+Pelo menos um de `text`/`media_url` é obrigatório (`SendMessageSerializer.validate`, `serializers.py:54-57`).
+
+<ResponseField name="id, conversation, direction, ..." type="object">Mensagem criada (`MessageSerializer`) — `201`</ResponseField>
+
+Erros: `409` se a janela de 24h estiver fechada (nada é enviado nem gravado); `502` se o ManyChat recusar o envio (mensagem já foi gravada com `status='failed'`).
+</Accordion>
+
+<Accordion title="GET /api/v1/conversation/automations/ — catálogo de automações">
+Lista as automações (`MessageFlow` ativos) que a equipe pode disparar do chat, via `automations.catalog()`.
+</Accordion>
+
+<Accordion title="POST /api/v1/conversation/<id>/automation/ — disparar um flow">
+<ParamField body="automation" type="string">Slug do flow (busca via `automations.resolve`)</ParamField>
+<ParamField body="flow_id" type="integer">Alternativa: id direto do `MessageFlow`</ParamField>
+<ParamField body="variables" type="object">Variáveis extras para interpolação (flows dinâmicos)</ParamField>
+
+Recusa (`400`) flows com `requires_post=True` (precisam do endpoint dedicado que grava o `post_id`). Flows `kind='manychat'` vão por `sendFlow` (não dependem da janela de 24h); flows `kind='dynamic'` vão pelo `engine` (flow casca do Dynamic Block).
+
+`502` se o ManyChat recusar o disparo (mensagem gravada com `status='failed'`).
+</Accordion>
+
+<Accordion title="GET /api/v1/conversation/<id>/posts/ — posts do cliente da conversa">
+<ParamField query="limit" type="integer" default="20">Máx. 50</ParamField>
+
+Devolve `{results: []}` se a conversa não tiver `client` vinculado. Usado pelo seletor de post da automação de aprovação.
+</Accordion>
+
+<Accordion title="POST /api/v1/conversation/<id>/read/ — zera não lidas">
+Sem payload. Devolve a conversa atualizada.
+</Accordion>
+
+<Accordion title="GET/POST /api/v1/conversation/flows/ — lista/cria flows de mensagem">
+GET aceita `search`, `kind` (`manychat`/`dynamic`), `only_active=true`. POST cria um `MessageFlow` (payload completo, ver seção Serializers).
+</Accordion>
+
+<Accordion title="GET/PATCH/DELETE /api/v1/conversation/flows/<id>/ — detalhe do flow">
+DELETE não apaga — desativa (`is_active=False`), porque mensagens já enviadas referenciam o slug e um flow removido quebraria o Dynamic Block se ainda estivesse configurado no ManyChat (`views.py:380-383`).
+</Accordion>
+
+<Accordion title="POST /api/v1/conversation/flows/preview/ — preview do construtor">
+Renderiza um passo como o ManyChat vai receber, sem enviar nada — aceita blocos/opções ainda não salvos.
+
+<ParamField body="blocks" type="array">Blocos do passo (formato de `flows.py`)</ParamField>
+<ParamField body="options" type="array">Opções de decisão do passo</ParamField>
+<ParamField body="conversation_id" type="integer">Opcional — usa dados reais da conversa como contexto</ParamField>
+<ParamField body="variables" type="object">Valores extras de variáveis</ParamField>
+
+<ResponseField name="content" type="object">`content` v2 do ManyChat montado (ver `flows.build_content`)</ResponseField>
+<ResponseField name="context" type="object">Variáveis resolvidas usadas na interpolação</ResponseField>
+
+`400` em bloco/opção inválidos (`flows.FlowValidationError`); `404` se `conversation_id` não existir.
+</Accordion>
+
+<Accordion title="GET /api/v1/conversation/flows/variables/ — metadados do construtor">
+<ResponseField name="results" type="array">Catálogo de variáveis (`flows.VARIABLES`)</ResponseField>
+<ResponseField name="block_types" type="array">Tipos de bloco aceitos (`flows.BLOCK_TYPES`)</ResponseField>
+<ResponseField name="button_types" type="array">Tipos de botão aceitos (`flows.BUTTON_TYPES`)</ResponseField>
+<ResponseField name="max_buttons" type="integer">Limite de botões do WhatsApp (`flows.MAX_BUTTONS` = 3)</ResponseField>
+<ResponseField name="actions" type="array">Catálogo de ações do sistema (`actions.catalog()`)</ResponseField>
+</Accordion>
+
+<Accordion title="POST /webhooks/manychat/ — webhook de mensagens do ManyChat">
+**Verificação de origem**: o ManyChat não assina o payload. A autenticação é um token compartilhado lido do header `X-Miggo-Token` (primeira opção) ou `Authorization: Bearer <token>`/`Authorization: <token>` (`webhooks._received_token`, `webhooks.py:30-37`), comparado via `hmac.compare_digest` contra a env var `MANYCHAT_WEBHOOK_TOKEN`. Sem a env var configurada, a rota responde `503` para toda requisição (`webhooks.py:49-55`); com token incorreto, `401`.
+
+**Payload esperado** — corpo do subscriber que o ManyChat envia via "External Request" dentro do flow, com o que a pessoa escreveu:
+
+<ParamField body="id" type="string">Id do subscriber — fallback: `key` no formato `"user:482924790"` (`services.subscriber_id_from`, `services.py:104-110`)</ParamField>
+<ParamField body="name / first_name / last_name" type="string">Nome do contato</ParamField>
+<ParamField body="phone / whatsapp_phone" type="string">Telefones</ParamField>
+<ParamField body="email" type="string">E-mail</ParamField>
+<ParamField body="profile_pic" type="string">URL da foto</ParamField>
+<ParamField body="live_chat_url" type="string">Link do live chat</ParamField>
+<ParamField body="custom_fields" type="object | array">Custom fields do ManyChat — dict `{nome: valor}` ou lista `[{name, value}]` (`flows.custom_field_context`, `flows.py:166-192`)</ParamField>
+<ParamField body="text / message / last_input_text" type="string">O que o cliente escreveu (primeira chave presente vence)</ParamField>
+<ParamField body="media_url / url / file_url" type="string">URL de mídia enviada pelo cliente</ParamField>
+<ParamField body="message_type / type" type="string">Tipo da mensagem recebida — só aceito se estiver em `text`/`image`/`video`/`audio`/`file`/`link`</ParamField>
+<ParamField body="sent_at / last_interaction" type="string">Timestamp da mensagem (ISO, via `parse_datetime`)</ParamField>
+
+**O que a view faz** (`services.handle_webhook`, `services.py:235-273`):
+1. `upsert_conversation` — cria/atualiza a `Conversation` pelo `manychat_id`; na primeira vez, tenta resolver o `Client` via `resolve_client` (por `PlatformIntegration` de WhatsApp, depois e-mail, depois telefone).
+2. Se não há texto nem mídia no payload (o ManyChat também usa esta URL só para sincronizar dados do subscriber), a thread é atualizada e a função retorna sem gravar mensagem.
+3. Grava a `Message` (`direction='inbound'`, `source='manychat_webhook'`), atualiza `last_inbound_at` (reabre a janela de 24h) e incrementa `unread_count`.
+4. Se havia texto, chama `engine.handle_reply` — se a conversa estiver no meio de um flow com decisão, a resposta é tratada como a escolha do cliente e o próximo passo é disparado. Erros do motor são capturados e logados (`except Exception`, `services.py:270-271`) para não derrubar o webhook.
+
+**Resposta**: sempre `200` mesmo em erro interno de processamento (`{"detail": "processing error"}`) — propositalmente, para o ManyChat não reenviar a mesma mensagem em loop após um 5xx (`webhooks.py:66-68`). Em sucesso:
+
+<ResponseField name="detail" type="string">`"ok"`</ResponseField>
+<ResponseField name="conversation_id" type="integer" />
+<ResponseField name="client_id" type="integer">Pode ser `null`</ResponseField>
+<ResponseField name="message_id" type="integer">`null` se nenhuma mensagem foi gravada (payload só de sync)</ResponseField>
+
+`400` se o payload não for objeto, ou se não der para extrair um `manychat_id`.
+</Accordion>
+
+<Accordion title="POST /webhooks/manychat/dynamic-block/continue/ — Dynamic Block">
+URL fixa e única para todos os flows dinâmicos — é o único passo do "flow casca" configurado manualmente no builder do ManyChat (ver `engine.starter_flow_ns`) e também o destino de callback dos botões de decisão. Mesma verificação de token que `/webhooks/manychat/` (`webhooks.py:126-127`).
+
+**Dois casos, pelo mesmo payload**, decididos pela presença de `option`:
+
+<ParamField body="id" type="string">Id do subscriber — resolve a conversa via `services.conversation_for_block` (não sobrescreve `subscriber_data`, para não apagar `custom_fields` de envios seguintes)</ParamField>
+<ParamField body="option" type="string">Ausente: o flow casca acabou de ser disparado por nós — só renderiza o passo já gravado no `ConversationFlowState`. Presente: o cliente tocou num botão — decide a ramificação nesta mesma resposta</ParamField>
+<ParamField body="caption" type="string">Fallback de `option`</ParamField>
+<ParamField body="custom_fields" type="object | array">Usado para atualizar o contexto de interpolação no momento da chamada — tem prioridade sobre o `subscriber_data` gravado</ParamField>
+
+**Sem `option`** (disparo nosso, `webhooks.py:157-165`): lê `ConversationFlowState` da conversa; se não houver estado vivo, devolve bloco vazio. Monta o `content` do passo atual (`flows.build_step_content`, com `callback_url` apontando para esta mesma URL). Se o passo for terminal, apaga o `ConversationFlowState` **depois** de montar a resposta — só agora que o ManyChat de fato buscou o conteúdo.
+
+**Com `option`** (toque num botão, `webhooks.py:167-228`):
+1. Registra a escolha como mensagem `inbound` (`source='manychat_dynamic_block'`).
+2. Chama `engine.resolve_reply` com o texto da opção.
+3. Se a opção aponta para um `flow_ns` do ManyChat, dispara `sendFlow` e devolve bloco vazio (a conversa sai do fluxo dinâmico).
+4. Se o próximo passo não existe mais (`next_step` apagado), devolve bloco vazio (o erro já foi logado por `resolve_reply`).
+5. Se a resposta não casou com nenhuma opção (`matched=False`), reapresenta o passo atual com `fallback_text` (ou os blocos originais se não houver fallback configurado).
+6. Se casou e há próximo passo: executa as ações do passo (`engine.render_step` → `run_actions`) e monta o `content` do próximo passo **na mesma resposta HTTP** — sem um novo `sendFlow`, porque o ManyChat já está esperando o conteúdo deste toque.
+
+**Formato de resposta — Dynamic Block do ManyChat** (`flows.dynamic_block_response`, `flows.py:426-428`):
+
+```json
+{
+  "version": "v2",
+  "content": {
+    "type": "whatsapp",
+    "messages": [
+      {"type": "text", "text": "Aprova o conteúdo desta semana?", "buttons": [
+        {"type": "dynamic_block_callback", "caption": "Aprovar", "url": "<callback_url>", "method": "post", "payload": {"option": "Aprovar"}}
+      ]}
+    ],
+    "actions": [],
+    "quick_replies": []
+  }
+}
+```
+
+Quando não há nada a mostrar (estado ausente/expirado, passo só de ação, opção que entrega a um flow do ManyChat), a resposta é o bloco vazio de `_empty_dynamic_block` (`webhooks.py:84-85`):
+
+```json
+{"version": "v2", "content": {"type": "whatsapp", "messages": [], "actions": [], "quick_replies": []}}
+```
+
+Todo `content` devolvido carrega até 3 botões do tipo `dynamic_block_callback`, que fazem o ManyChat chamar esta mesma URL de volta com `option` preenchido (`flows._option_buttons`, `flows.py:341-361`) — e a mesma lista de opções sempre aparece também como texto numerado (`flows.options_text`), para o casamento funcionar mesmo em canais sem botão interativo.
+</Accordion>
+</AccordionGroup>
+
+## Serializers
+
+| Serializer | Model | Read-only | `validate_*`/`create`/`update` |
+|---|---|---|---|
+| `MessageSerializer` | `Message` | `sent_by_name` (calculado) | — |
+| `ConversationSerializer` | `Conversation` | `client_name`, `is_window_open`, `window_expires_at` | — |
+| `ConversationDetailSerializer` | `Conversation` | herda de `ConversationSerializer` + `subscriber_data` | — |
+| `SendMessageSerializer` | não-model | — | `validate` — exige `text` **ou** `media_url` não vazios (`serializers.py:54-57`) |
+| `MessageFlowStepSerializer` | `MessageFlowStep` | `is_terminal` | `validate_blocks` — chama `flows.validate_blocks`, converte `FlowValidationError` em `ValidationError` |
+| `MessageFlowSerializer` | `MessageFlow` | `created_by`, `created_at`, `updated_at`, `effective_flow_ns`, `is_available`, `created_by_name`, `starter_configured` | ver abaixo |
+
+**`MessageFlowSerializer`** (`serializers.py:78-260`) — campos completos: `id`, `name`, `slug`, `description`, `kind`, `flow_ns`, `flow_ns_key`, `effective_flow_ns`, `steps` (aninhado, `MessageFlowStepSerializer(many=True)`), `requires_post`, `endpoint`, `is_active`, `is_available`, `starter_configured`, `created_by`, `created_by_name`, `created_at`, `updated_at`.
+
+- `validate_slug` — normaliza via `slugify`; rejeita vazio.
+- `validate_flow_ns_key` — exige o padrão `*_FLOW_ID`.
+- `validate` — gera slug automático a partir do nome quando ausente na criação; garante slug livre (`_ensure_slug_livre`, checagem manual porque o slug pode ser gerado fora do `UniqueValidator` do campo); para `kind='manychat'`, exige `flow_ns` ou `flow_ns_key`; para `kind='dynamic'`, chama `_validate_grafo`.
+- `_validate_grafo` (`serializers.py:181-226`) — valida o grafo inteiro: exige ao menos um passo, rejeita chave de passo repetida, no máximo um `is_entry=True`, exige blocos no passo de entrada, e valida as `options` de cada passo contra o conjunto de chaves conhecidas (`flows.validate_options(known_steps=...)`) — um `next_step` para passo inexistente é recusado aqui, antes de chegar à conversa com o cliente.
+- `create`/`update` — gravam o flow e, em seguida, `_gravar_steps` (`serializers.py:228-247`): substitui o grafo inteiro (`update_or_create` por `key`, apaga os passos que não vieram no payload). Sem entrada marcada, o primeiro passo enviado assume `is_entry=True`.
+- `get_starter_configured` — só para `kind='dynamic'`; `True`/`False` conforme `engine.starter_flow_ns()` esteja configurado (avisa no construtor antes do disparo falhar).
+
+## Regras de negócio e funções
+
+### O motor de flows (`engine.py`)
+
+O motor existe porque **só um flow do ManyChat já em andamento consegue receber de volta o clique num botão**. `sendContent` avulso não tem como oferecer isso. Por isso toda entrega de um passo com decisão passa por um "flow casca": um único flow, criado manualmente uma vez no builder do ManyChat, com um passo de Solicitação Externa apontando para `/webhooks/manychat/dynamic-block/continue/`, cujo `flow_ns` fica na env var `DYNAMIC_FLOW_STARTER_FLOW_ID` (`engine.py:1-33`, `engine.starter_flow_ns`, `engine.py:49-58`). A ramificação em si (qual passo vem a seguir) acontece no nosso backend, nunca no ManyChat — porque quem decide depende de dado da plataforma (post, status, plano do cliente).
+
+| Função | Assinatura | O que faz / decide |
+|---|---|---|
+| `starter_flow_ns()` | `() -> str \| None` | Lê `DYNAMIC_FLOW_STARTER_FLOW_ID` do ambiente (`engine.py:49-58`) |
+| `active_state(conversation)` | `(Conversation) -> ConversationFlowState \| None` | Estado vivo da conversa; apaga e devolve `None` se expirado (`engine.py:65-78`) |
+| `clear_state(conversation)` | `(Conversation) -> None` | Apaga o estado da conversa (`engine.py:81-82`) |
+| `run_actions(conversation, step, context)` | `(...) -> (bool, str \| None)` | Executa os blocos `type='action'` do passo em ordem, via `actions.run`; grava cada resultado como `Message(source='system_action')`; a primeira falha interrompe (ações são pré-condição da mensagem) (`engine.py:95-133`) |
+| `render_step(conversation, flow, step, context)` | `(...) -> (content \| None, preview, ok, erro)` | Roda as ações do passo e monta o `content`/preview, sem falar com o ManyChat; `content is None` com `ok=True` é um passo só de ação (`engine.py:136-159`) |
+| `send_step(conversation, flow, step, *, sent_by=None, context_extra=None)` | `(...) -> (Message \| None, erro \| None)` | Grava o `ConversationFlowState` **antes** de acionar o ManyChat, dispara `sendFlow` para o flow casca e registra a `Message` (`source='manychat_dynamic_flow'`) — o conteúdo já é conhecido aqui, só a entrega passa pelo Dynamic Block (`engine.py:162-209`) |
+| `start(conversation, flow, *, sent_by=None, context_extra=None)` | `(...) -> (Message \| None, erro \| None)` | Envia o passo de entrada do flow (`flow.entry_step`) via `send_step` (`engine.py:212-222`) |
+| `_send_fallback(conversation, state)` | `(...) -> Message \| None` | Reapresenta o passo atual com `fallback_text` quando a resposta não casou (`engine.py:225-249`) |
+| `resolve_reply(conversation, text)` | `(...) -> dict` | **Decide** para onde a resposta leva, sem enviar nada — usado tanto no webhook de texto quanto no toque de botão do Dynamic Block (`engine.py:252-308`) |
+| `handle_reply(conversation, text)` | `(...) -> (state \| None, Message \| None)` | Caminho do webhook de texto: resolve e **dispara** o próximo passo via `send_step` (`engine.py:311-347`) |
+
+`resolve_reply` casa o texto contra `state.step.options` (via `flows.match_option`) e devolve um dicionário `{matched, step, flow_ns, context, state}`:
+- Sem estado vivo ou sem opção casada → `matched=False`.
+- Opção com `flow_ns` preenchido → apaga o estado, devolve `flow_ns` (a conversa sai do fluxo dinâmico e passa a ser tocada por um flow puro do ManyChat).
+- Opção com `next_step` que não existe mais (passo apagado após o flow ter começado) → loga erro e apaga o estado.
+- Opção com `next_step` terminal → apaga o estado.
+- Opção com `next_step` não terminal → atualiza `step`/`context`/`expires_at` do estado existente.
+
+#### Máquina de estados do fluxo — estados e transições
+
+"Estado" aqui é `ConversationFlowState.step` (ou a ausência do registro). Transições reais implementadas:
+
+| Estado atual | Evento | Próximo estado | Onde |
+|---|---|---|---|
+| sem estado | equipe dispara `dispatch_flow`/`send_dynamic_flow` (`kind='dynamic'`) | `step = flow.entry_step` | `engine.start` → `send_step` → `_save_state` (`engine.py:187`, `engine.py:212-222`) |
+| passo X (não terminal) | cliente responde texto que casa com uma opção com `next_step=Y` (Y não terminal) | `step = Y` | `resolve_reply` (`engine.py:301-305`), disparado por `handle_reply` → `send_step` |
+| passo X (não terminal) | cliente responde texto que casa com opção com `next_step=Y` terminal | estado apagado (Y é entregue e a conversa encerra o fluxo) | `resolve_reply` (`engine.py:299-300`) + `send_step` entrega Y |
+| passo X | cliente responde texto que casa com opção com `flow_ns` preenchido | estado apagado; `sendFlow` do `flow_ns` disparado | `resolve_reply` (`engine.py:283-286`) + `handle_reply` (`engine.py:332-337`) |
+| passo X | cliente responde texto que casa com opção cujo `next_step` foi apagado do banco | estado apagado, erro logado | `resolve_reply` (`engine.py:288-297`) |
+| passo X | cliente responde texto que **não** casa com nenhuma opção | estado inalterado; fallback reenviado | `handle_reply` → `_send_fallback` (`engine.py:225-249`, `engine.py:329-330`) |
+| passo X | `expires_at` vencido (24h sem interação) | estado apagado na próxima leitura | `active_state` (`engine.py:73-78`) |
+| passo X (toque em botão, via Dynamic Block) | mesma lógica de `resolve_reply`, mas a entrega do próximo passo acontece **na mesma resposta HTTP**, sem novo `sendFlow` | idem acima | `webhooks.manychat_dynamic_block_continue` (`webhooks.py:167-228`) |
+| passo terminal já entregue (disparo nosso, sem `option`) | ManyChat chama `/dynamic-block/continue/` para buscar o conteúdo | estado apagado (só depois da resposta montada) | `webhooks.py:161-164` |
+
+#### O Dynamic Block: onde é montado
+
+A view `manychat_dynamic_block_continue` (`webhooks.py:88-228`) é o único ponto que monta a resposta final do Dynamic Block. Ela usa:
+- `flows.build_step_content` / `flows.build_content` para montar `content.messages` a partir dos blocos do passo (`flows.py:386-424`).
+- `flows.dynamic_block_response` para envelopar em `{"version": "v2", "content": {...}}` (`flows.py:426-428`).
+- `flows._option_buttons` para transformar as `options` do passo em botões `dynamic_block_callback` apontando de volta para a mesma URL, limitados a 3 (`flows.py:341-361`).
+- `_empty_dynamic_block` (`webhooks.py:84-85`) quando não há nada a mostrar.
+
+### `flows.py` — blocos e `content` do ManyChat
+
+| Função/constante | Assinatura | Retorno / efeito |
+|---|---|---|
+| `FlowValidationError` | classe (`ValueError`) | Erro de bloco/opção fora do formato — vira `400` no serializer, nunca chega ao ManyChat |
+| `validate_blocks(blocks)` | `(list) -> list` | Valida tipo, texto (máx. 4096 chars), botões (máx. 3) e ações; levanta `FlowValidationError` |
+| `validate_quick_replies(quick_replies)` | `(list) -> list` | Valida respostas rápidas (máx. 10) |
+| `validate_options(options, known_steps=None)` | `(list, set\|None) -> list` | Valida rótulo único, destino único (`next_step` xor `flow_ns`), e `next_step` contra `known_steps` quando informado |
+| `custom_field_context(payload)` | `(dict) -> dict` | Custom fields do ManyChat (dict ou lista `[{name,value}]`) como `{cf.<nome>: valor}` |
+| `build_context(conversation, extra=None)` | `(...) -> dict` | Variáveis de interpolação: `nome`, `primeiro_nome`, `cliente`, `telefone`, `email` + `cf.*` + `extra` |
+| `interpolate(text, context)` | `(str, dict) -> str` | Substitui `{{chave}}`; chave desconhecida vira string vazia |
+| `match_option(options, text)` | `(list, str) -> dict \| None` | Casa a resposta por número da lista, rótulo (`caption`) normalizado ou `keywords` |
+| `normalize(text)` | `(str) -> str` | Minúsculas, sem acento, sem pontuação — base da comparação |
+| `options_text(options)` | `(list) -> str` | Lista numerada das opções (fallback universal, sem depender de botão) |
+| `build_messages(blocks, context)` | `(list, dict) -> list` | Blocos → mensagens do `content`; ignora blocos de ação |
+| `build_content(blocks, context, *, options=None, callback_url=None)` | `(...) -> dict` | Monta o `content` v2 completo — anexa a lista numerada e os botões de callback na última mensagem de texto |
+| `build_step_content(step, context, *, callback_url=None)` | `(MessageFlowStep, dict, ...) -> dict` | Atalho de `build_content` para um passo |
+| `dynamic_block_response(content)` | `(dict) -> dict` | Envelope `{"version": "v2", "content": ...}` |
+| `preview_from_messages(messages, fallback='')` | `(list, str) -> str` | Resumo de uma linha (primeiro texto ou `[tipo] url`), para o histórico |
+| `preview_text(blocks, context, fallback='')` | `(list, dict, str) -> str` | Idem, a partir de blocos crus (sem opções) |
+
+### `actions.py` — catálogo fechado de ações do sistema
+
+Catálogo **fechado de propósito**: as ações rodam a partir de conteúdo editável no painel, então nomear função arbitrária viraria execução de código arbitrário (`actions.py:9-13`).
+
+| Ação (`key`) | O que faz | Parâmetros |
+|---|---|---|
+| `enviar_post_whatsapp` | Chama `app.post.services.send_post_for_approval`, grava o post no ManyChat e dispara o flow de aprovação | `post_id` (obrigatório) |
+| `aprovar_post` | Muda `Post.status` para `approved` | `post_id` (obrigatório) |
+| `pedir_ajuste_post` | Muda `Post.status` para `rejected`, grava `correction_description`, notifica admins (`notify_admins`) | `post_id` (obrigatório), `motivo` (opcional) |
+| `avisar_equipe` | Cria notificação para admins sem falar com o cliente | `mensagem` (obrigatório) |
+
+Funções públicas: `catalog()` (lista sem a função `run`, para atravessar JSON), `validate(action_key, params)` (levanta `ValueError` se ação/params inválidos — usado por `flows.validate_blocks`), `run(action_key, conversation, params, context)` (executa, nunca levanta — retorna `(ok, detalhe)`; `ActionError` vira `(False, mensagem)`, exceção inesperada é logada e também vira `(False, mensagem)`).
+
+### `automations.py` — ponte de compatibilidade
+
+O catálogo de automações **mora no banco** (`MessageFlow`) desde a migration 0003; `SEED_FLOWS` (`automations.py:18-55`) é só a semente histórica usada por aquela migration — em runtime a fonte é sempre o banco.
+
+| Função | Retorno |
+|---|---|
+| `resolve(key)` | `MessageFlow` ativo pelo `slug`, ou `None` |
+| `flow_ns_for(flow)` | Atalho para `flow.effective_flow_ns` |
+| `catalog()` | Lista de automações ativas, formato consumido pelo front do chat (`id`, `key`, `label`, `description`, `kind`, `requires_post`, `endpoint`, `available`) |
+
+### `services.py` — regras de negócio centrais
+
+| Função | Assinatura | Efeito colateral |
+|---|---|---|
+| `whatsapp_integrations(**filters)` | `(...) -> QuerySet[PlatformIntegration]` | Integrações de WhatsApp ordenadas por confiança (ativa primeiro, depois mais recente) — nenhum |
+| `resolve_client(manychat_id, payload=None)` | `(...) -> Client \| None` | Resolve o cliente por `PlatformIntegration.profile_id`, depois e-mail, depois últimos 10 dígitos do telefone — nenhum (leitura) |
+| `subscriber_id_from(payload)` | `(dict) -> str` | Extrai `id` ou o sufixo de `key` (`"user:123"` → `"123"`) — nenhum |
+| `upsert_conversation(payload)` | `(dict) -> Conversation \| None` | Cria/atualiza `Conversation`; resolve `client` na primeira vez — grava no banco |
+| `record_message(conversation, *, direction, source, ...)` | `(...) -> Message` | Cria `Message`; atualiza `last_message_at`/preview/`last_inbound_at`; incrementa `unread_count` via `F()` (evita corrida) — grava no banco |
+| `mark_read(conversation)` | `(Conversation) -> Conversation` | Zera `unread_count` — grava no banco |
+| `handle_webhook(payload)` | `(dict) -> (Conversation \| None, Message \| None)` | Ponto de entrada do webhook de texto (ver seção de endpoints) — grava mensagem, dispara `engine.handle_reply` |
+| `send_content(conversation, *, text=None, media_url=None, ...)` | `(...) -> (Message \| None, erro \| None)` | `sendContent` do ManyChat; recusa fora da janela de 24h; loga `Integration` — chamada HTTP externa |
+| `_post_flow(conversation, flow_ns)` | `(...) -> (body, response_data, ok, erro)` | `sendFlow` cru, sem registrar mensagem — chamada HTTP externa |
+| `send_flow(conversation, *, automation, flow_ns, text=None, sent_by=None)` | `(...) -> (Message, erro \| None)` | `sendFlow` + registra `Message` — não depende da janela de 24h |
+| `get_or_create_for_subscriber(subscriber_id, client=None, name=None)` | `(...) -> (Conversation, created)` | Cria/reaproveita a thread de um subscriber — grava no banco |
+| `sync_conversations_from_integrations()` | `() -> (criadas, vinculadas, total)` | Backfill: garante conversa para todo `PlatformIntegration` de WhatsApp — grava no banco |
+| `log_automation(client=None, *, subscriber_id=None, automation, ...)` | `(...) -> Message \| None` | Registra na thread um disparo feito por outro módulo (best-effort, nunca levanta) |
+| `send_dynamic_flow(conversation, flow, *, sent_by=None, context_extra=None)` | `(...) -> (Message \| None, erro \| None)` | Delega a `engine.start` |
+| `dispatch_flow(conversation, flow, *, sent_by=None, context_extra=None)` | `(...) -> (Message \| None, erro \| None)` | Ponto único de disparo da API — escolhe `send_flow` (kind=manychat) ou `send_dynamic_flow` (kind=dynamic) |
+| `conversation_for_block(payload)` | `(dict) -> Conversation \| None` | Resolve a thread para o Dynamic Block **sem** sobrescrever `subscriber_data` de uma conversa já existente |
+| `record_dynamic_block(conversation, flow, step, context, *, payload=None)` | `(...) -> Message \| None` | Registra na thread o rastro de um Dynamic Block servido (best-effort) |
+
+Todas as chamadas HTTP ao ManyChat (`_post_content`, `_post_flow`) gravam um `Integration` de auditoria (`_log_integration`) e tratam o "sucesso enganoso" do ManyChat — ele responde `200`/`201` mesmo em falha; o veredito real está em `response_data['status'] == 'success'` (`services.py:320-321`, `services.py:383-384`).
+
+### `signals.py`
+
+| Signal | Quando dispara | O que faz |
+|---|---|---|
+| `post_save` de `PlatformIntegration` (`dispatch_uid='conversation_from_platform_integration'`) | Toda vez que uma `PlatformIntegration` é salva | Se for a plataforma `whatsapp` com `profile_id` e `client_id` preenchidos, cria/reaproveita a `Conversation` via `get_or_create_for_subscriber` e preenche `whatsapp_phone` a partir de `integration.username` quando ainda vazio. Best-effort (`except Exception` + log) — não pode derrubar a conexão do WhatsApp (`signals.py:16-38`) |
+
+Registrado em `apps.py:9-10` (`ConversationConfig.ready()`).
+
+### Management commands
+
+<Accordion title="sync_conversations — backfill de conversas">
+Cria conversa para todo cliente que já tem WhatsApp conectado (`PlatformIntegration` ativa), útil após o deploy do módulo ou se desconfiar de conversa faltando na lista — a partir daí, o signal cuida sozinho.
+
+```bash
+./venv/Scripts/python.exe manage.py sync_conversations
+```
+
+Sem argumentos. Saída: `"<N> integrações de WhatsApp processadas: <criadas> conversas criadas, <vinculadas> vinculadas a um cliente."`
+</Accordion>
+
+<Accordion title="trigger_manychat_webhook — simula uma chamada do ManyChat">
+Bate na URL real do backend local (não chama `services.handle_webhook` direto), cobrindo também view, token e rotas.
+
+```bash
+# Simula o cliente escrevendo (abre a janela de 24h e avança um flow em andamento, se houver)
+./venv/Scripts/python.exe manage.py trigger_manychat_webhook --subscriber-id 36064711 --text "Aprovo"
+
+# Simula o flow casca sendo chamado de volta (renderiza o passo pendente)
+./venv/Scripts/python.exe manage.py trigger_manychat_webhook --subscriber-id 36064711 --continue
+
+# Simula o toque num botão de decisão
+./venv/Scripts/python.exe manage.py trigger_manychat_webhook --subscriber-id 36064711 --continue --option "Aprovar"
+```
+
+Argumentos: `--subscriber-id` (obrigatório), `--text`, `--name`, `--phone`, `--continue` (flag), `--option`, `--base-url` (default `http://127.0.0.1:8000`). Exige `MANYCHAT_WEBHOOK_TOKEN` configurado no ambiente — sem ele, levanta `CommandError` antes de tentar a chamada.
+</Accordion>
+
+## Erros comuns / pontos de atenção
+
+<Warning>
+`sendContent` (`/send/` manual e flows `kind='dynamic'`) só funciona dentro da janela de 24h desde a última mensagem do cliente (`Conversation.is_window_open`). Fora dela, o endpoint responde `409` e nada é enviado. Já `sendFlow` (flows `kind='manychat'`, automações) não tem essa restrição.
+</Warning>
+
+<Warning>
+Flow dinâmico com decisão (`kind='dynamic'` com `options`) exige `DYNAMIC_FLOW_STARTER_FLOW_ID` configurado — sem o flow casca criado manualmente no builder do ManyChat, `send_step` recusa o envio com a mensagem "Flow casca do Dynamic Block não configurado..." (`engine.py:192-199`) e `MessageFlow.is_available`/`starter_configured` já sinalizam isso no construtor antes do disparo.
+</Warning>
+
+<Warning>
+O ManyChat responde `200`/`201` mesmo quando o envio falha — o veredito real está no corpo (`status: "success"`). Qualquer integração nova com a API do ManyChat precisa checar isso, não só o status HTTP (`services.py:320-321`, `services.py:383-384`).
+</Warning>
+
+<Warning>
+Apagar um passo (`MessageFlowStep`) referenciado por `next_step` de uma opção de **outro** flow que já tem conversas em andamento não é bloqueado pela validação de escrita (`_validate_grafo` só valida dentro do mesmo flow ao salvar) — se isso acontecer, `resolve_reply` encerra o fluxo da conversa e loga erro (`engine.py:288-297`), mas o cliente fica sem resposta.
+</Warning>
+
+<Warning>
+Os dois webhooks (`/webhooks/manychat/` e `/webhooks/manychat/dynamic-block/continue/`) sempre respondem `200`/`503`/`401` — nunca `500` em erro de processamento do payload — de propósito, para o ManyChat não reenviar a mesma requisição em loop. Isso significa que um erro real de processamento fica visível só nos logs, não no código HTTP.
+</Warning>
+
+<Warning>
+`MessageFlow.delete()` via API (`DELETE /flows/<id>/`) na verdade desativa (`is_active=False`), nunca apaga o registro — o dado no banco persiste indefinidamente.
+</Warning>
+
+<Note>
+Não há endpoint de "excluir mensagem" nem de edição de mensagem já enviada — o histórico é append-only pelo desenho do módulo.
+</Note>
+
+## Relacionados
+
+<Columns cols={2}>
+  <Card title="Webhooks" icon="webhook" href="/backend/apps/webhooks">
+    Outros webhooks externos do backend (Stripe, Zernio)
+  </Card>
+  <Card title="Client" icon="users" href="/backend/apps/client">
+    Modelo `Client` e `PlatformIntegration` — origem do vínculo com o WhatsApp
+  </Card>
+</Columns>
