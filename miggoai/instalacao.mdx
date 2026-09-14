@@ -141,7 +141,7 @@ Fonte: `backend/.env.example:1-17` e leituras `config(...)` em `backend/core/set
 | `DB_PASSWORD` | Sim | Senha do PostgreSQL. |
 | `DB_HOST` | Sim | Host do PostgreSQL. |
 | `DB_PORT` | Sim | Porta do PostgreSQL. |
-| `MIGGO_API_KEY` | Sim | API Key do backend principal — usada por `apps.common.miggo_client` (`settings.py:179`). |
+| `MIGGO_API_KEY` | Sim | API Key do backend principal — usada por `apps.common.miggo_client` (`settings.py:179`) para leitura e, na geração diária, para escrita (upload de mídia e update do post). |
 | `MIGGO_API_BASE_URL` | Sim | URL base do backend principal (`settings.py:180`). |
 | `OPENAI_API_KEY` | Não (default `''`) | Chave OpenAI usada pelos workflows de geração (`settings.py:182`). |
 | `CORS_ALLOWED_ORIGINS` | Não (default vazio) | Origens CORS permitidas, CSV (`settings.py:32`). |

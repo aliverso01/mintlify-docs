@@ -572,19 +572,16 @@ Resolve um bug em que o link de mídia enviado ao cliente pelo WhatsApp "andava"
 - `guess_content_type(filename: str) -> str` (`app/post/media_link.py:59-61`): mapeia extensão → content-type via `MEDIA_CONTENT_TYPES` (mp4, mpeg, mov, avi, webm, jpg/jpeg, webp, png, gif, pdf); fallback `application/octet-stream`.
 
 ### `app/post/services.py`
-- `send_post_for_approval(post)` (`app/post/services.py:47-153`): regra central de envio de post para aprovação via WhatsApp — usada tanto pela view HTTP `SendPostWhatsAppView` quanto por uma ação de flow do módulo de conversas. Passos, na ordem (a ordem importa):
+- `approval_flow_ns(post)`: escolhe o flow de aprovação pela rede do post (MIG-236). Com `PlatformIntegration` **ativa** (`status='active'`) da rede do `post_format` → `CONTENT_APPROVATION_CONNECTED_FLOW_ID` (default `content20260914021405_104395`; a Miggo publica sozinha). Sem conexão → `CONTENT_APPROVATION_FLOW_ID` (default `content20260312121428_559122`; o flow pede a publicação manual). Substitui a tag que o ManyChat usava para decidir isso. Usada pelo envio direto e pelo cron de revisões agendadas.
+- `send_post_for_approval(post)` (`app/post/services.py`): regra central de envio de post para aprovação via WhatsApp — usada tanto pela view HTTP `SendPostWhatsAppView` quanto por uma ação de flow do módulo de conversas. Passos, na ordem (a ordem importa):
   1. Valida `post` existente e com `post_format`.
   2. Localiza `PlatformIntegration` WhatsApp do cliente com `profile_id`.
   3. Grava/atualiza `PostMetadata` `whatsapp_media_view_url` com o link permanente da primeira mídia vinculada (se houver).
   4. Grava `post_id` no custom field do ManyChat (`setCustomField`, `field_id=12805782`) — **antes** de disparar o flow, porque é dali que o flow lê qual post está em aprovação.
   5. Só marca `post.status = PostStatus 'sent'` depois que o passo 4 confirma sucesso.
-  6. Dispara o flow de aprovação (`sendFlow`, `flow_ns=CONTENT_APPROVATION_FLOW_ID`) e registra o log em `conversation_services.log_automation`.
+  6. Dispara o flow de aprovação (`sendFlow`, `flow_ns=approval_flow_ns(post)`) e registra o log em `conversation_services.log_automation`.
   
-  Retorna `(ok: bool, payload: dict, http_status)`.
-
-<Warning>
-`app/post/services.py:153` retorna `'media_view_url': media_view_url` na resposta de sucesso, mas essa variável **nunca é atribuída** em nenhum ponto da função (o valor calculado no passo 3 é salvo só em `PostMetadata`, sem ficar numa variável local `media_view_url`). Isso causa `NameError` sempre que `send_post_for_approval` completa com sucesso — tanto via `SendPostWhatsAppView` quanto via a ação de flow de conversa. Reportado como inconsistência de código, não corrigido aqui.
-</Warning>
+  Retorna `(ok: bool, payload: dict, http_status)`; no sucesso o payload traz `media_view_url` (link permanente da mídia, ou `None` se o post não tem mídia).
 
 ### `app/post/zernio.py`
 - `zernio_get(path, params=None, timeout=30)` (`app/post/zernio.py:23-38`): GET autenticado na API do Zernio (`ZERNIO_BASE = "https://zernio.com/api/v1"`, header `Authorization` a partir de `LATE_API_KEY`, que já inclui o prefixo `Bearer`). Retorna `(status_code, json|None)`; captura `RequestException` e erro de parse de JSON.
@@ -595,7 +592,7 @@ Resolve um bug em que o link de mídia enviado ao cliente pelo WhatsApp "andava"
 - `sync_platform_connections(client)` (`app/post/zernio.py:302-366`): para integrações não-WhatsApp que não estão `active` e têm `profile_id`, consulta `GET /accounts?profileId=` no Zernio e ativa localmente as que já estão de fato conectadas lá (idempotente; cacheia a resposta por `profile_id` para não repetir chamadas). Cobre o caso do webhook `account.connected` não ter chegado.
 
 ### `app/post/cron.py`
-- `send_scheduled_reviews()` (`app/post/cron.py:10-97`): cronjob que busca `ScheduledReview` com `status='pending'` e `scheduled_at <= agora`, e as envia via ManyChat (`sendFlow`, `flow_ns=CONTENT_APPROVATION_FLOW_ID`). Resolve a `SocialNetwork` "WhatsApp" com `name__iexact` (corrigindo bug anterior de busca case-sensitive que marcava toda revisão como falha). Marca cada `ScheduledReview` como `sent`/`failed` conforme o resultado, registra log em `Integration` e em `conversation_services.log_automation`; exceções por item não interrompem o processamento dos demais.
+- `send_scheduled_reviews()` (`app/post/cron.py:10-97`): cronjob que busca `ScheduledReview` com `status='pending'` e `scheduled_at <= agora`, e as envia via ManyChat (`sendFlow`, `flow_ns=approval_flow_ns(post)` — mesmo critério de rede conectada do envio direto). Resolve a `SocialNetwork` "WhatsApp" com `name__iexact` (corrigindo bug anterior de busca case-sensitive que marcava toda revisão como falha). Marca cada `ScheduledReview` como `sent`/`failed` conforme o resultado, registra log em `Integration` e em `conversation_services.log_automation`; exceções por item não interrompem o processamento dos demais.
 
 ### Management commands
 - `backfill_post_status_events` (`app/post/management/commands/backfill_post_status_events.py`): reconstrói `PostStatusEvent` retroativamente a partir de snapshots do `History` (log genérico) para o período anterior à instrumentação via signals. Idempotente (não duplica eventos já existentes, comparados por `(post_id, to_status, created_at)`); ignora snapshots de posts já deletados (`skipped_orphan`). Aceita `--dry-run` para só reportar quantos eventos seriam criados.
@@ -603,7 +600,6 @@ Resolve um bug em que o link de mídia enviado ao cliente pelo WhatsApp "andava"
 
 ## Erros comuns / pontos de atenção
 
-- **`send_post_for_approval` tem um `NameError` garantido no caminho de sucesso** (`app/post/services.py:153`) — `media_view_url` é referenciada mas nunca atribuída. Afeta `SendPostWhatsAppView` e a ação de flow de conversa equivalente.
 - **Rotas de edição/exclusão de formato e status são, na prática, apenas listagem** (`app/post/urls.py:18-19,24-25`) — `format/edit/`, `format/delete/`, `status/edit/`, `status/delete/` todas mapeiam para as views de list, não para update/delete.
 - **`read_only_fields` de `PlatformIntegrationSerializer` referencia campos inexistentes** (`hash`, `user` — `app/post/serializers.py:192`), sem efeito funcional mas indício de código desatualizado.
 - **Mojibake em `PlatformProfileConfigSerializer._display`** (`app/post/serializers.py:288`): separador de `cover`/`banner` corrompido (`â€”` em vez de `—`).

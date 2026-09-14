@@ -6,7 +6,7 @@ icon: "sitemap"
 
 ## Visão geral
 
-O MiggoAI é um **serviço interno auxiliar** ao `backend-miggo` (a plataforma principal da Miggo). Ele não tem modelo próprio de clientes/posts — consome esses dados ao vivo, via HTTP, direto do `backend-miggo`, e devolve conteúdo gerado por IA (título, imagem, legenda, hashtags) que o operador aplica ao post.
+O MiggoAI é um **serviço interno auxiliar** ao `backend-miggo` (a plataforma principal da Miggo). Ele não tem modelo próprio de clientes/posts — consome esses dados ao vivo, via HTTP, direto do `backend-miggo`, e devolve conteúdo gerado por IA (título, imagem, legenda, hashtags) — aplicado ao post pelo operador (painel) ou entregue automaticamente pela geração diária (`generate_daily_contents`, ver [Workflows](/miggoai/workflows)).
 
 ```mermaid
 flowchart LR
@@ -41,6 +41,15 @@ Os únicos dados que o `backend-miggo` expõe e o MiggoAI consome:
 | Posts (cards) | `post/list/`, `post/detail/<id>/` | `apps.posts.services.list_posts` / `get_post_detail` |
 | Formatos de post | `post/format/list/` | `apps.posts.services.get_post_formats` |
 | Status de post | `post/status/list/` | `apps.posts.services.get_post_statuses` |
+| Clientes com workflow ligado | `client/list/?miggoai_workflow_enabled=true` | `apps.clients.services.list_workflow_enabled_client_ids` |
+
+**Escrita** — só a geração diária escreve no `backend-miggo` (`apps/generations/services/delivery.py`, via `miggo_client.post`/`patch`):
+
+| Ação | Endpoint |
+|---|---|
+| Subir imagem gerada | `POST media/create/` (multipart) |
+| Ligar imagem ao card | `POST post/media-post/create/` |
+| Reservar / devolver / concluir card | `PATCH post/update/<id>/` (`processing` → `pending` ou `scheduled`, com título/legenda/formato) |
 
 O único dado do `backend-miggo` que o MiggoAI **persiste** localmente é um retrato diário do histórico de posts (`ClientPostHistory`, um registro por cliente/dia — `apps/clients/models.py:26-51`), para não repetir 3 chamadas HTTP a cada geração do mesmo dia. Respostas de variáveis de prompt fornecidas manualmente pelo operador também ficam salvas localmente (`ClientVariableValue`), reaproveitadas nas próximas gerações do mesmo cliente.
 

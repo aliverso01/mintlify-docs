@@ -121,7 +121,8 @@ O `backend-miggo` é a API principal da plataforma Miggo, escrita em Django. Est
     | `LOG_FILE` | `''` | `core/settings.py:405` — espelha logs em arquivo além do terminal |
     | `MANYCHAT_API_KEY` | — (obrigatória nos pontos de uso) | `app/post/services.py:111`, `app/conversation/services.py:31` — WhatsApp via ManyChat |
     | `MANYCHAT_WEBHOOK_TOKEN` | `''` | `app/conversation/webhooks.py:27` — valida webhook recebido do ManyChat |
-    | `CONTENT_APPROVATION_FLOW_ID` | — | `app/post/services.py:128` — flow do ManyChat para aprovação de conteúdo |
+    | `CONTENT_APPROVATION_FLOW_ID` | `content20260312121428_559122` | `app/post/services.py` — flow de aprovação quando a rede do post **não** está conectada (pede publicação manual) |
+    | `CONTENT_APPROVATION_CONNECTED_FLOW_ID` | `content20260914021405_104395` | `app/post/services.py` — flow de aprovação quando a rede do post está conectada (a Miggo publica) |
     | `GRID_APPROVAL_FLOW_ID` | `content20260806213736_542304` | `app/onboarding/cron.py:48` |
     | `GRID_APPROVAL_REMINDER_INTERVAL_HOURS` | `24` | `app/onboarding/cron.py:49-51` |
     | `GRID_APPROVAL_MAX_REMINDERS` | `3` | `app/onboarding/cron.py:53` |

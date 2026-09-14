@@ -45,6 +45,7 @@ Representa o cliente final da plataforma — um `CustomUser` com papel `client` 
 | `company` | `CharField(255)` | Não | `blank=True, null=True` | Nome da empresa |
 | `onboarding_step` | `IntegerField` | Não | `default=0`, choices `ONBOARDING_STEP_CHOICES` (0–5) | Contador legado de marcos do onboarding — nunca regride |
 | `onboarding_skipped` | `BooleanField` | Não | `default=False` | Se o cliente escolheu pular o onboarding |
+| `miggoai_workflow_enabled` | `BooleanField` | Não | `default=False` | Workflow do agente MiggoAI ligado — o `generate_daily_contents` do miggoai-2.0 só gera para quem está `True`. Muda só pelo toggle `miggoai-workflow/<pk>/` (migration `0014`) |
 | `created_at` | `DateTimeField` | Não (auto) | `auto_now_add=True` | Data de criação |
 
 `ONBOARDING_STEP_CHOICES` (`app/client/models.py:5`): `0=Não iniciado`, `1=Conta verificada`, `2=Plano escolhido`, `3=Redes sociais conectadas`, `4=Brandkit enviado`, `5=Briefing preenchido (Completo)`.
@@ -123,6 +124,7 @@ Prefixo comum: `/api/v1/client/` (definido em `core/urls.py:31`).
 | PATCH | `/api/v1/client/toggle-active/<int:pk>/` | `ToggleClientActiveView` | `IsManagementUser` |
 | GET | `/api/v1/client/trials/` | `TrialsPanelView` | `IsManagementUser` |
 | GET/PUT | `/api/v1/client/signature-preference/<int:pk>/` | `ClientSignaturePreferenceView` | `IsManagementUser` |
+| PUT | `/api/v1/client/miggoai-workflow/<int:pk>/` | `ClientMiggoAIWorkflowView` | `IsManagementUser` |
 | GET | `/api/v1/client/onboarding-status/<int:pk>/` | `OnboardingStatusView` | Default |
 | PATCH | `/api/v1/client/onboarding-step/<int:pk>/` | `UpdateOnboardingStepView` | Default |
 | POST | `/api/v1/client/onboarding-skip/<int:pk>/` | `SkipOnboardingView` | Default |
@@ -176,6 +178,7 @@ Escopo: se o usuário autenticado é `role='client'`, o queryset é restrito ao 
 <ParamField path="subscription__plan_price__plan" type="int">Filtro exato</ParamField>
 <ParamField path="subscription" type="bool">`isnull`</ParamField>
 <ParamField path="user" type="int">Filtro exato</ParamField>
+<ParamField path="miggoai_workflow_enabled" type="bool">Filtro exato — usado pela geração diária do MiggoAI para listar só os clientes com o workflow ligado</ParamField>
 <ParamField path="integration" type="string">Filtra por plataforma integrada ativa (`icontains` em `platform_integrations__platform__name`)</ParamField>
 <ParamField path="lifecycle" type="string">Lista separada por vírgula — filtra pelo `lifecycle` anotado (`lead`, `active`, `unconverted`, `churned`, `inactive`)</ParamField>
 <ParamField path="stage" type="string">Lista separada por vírgula — filtra pela etapa real da esteira (`stage` anotado), distinto do `onboarding_step` legado</ParamField>
@@ -324,6 +327,19 @@ GET devolve a predefinição efetiva dos 4 formatos; PUT aplica um `mode` a um o
 <ParamField path="text" type="string">Texto livre, usado quando `mode='text'`</ParamField>
 
 Erros: `404` cliente não encontrado; `400` `formats` ausente, formato inválido, ou `mode` inválido (quando diferente de `auto`).
+
+O GET também devolve `miggoai_workflow_enabled` (estado do toggle do agente MiggoAI), que o modal **Predefinições de Criação de Conteúdo** (`frontend-miggo/src/components/Clients/ContentPresetsModal.tsx`) usa para montar o switch.
+</Accordion>
+
+<Accordion title="PUT /miggoai-workflow/<pk>/ — ClientMiggoAIWorkflowView">
+Liga/desliga o workflow do agente MiggoAI do cliente — grava `Client.miggoai_workflow_enabled`. Não chama o MiggoAI: é o `generate_daily_contents` do miggoai-2.0 que lê a flag via `client/list/?miggoai_workflow_enabled=true` e gera os cards pendentes do dia seguinte. Restrito a `IsManagementUser`.
+
+<ParamField path="enabled" type="bool" required>`true` liga, `false` desliga. Precisa ser booleano JSON.</ParamField>
+
+<ResponseField name="client_id" type="int">Id do cliente</ResponseField>
+<ResponseField name="miggoai_workflow_enabled" type="bool">Estado gravado</ResponseField>
+
+Erros: `404` cliente não encontrado; `400` `enabled` ausente ou não booleano.
 </Accordion>
 
 </AccordionGroup>
@@ -332,9 +348,9 @@ Erros: `404` cliente não encontrado; `400` `formats` ausente, formato inválido
 
 ### ClientSerializer (`app/client/serializers.py:4`)
 
-Campos expostos: `id`, `user`, `hash`, `name`, `email`, `phone`, `active`, `company`, `brand_name`, `subscription`, `billing_email`, `onboarding_step`, `onboarding`, `lifecycle`, `created_at`.
+Campos expostos: `id`, `user`, `hash`, `name`, `email`, `phone`, `active`, `company`, `brand_name`, `subscription`, `billing_email`, `onboarding_step`, `onboarding`, `lifecycle`, `created_at`, `miggoai_workflow_enabled`.
 
-Somente leitura: `id`, `created_at`, `hash`, `user`.
+Somente leitura: `id`, `created_at`, `hash`, `user`, `miggoai_workflow_enabled` (só muda pelo toggle `miggoai-workflow/<pk>/`).
 
 Campos calculados (`SerializerMethodField`):
 - **`brand_name`** — itera `obj.meta.all()` (prefetch) procurando `key='brand_name'`; se não achar, cai em `obj.company`. Evita query extra por cliente.

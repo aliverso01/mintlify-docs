@@ -53,6 +53,28 @@ O card nasce com status `pending` e volta como `scheduled`. Cliente da integraç
   O worker do MiggoAI **ignora clientes sem `enable_workflow=True`**. Se a geração "não acontece" para um cliente específico, essa flag é o primeiro lugar a checar.
 </Warning>
 
+### Geração diária no MiggoAI 2.0
+
+No `miggoai-2.0` a geração automática roda por um management command diário, sem worker nem `enable_workflow`. Quem decide se o cliente entra é a flag `Client.miggoai_workflow_enabled` do `backend-miggo`, ligada pelo admin em **Predefinições de Criação de Conteúdo**.
+
+```mermaid
+sequenceDiagram
+    participant CRON as Tarefa diária (Dokploy)
+    participant AI as miggoai-2.0
+    participant BE as backend-miggo
+    participant OAI as OpenAI
+
+    CRON->>AI: manage.py generate_daily_contents
+    AI->>BE: GET client/list/?miggoai_workflow_enabled=true
+    AI->>BE: GET post/list/ (pending de amanhã)
+    AI->>BE: PATCH post/update/{id} (processing)
+    AI->>OAI: título, imagem, legenda, hashtags
+    AI->>BE: POST media/create + media-post/create
+    AI->>BE: PATCH post/update/{id} (scheduled + conteúdo)
+```
+
+Falha em qualquer passo devolve o card para `pending`. Detalhes em [Workflows](/miggoai/workflows).
+
 ## 3. Aprovação de conteúdo pelo WhatsApp
 
 O cliente aprova ou pede ajuste no conteúdo por WhatsApp, através do ManyChat. O backend mantém a máquina de estados em `ConversationFlowState` e usa o **Dynamic Block**: a URL registrada no ManyChat é fixa, e o que será renderizado é decidido pelo estado do fluxo, nunca por parâmetro de URL.
@@ -62,7 +84,8 @@ O cliente aprova ou pede ajuste no conteúdo por WhatsApp, através do ManyChat.
 | Engine do fluxo | `app/conversation/` — veja [Conversation](/backend/apps/conversation) |
 | Webhook de entrada | `POST /webhooks/manychat/` |
 | Continuação do Dynamic Block | `POST /webhooks/manychat/dynamic-block/continue/` |
-| Flows configurados | `CONTENT_APPROVATION_FLOW_ID`, `GRID_APPROVAL_FLOW_ID`, `DYNAMIC_FLOW_STARTER_FLOW_ID` |
+| Flows configurados | `CONTENT_APPROVATION_FLOW_ID` (rede não conectada), `CONTENT_APPROVATION_CONNECTED_FLOW_ID` (rede conectada), `GRID_APPROVAL_FLOW_ID`, `DYNAMIC_FLOW_STARTER_FLOW_ID` |
+| Escolha do flow de aprovação | `app.post.services.approval_flow_ns` — pela integração ativa da rede do post (antes era uma tag no ManyChat) |
 | Reenvio e tolerância a falha | `WHATSAPP_FLOW_RETRY_ATTEMPTS`, `WHATSAPP_FLOW_RETRY_BACKOFF`, `WHATSAPP_SEND_FLOW_DELAY`, `GRID_APPROVAL_MAX_REMINDERS` |
 
 Revisões agendadas são despachadas pelo cron `app.post.cron.send_scheduled_reviews`, que roda a cada minuto.

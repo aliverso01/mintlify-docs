@@ -206,6 +206,40 @@ Sim, o app expõe os workflows via API — ver <a href="/miggoai/api-referencia"
 python manage.py cleanup_test_generations --hours 24
 ```
 
+### Management command: `generate_daily_contents`
+
+`backend/apps/generations/management/commands/generate_daily_contents.py`. Geração automática diária: roda `run_complete` (ambiente `PRODUCTION`) nos cards `pending` de **amanhã** dos clientes com o workflow do agente ligado e entrega o resultado no post do `backend-miggo`.
+
+```bash
+python manage.py generate_daily_contents                  # só amanhã
+python manage.py generate_daily_contents --days 3         # amanhã + 2 dias
+python manage.py generate_daily_contents --client-id 7 --limit 5
+python manage.py generate_daily_contents --dry-run        # só lista os cards
+```
+
+Fluxo por card:
+
+1. Clientes: `client/list/?miggoai_workflow_enabled=true` (todas as páginas) — `apps.clients.services.list_workflow_enabled_client_ids`. A flag é ligada/desligada pelo admin em **Predefinições de Criação de Conteúdo** (ver [client](/backend/apps/client)).
+2. Cards: `post/list/?client_id=&status=pending&start_date=&end_date=` na janela.
+3. Reserva: `PATCH post/update/<id>/` → status `processing`, para duas execuções não pegarem o mesmo card.
+4. Gera: `run_complete(...)`. Qualquer passo que não termine em `SUCCESS` aborta o card.
+5. Entrega (`apps/generations/services/delivery.py::deliver`):
+   - cada imagem sobe em `media/create/` (multipart, `client`, `from_media_library=false`, `skip_ai_analysis=true`) e é ligada em `post/media-post/create/` com `sort_order` na ordem dos cards;
+   - `PATCH post/update/<id>/` com `title` (ângulo escolhido), `content` (legenda + hashtags no fim — o post não tem campo de hashtags), `post_format` (só se o card estava sem formato: o sugerido que bate com o `format_key` gerado) e, por último, status `scheduled`.
+6. Falha em 4 ou 5 → o card volta para `pending`; o erro fica na `Generation` (painel).
+
+A escrita usa as rotas que o `backend-miggo` já tinha, com a mesma `MIGGO_API_KEY` das leituras (`apps.common.miggo_client.post`/`patch`).
+
+<Warning>
+  **Agendamento**: o MiggoAI não tem cron próprio. Crie uma tarefa agendada diária no Dokploy, no container do backend, rodando `python manage.py generate_daily_contents`. Os cards são gerados em sequência e cada imagem pode levar até 300 s — não use timeout curto na tarefa.
+</Warning>
+
+Pontos de atenção:
+
+- Card que falha não é retentado sozinho: no dia seguinte ele sai da janela. Rode de novo no mesmo dia ou use `--days`.
+- Se a falha ocorrer depois do upload das imagens, elas ficam no post; uma nova execução sobe outras.
+- Imagens geradas são **somadas** a mídias que o card pendente já tenha.
+
 <Columns cols={2}>
   <Card title="Integração OpenAI" icon="brain" href="/miggoai/integracao-openai">Detalhe de cada chamada à API da OpenAI.</Card>
   <Card title="Arquitetura" icon="sitemap" href="/miggoai/arquitetura">Diagrama do fluxo completo.</Card>
