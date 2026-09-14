@@ -332,7 +332,7 @@ O GET também devolve `miggoai_workflow_enabled` (estado do toggle do agente Mig
 </Accordion>
 
 <Accordion title="PUT /miggoai-workflow/<pk>/ — ClientMiggoAIWorkflowView">
-Liga/desliga o workflow do agente MiggoAI do cliente — grava `Client.miggoai_workflow_enabled`. Não chama o MiggoAI: é o `generate_daily_contents` do miggoai-2.0 que lê a flag via `client/list/?miggoai_workflow_enabled=true` e gera os cards pendentes do dia seguinte. Restrito a `IsManagementUser`.
+Liga/desliga o workflow do agente MiggoAI do cliente — grava `Client.miggoai_workflow_enabled`. Não chama o MiggoAI: é o `generate_daily_contents` do miggoai-2.0 que lê a flag via `client/list/?miggoai_workflow_enabled=true` e gera os cards pendentes com 1 dia de antecedência no trial e 2 fora dele. Restrito a `IsManagementUser`.
 
 <ParamField path="enabled" type="bool" required>`true` liga, `false` desliga. Precisa ser booleano JSON.</ParamField>
 

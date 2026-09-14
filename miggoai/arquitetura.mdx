@@ -41,7 +41,7 @@ Os únicos dados que o `backend-miggo` expõe e o MiggoAI consome:
 | Posts (cards) | `post/list/`, `post/detail/<id>/` | `apps.posts.services.list_posts` / `get_post_detail` |
 | Formatos de post | `post/format/list/` | `apps.posts.services.get_post_formats` |
 | Status de post | `post/status/list/` | `apps.posts.services.get_post_statuses` |
-| Clientes com workflow ligado | `client/list/?miggoai_workflow_enabled=true` | `apps.clients.services.list_workflow_enabled_client_ids` |
+| Clientes com workflow ligado | `client/list/?miggoai_workflow_enabled=true` | `apps.clients.services.list_workflow_enabled_clients` |
 
 **Escrita** — só a geração diária escreve no `backend-miggo` (`apps/generations/services/delivery.py`, via `miggo_client.post`/`patch`):
 

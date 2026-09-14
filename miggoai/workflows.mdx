@@ -208,19 +208,21 @@ python manage.py cleanup_test_generations --hours 24
 
 ### Management command: `generate_daily_contents`
 
-`backend/apps/generations/management/commands/generate_daily_contents.py`. Geração automática diária: roda `run_complete` (ambiente `PRODUCTION`) nos cards `pending` de **amanhã** dos clientes com o workflow do agente ligado e entrega o resultado no post do `backend-miggo`.
+`backend/apps/generations/management/commands/generate_daily_contents.py`. Geração automática diária: roda `run_complete` (ambiente `PRODUCTION`) nos cards `pending` dos clientes com o workflow do agente ligado e entrega o resultado no post do `backend-miggo`.
+
+**Antecedência por cliente** (constantes `ANTECEDENCIA_TRIAL`/`ANTECEDENCIA_ASSINANTE`): cliente em trial (`subscription.status == 'TRIAL'`) gera os cards de **amanhã**; fora do trial (qualquer outro status, ou sem assinatura), os de **amanhã e depois de amanhã** — 2 dias antes da data. A janela sempre começa amanhã: o card que falhou ontem é tentado de novo e o dia em que o cliente sai do trial não fica sem geração.
 
 ```bash
-python manage.py generate_daily_contents                  # só amanhã
-python manage.py generate_daily_contents --days 3         # amanhã + 2 dias
+python manage.py generate_daily_contents                    # janela padrão por cliente
+python manage.py generate_daily_contents --extra-days 2     # soma 2 dias ao fim da janela
 python manage.py generate_daily_contents --client-id 7 --limit 5
 python manage.py generate_daily_contents --dry-run        # só lista os cards
 ```
 
 Fluxo por card:
 
-1. Clientes: `client/list/?miggoai_workflow_enabled=true` (todas as páginas) — `apps.clients.services.list_workflow_enabled_client_ids`. A flag é ligada/desligada pelo admin em **Predefinições de Criação de Conteúdo** (ver [client](/backend/apps/client)).
-2. Cards: `post/list/?client_id=&status=pending&start_date=&end_date=` na janela.
+1. Clientes: `client/list/?miggoai_workflow_enabled=true` (todas as páginas) — `apps.clients.services.list_workflow_enabled_clients`, que devolve `{id, em_trial}` a partir do `subscription.status`. A flag é ligada/desligada pelo admin em **Predefinições de Criação de Conteúdo** (ver [client](/backend/apps/client)).
+2. Cards: `post/list/?client_id=&status=pending&start_date=&end_date=` na janela do cliente.
 3. Reserva: `PATCH post/update/<id>/` → status `processing`, para duas execuções não pegarem o mesmo card.
 4. Gera: `run_complete(...)`. Qualquer passo que não termine em `SUCCESS` aborta o card.
 5. Entrega (`apps/generations/services/delivery.py::deliver`):
@@ -236,7 +238,7 @@ A escrita usa as rotas que o `backend-miggo` já tinha, com a mesma `MIGGO_API_K
 
 Pontos de atenção:
 
-- Card que falha não é retentado sozinho: no dia seguinte ele sai da janela. Rode de novo no mesmo dia ou use `--days`.
+- Fora do trial, o card que falha é tentado de novo no dia seguinte (ainda está na janela). No trial ele sai da janela: rode de novo no mesmo dia ou use `--extra-days`.
 - Se a falha ocorrer depois do upload das imagens, elas ficam no post; uma nova execução sobe outras.
 - Imagens geradas são **somadas** a mídias que o card pendente já tenha.
 
