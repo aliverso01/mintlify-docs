@@ -210,7 +210,7 @@ python manage.py cleanup_test_generations --hours 24
 
 `backend/apps/generations/management/commands/generate_daily_contents.py`. Geração automática diária: roda `run_complete` (ambiente `PRODUCTION`) nos cards `pending` dos clientes com o workflow do agente ligado e entrega o resultado no post do `backend-miggo`.
 
-**Antecedência por cliente** (constantes `ANTECEDENCIA_TRIAL`/`ANTECEDENCIA_ASSINANTE`): cliente em trial (`subscription.status == 'TRIAL'`) gera os cards de **amanhã**; fora do trial (qualquer outro status, ou sem assinatura), os de **amanhã e depois de amanhã** — 2 dias antes da data. A janela sempre começa amanhã: o card que falhou ontem é tentado de novo e o dia em que o cliente sai do trial não fica sem geração.
+**Antecedência por cliente** (constantes `ANTECEDENCIA_TRIAL`/`ANTECEDENCIA_ASSINANTE`): contada em **dias de postagem** — os dias da semana com entrada ativa no calendário editorial do cliente (`editorial-calendar/list/?client_id=`, via `apps.clients.services.get_posting_weekdays`). Cliente em trial (`subscription.status == 'TRIAL'`) gera os cards do **próximo** dia programado; fora do trial (qualquer outro status, ou sem assinatura), os do **segundo**. Ex.: quem posta de segunda a sexta, na sexta gera terça. Cliente sem calendário ativo conta dias corridos.
 
 ```bash
 python manage.py generate_daily_contents                    # janela padrão por cliente
@@ -238,7 +238,8 @@ A escrita usa as rotas que o `backend-miggo` já tinha, com a mesma `MIGGO_API_K
 
 Pontos de atenção:
 
-- Fora do trial, o card que falha é tentado de novo no dia seguinte (ainda está na janela). No trial ele sai da janela: rode de novo no mesmo dia ou use `--extra-days`.
+- Card que falha não é retentado sozinho: no dia seguinte ele sai da janela. Rode de novo no mesmo dia.
+- No dia em que o cliente sai do trial, os cards do próximo dia programado não entram (em trial ele gerava o 1º dia programado; fora dele passa a gerar o 2º). Cubra com uma execução manual para o cliente.
 - Se a falha ocorrer depois do upload das imagens, elas ficam no post; uma nova execução sobe outras.
 - Imagens geradas são **somadas** a mídias que o card pendente já tenha.
 

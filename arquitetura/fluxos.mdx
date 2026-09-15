@@ -66,7 +66,8 @@ sequenceDiagram
 
     CRON->>AI: manage.py generate_daily_contents
     AI->>BE: GET client/list/?miggoai_workflow_enabled=true
-    AI->>BE: GET post/list/ (pending: amanhã no trial, até +2 dias fora dele)
+    AI->>BE: GET editorial-calendar/list/ (dias de postagem do cliente)
+    AI->>BE: GET post/list/ (pending do 1º dia programado no trial, do 2º fora dele)
     AI->>BE: PATCH post/update/{id} (processing)
     AI->>OAI: título, imagem, legenda, hashtags
     AI->>BE: POST media/create + media-post/create
