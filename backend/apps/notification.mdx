@@ -243,6 +243,7 @@ Não há `validate()` nem `create`/`update` customizados — o serializer é usa
 - **Assinatura:** `notification_type: str`, `title: str`, `message: str`, `link: str = None`, `dedupe_window_seconds: int = 0`, `dedupe_key: str = None`.
 - **Efeito colateral:** cria uma `Notification` para **todos** os `CustomUser` com `role='admin'` e `is_active=True` (`utils.py:55`), em lote via `Notification.objects.bulk_create(...)` (`utils.py:66`).
 - **Deduplicação opcional:** se `dedupe_window_seconds > 0` e `dedupe_key` for informado, antes de criar verifica se já existe uma `Notification` do mesmo `notification_type` cujo `message` contenha `dedupe_key` dentro da janela `now() - dedupe_window_seconds`; se existir, a função retorna sem criar nada (`utils.py:43-53`). Serve para não gerar uma notificação por admin a cada upload de um lote de mídias, por exemplo.
+- **Supressão de eventos de rotina (MIG-260):** eventos presentes em `TIPOS_SILENCIADOS_ADMIN = {'post_published', 'content_rejected'}` sofrem early return imediato e **não** geram notificação para administradores. Isso evita poluir o sininho da equipe com tarefas cotidianas da esteira de conteúdo. Esses eventos continuam sendo notificados aos clientes normalmente via `notify()`.
 - **Retorno:** nenhum (`None`).
 
 <Note>

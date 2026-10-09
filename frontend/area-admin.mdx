@@ -60,11 +60,10 @@ As telas exclusivas da equipe vivem em `src/pages/Admin/`. As demais rotas de `/
   <Accordion title="Gestão de clientes e contas">
     | Rota | Componente | O que permite |
     | --- | --- | --- |
-    | `/admin/clients` | `ClientsList` | Lista e gestão dos clientes da plataforma |
+    | `/admin/clients` | `ClientsList` | Lista e gestão de clientes, incluindo controle de redes sociais permitidas (MIG-384) |
     | `/admin/users` | `UsersList` | Lista de usuários |
-    | `/admin/trials` | `Admin/TrialsPanel` | Acompanhamento dos períodos de teste |
+    | `/admin/trials` | `Admin/TrialsPanel` | Acompanhamento de testes, funil e botão "Regerar Grid" em contingência (MIG-414) |
     | `/admin/plans` | `Admin/PlanManagement` | Cadastro e edição dos planos |
-    | `/admin/platform-config` | `Admin/PlatformProfileConfigPage` | Configuração do perfil da plataforma |
   </Accordion>
 
   <Accordion title="Conteúdo e operação">
@@ -73,7 +72,7 @@ As telas exclusivas da equipe vivem em `src/pages/Admin/`. As demais rotas de `/
     | `/admin/content/parados` | `StalledPosts` | Cards travados na esteira de produção |
     | `/admin/logs` | `Admin/IntegrationLogs` | Auditoria das chamadas a APIs externas (tabela `Integration` do backend) |
     | `/admin/notifications` | `Admin/NotificationHistory` | Histórico de notificações enviadas |
-    | `/admin/design-references` | `Admin/DesignReferences` | Referências visuais |
+    | `/admin/design-references` | `Admin/DesignReferences` | Referências visuais e aba de Referências de Títulos/Copies (MIG-382) |
   </Accordion>
 
   <Accordion title="Comunicação">
@@ -90,7 +89,7 @@ As telas exclusivas da equipe vivem em `src/pages/Admin/`. As demais rotas de `/
 
     | Rota | Componente | O que permite |
     | --- | --- | --- |
-    | `/admin/billing` | `Admin/BillingManagement` | Gestão de faturamento |
+    | `/admin/billing` | `Admin/BillingManagement` | Gestão de faturamento em abas, conciliação à vista, fila de anomalias e vínculo à série do gateway (MIG-402..405) |
     | `/admin/financial` | `Admin/FinancialDashboard` | Painel financeiro |
     | `/admin/team` | `Admin/TeamManagement` | Gestão do time Miggo |
   </Accordion>

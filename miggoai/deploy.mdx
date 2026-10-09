@@ -1,0 +1,65 @@
+---
+title: "Deploy do MiggoAI"
+description: "Construção de imagens Docker, execução via Dokploy, entrypoint, migrações e configuração do container."
+icon: "server"
+---
+
+O serviço MiggoAI é composto por dois containers independentes definidos na raiz de `miggoai-2.0/miggoai_v2/`: o **Backend** (`Dockerfile.backend`) e o **Frontend** (`Dockerfile.frontend`), orquestrados via Dokploy ou Docker Compose.
+
+## Backend (`Dockerfile.backend`)
+
+Construído sobre `python:3.13-slim` com dependências de sistema (`libpq5`).
+
+### Playwright e Renderização de Artes (MIG-409)
+
+O container inclui instalação do Playwright com o browser Chromium e suas dependências de sistema:
+
+```dockerfile
+RUN playwright install --with-deps chromium
+```
+
+Essa instalação viabiliza a renderização local de banners de LinkedIn e capas de destaques de Instagram a partir de HTML/CSS diretamente dentro do container, substituindo a dependência anterior do serviço externo `htmlcsstoimage` (hcti.io).
+
+### Entrypoint e Inicialização
+
+O script de inicialização do container (`/app/docker-entrypoint.sh`) roda três passos automáticos antes de subir o servidor:
+
+1. `python manage.py migrate --noinput` — aplica migrations pendentes do Django.
+2. `python manage.py seed_prompts` — cadastra/atualiza os workflows básicos (`title`, `image`, `caption`, `hashtags`, `grid`, `bio`) de forma idempotente por chave natural.
+3. `python manage.py collectstatic --noinput` — consolida arquivos estáticos do Django.
+
+### Servidor de Aplicação (Gunicorn)
+
+O processo roda com `gthread` para suportar requisições longas de geração síncrona sem travar chamadas concorrentes:
+
+```bash
+gunicorn core.wsgi:application \
+  --bind 0.0.0.0:8000 \
+  --worker-class gthread \
+  --workers 3 \
+  --threads 8 \
+  --timeout 1800 \
+  --graceful-timeout 60
+```
+
+<Note>
+O timeout estendido de 1800 s (30 min) é obrigatório: a geração de múltiplas imagens em um carrossel ou grid pode levar até 300 s por imagem. Timeouts menores fariam o Gunicorn enviar SIGABRT e derrubar o worker prematuramente.
+</Note>
+
+## Frontend (`Dockerfile.frontend`)
+
+Multi-stage build:
+1. **Build (`node:22-alpine`)**: roda `npm ci` e `npm run build` gerando a pasta `dist`.
+2. **Runtime (`nginx:alpine`)**: serve os estáticos com suporte a deep link (`try_files $uri /index.html`).
+
+O script `/docker-entrypoint.d/40-miggo-config.sh` gera o arquivo `config.js` em runtime contendo a URL da API definida pela variável `VITE_API_BASE_URL` (padrão `http://localhost:8010`), permitindo usar a mesma imagem Docker em homologação e produção sem rebuild.
+
+## Variáveis de Ambiente Críticas
+
+| Variável | Onde é usada | Descrição |
+|---|---|---|
+| `SECRET_KEY` | Backend | Chave secreta da aplicação Django |
+| `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT` | Backend | Conexão com o PostgreSQL |
+| `OPENAI_API_KEY` | Backend | Chave de API da OpenAI para geração de textos e imagens |
+| `MIGGO_API_KEY` | Backend | Chave de serviço compartilhada para chamadas à API do `backend-miggo` |
+| `VITE_API_BASE_URL` | Frontend | URL pública do backend MiggoAI acessível pelo navegador |

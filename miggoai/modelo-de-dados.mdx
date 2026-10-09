@@ -25,7 +25,7 @@ erDiagram
 
     Workflow {
         int id PK
-        string key UK "title|image|caption|hashtags"
+        string key UK "title|image|caption|hashtags|grid|bio"
         string name
         text description
         bool is_active
@@ -143,11 +143,11 @@ Fonte: `backend/apps/prompts/models.py`.
 
 ### `Workflow`
 
-Um dos 4 tipos de geração de conteúdo.
+Tipo de geração de conteúdo suportado pelo sistema.
 
 | Campo | Tipo | Detalhe |
 |---|---|---|
-| `key` | `CharField(30)`, choices | Único. Choices: `title` ("Título"), `image` ("Imagem"), `caption` ("Legenda"), `hashtags` ("Hashtags") — constantes `KEY_TITLE`/`KEY_IMAGE`/`KEY_CAPTION`/`KEY_HASHTAGS`. |
+| `key` | `CharField(30)`, choices | Único. Choices: `title` ("Título"), `image` ("Imagem"), `caption` ("Legenda"), `hashtags` ("Hashtags"), `grid` ("Grid 3x3") e `bio` ("Bio de Perfil") (MIG-419). Os workflows `grid` e `bio` possuem prompts montados diretamente em código Python, sem depender de `PromptDefinition` no banco. |
 | `name` | `CharField(100)` | Nome de exibição. |
 | `description` | `TextField` | Opcional. |
 | `is_active` | `BooleanField` | Default `True`. |

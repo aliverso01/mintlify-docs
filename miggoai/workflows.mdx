@@ -20,8 +20,8 @@ A lógica é a mesma por construção (o backend foi "portado direto" do protót
 `backend/apps/generations/services/runner.py:54-145`.
 
 **Parâmetros**:
-- `workflow_key` (`str`) — `'title'`, `'image'`, `'caption'` ou `'hashtags'`.
-- `client_id` / `post_id` (`int`) — ids no backend-miggo.
+- `workflow_key` (`str`) — `'title'`, `'image'`, `'caption'`, `'hashtags'`, `'grid'` ou `'bio'` (MIG-419).
+- `client_id` / `post_id` (`int`) — ids no backend-miggo (`client_id` obrigatório para registrar a Generation).
 - `environment` (`str`) — `Generation.ENV_TEST` ou `Generation.ENV_PRODUCTION`.
 - `user` — usuário Django autenticado (ou `None`/anônimo).
 - `variable_overrides` (`dict`, opcional) — valores que sobrescrevem o contexto automático.
@@ -123,6 +123,30 @@ Ver detalhes em <a href="/miggoai/prompts">Prompts</a>. Define 4 contratos (`TIT
 - Monta `hashtags_recentes` (até 30 hashtags únicas dos últimos 10 posts do histórico), renderiza `hashtags-post`, chama a OpenAI com o contrato `HASHTAGS`.
 
 **Retorna**: `{prompt_slug: 'hashtags-post', prompt_version_used, format_key, hashtags, reason}` (ou `skipped`).
+
+### `grid_workflow.run(context, variable_overrides=None, on_stage=None) -> dict`
+
+`backend/apps/generations/services/grid_workflow.py` (MIG-408, MIG-419).
+
+Gera o mosaico de feed 3x3 para a aprovação do estilo visual no onboarding. O prompt vive hardcoded no próprio arquivo em código Python (não depende de `PromptDefinition` no CMS), combinando a logo, as cores hexadecimais da marca e o estilo de referência escolhido. Registra auditoria em `Generation` com chave `'grid'`.
+
+### `bio_workflow.run(context, variable_overrides=None, on_stage=None) -> dict`
+
+`backend/apps/generations/services/bio_workflow.py` (MIG-418, MIG-419).
+
+Gera bio institucional para Instagram e texto "Sobre" para LinkedIn, além de sugestão de nome de exibição (`display_name`). Prompt em código Python, síncrono. Aceita `feedback` em `variable_overrides` para solicitações de ajuste vindas da plataforma, preservando a peça atual em caso de falha. Registra auditoria com chave `'bio'`.
+
+### `banner_workflow.run(context, variable_overrides=None, on_stage=None) -> dict`
+
+`backend/apps/generations/services/banner_workflow.py` (MIG-409, MIG-418).
+
+Gera a imagem de capa/banner para LinkedIn a partir de template HTML/CSS renderizado localmente pelo Playwright (Chromium). Aceita parâmetro de `feedback` para regeração após pedido de correção.
+
+### `destaques_workflow.run(context, variable_overrides=None, on_stage=None) -> dict`
+
+`backend/apps/generations/services/destaques_workflow.py` (MIG-409, MIG-416).
+
+Gera as capas dos destaques do Instagram diretamente via HTML/CSS renderizado com Playwright. Após decisão de arquitetura no MIG-416, a geração de arte por IA para capas foi removida (o prompt `destaques-capa-arte` foi descontinuado), mantendo a composição estritamente gráfica baseada nas cores e ícones da marca.
 
 ### `media_matcher.py` — peneira léxica da galeria
 

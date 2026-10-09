@@ -4,7 +4,7 @@ description: "Provedores de terceiros usados pela plataforma, para que servem e 
 icon: "share-2"
 ---
 
-Todas as integrações externas são feitas pelo **backend-miggo**, com exceção da OpenAI, consumida pelo **miggoai**. O frontend não fala com terceiros, salvo o login social do Google.
+Todas as integrações externas são feitas pelo **backend-miggo**, com exceção da OpenAI e renderização com Playwright consumidas pelo **miggoai**, e do login social do Google e Meta Pixel (MIG-422) no **frontend**.
 
 <Warning>
   Nenhuma chave aparece nesta documentação. As tabelas listam apenas o **nome** da variável de ambiente; os valores ficam no `.env` de cada ambiente e nunca são versionados.
@@ -16,12 +16,13 @@ Todas as integrações externas são feitas pelo **backend-miggo**, com exceçã
 | --- | --- | --- | --- |
 | **Stripe** | Cobrança e assinaturas (gateway principal) | `app/subscription/`, webhook em `app/webhooks/views.py` | `STRIPE_API_KEY`, `STRIPE_PROD_API_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_TRIAL_DAYS` |
 | **Asaas** | Gateway de cobrança alternativo | `app/subscription/asaas_gateway.py` | `ASAAS_API_KEY`, `ASAAS_BASE_URL` |
-| **Zernio** (antigo late.dev) | Publicação nas redes e analytics dos posts | `app/post/zernio.py`, webhook em `app/webhooks/views.py` | `LATE_API_KEY` |
+| **Zernio** (antigo late.dev) | Publicação nas redes (Instagram, LinkedIn, TikTok, Facebook) e analytics | `app/post/zernio.py`, webhook em `app/webhooks/views.py` | `LATE_API_KEY` |
 | **ManyChat** | Conversas por WhatsApp, aprovação de conteúdo e Dynamic Block | `app/conversation/`, `app/onboarding/cron.py`, `app/onboarding/services.py` | `MANYCHAT_API_KEY`, `MANYCHAT_WEBHOOK_TOKEN`, `CONTENT_APPROVATION_FLOW_ID`, `CONTENT_APPROVATION_CONNECTED_FLOW_ID`, `DYNAMIC_FLOW_STARTER_FLOW_ID`, `GRID_APPROVAL_FLOW_ID` |
-| **MiggoAI** | Geração de título, imagem, legenda e hashtags. O onboarding dispara o MiggoAI antigo; a geração diária do miggoai-2.0 (`generate_daily_contents`) lê os clientes com `miggoai_workflow_enabled` e escreve de volta via API key | `app/onboarding/miggoai.py`; flag em `app/client` | `MIGGOAI_API_URL`, `MIGGOAI_USERNAME`, `MIGGOAI_PASSWORD` |
-| **OpenAI** | Modelos de texto e imagem (chamada direta do backend e do MiggoAI) | `miggoai_v2/modules/openai.py` | `OPENAI_API_KEY`, `OPENAI_API_URL`, `OPENAI_MODEL`, `OPENAI_IMAGE_MODEL`, `MEDIA_ANALYSIS_MODEL` |
+| **MiggoAI** | Geração de título, imagem, legenda, hashtags, grid 3x3 e peças de perfil | `app/onboarding/miggoai.py`; flag em `app/client` | `MIGGOAI_API_URL`, `MIGGOAI_USERNAME`, `MIGGOAI_PASSWORD` |
+| **OpenAI** | Modelos de texto e imagem (chamada direta do backend e do MiggoAI) | `miggoai_v2/modules/openai.py`, `miggoai_v2/backend/` | `OPENAI_API_KEY`, `OPENAI_API_URL`, `OPENAI_MODEL`, `OPENAI_IMAGE_MODEL`, `MEDIA_ANALYSIS_MODEL` |
+| **Playwright** | Renderização de banner e destaques a partir de HTML/CSS (MIG-409) | `miggoai_v2/backend/apps/generations/services/` | Executado localmente no container |
 | **Apify** | Coleta do perfil do Instagram no onboarding | `app/client/instagram.py`, `app/onboarding/services.py` | `APIFY_TOKEN` |
-| **HTML/CSS to Image (hcti.io)** | Renderiza capas de destaques e banner do LinkedIn a partir de HTML | `app/onboarding/services.py` | `HTMLTOCSSIMAGE_ID`, `HTMLTOCSSIMAGE_API_KEY` |
+| **Meta Pixel** | Rastreamento de conversão e eventos em produção (MIG-422) | `frontend-miggo/src/hooks/useFacebookPixel.ts` | Configurado no `index.html` em prod |
 | **Google Identity** | Login social (verificação do ID token) | `app/account/views.py` | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_AUTH_CLOCK_SKEW` |
 | **Jira** | Abertura automática de chamados a partir do produto | `app/account/jira_service.py` | `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_PROJECT_KEY`, `JIRA_ISSUE_TYPE` |
 | **AWS S3** | Armazenamento de mídia quando `USE_S3` está ligado | `core/settings.py` (`STORAGES`) | `USE_S3`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_STORAGE_BUCKET_NAME`, `AWS_S3_REGION_NAME`, `AWS_S3_CUSTOM_DOMAIN`, `AWS_S3_PROJECT_FOLDER` |

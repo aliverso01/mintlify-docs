@@ -63,11 +63,11 @@ Função: `send_grid_approval_reminders()`.
   <Step title="Filtra quem ainda não aprovou">
     Percorre os clientes e verifica `data.grid.client_approved`. Só age quando **não** foi aprovado.
   </Step>
-  <Step title="Exige grid pronto">
-    Só cobra quem tem grid pronto para aprovar e cujo grid não está em regeração (`generation_status != 'pending'`).
+  <Step title="Exige peça válida e que atenda ao pedido">
+    Só cobra quem tem grid pronto para aprovar e cujo grid não está aguardando regeração (`grid_aguarda_regeracao`). Peça anterior ao último pedido de ajuste do cliente não é cobrada (MIG-423).
   </Step>
-  <Step title="Respeita o intervalo">
-    Para não repetir a cobrança a cada 5 minutos, reenvia apenas quando o último lembrete já passou da janela configurada.
+  <Step title="Respeita o intervalo e régua anti-spam">
+    Reenvia apenas quando o último lembrete passou da janela configurada. Uma cobrança só é considerada válida se foi disparada depois do pedido do cliente E depois da peça que o atende (`grid_atendimento_pendente_em`). Regerações feitas pela equipe não repetem cobrança no WhatsApp sem pedido explícito do cliente (MIG-414).
   </Step>
   <Step title="Dispara o flow">
     Chama o flow de cobrança de aprovação no ManyChat, autenticado com `MANYCHAT_API_KEY`.

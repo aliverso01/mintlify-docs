@@ -239,6 +239,11 @@ Todas as rotas abaixo são montadas sob o prefixo `/api/v1/subscription/` (`core
 | GET | `/plan-price/board/` | `PlanPriceBoardView` | padrão |
 | POST | `/change-plan/` | `ChangeClientPlanView` | `IsAdminUser` |
 | GET | `/unlinked-active-subscriptions/` | `UnlinkedActiveSubscriptionsView` | `IsAdminUser` |
+| GET | `/gateway-search/` | `GatewaySearchView` | `IsAdminUser` (MIG-405) |
+| GET | `/anomalies/` | `SubscriptionAnomaliesView` | `IsAdminUser` (MIG-404) |
+| GET | `/orphan-charges/` | `OrphanChargeListView` | `IsAdminUser` (MIG-391) |
+| POST | `/orphan-charges/<pk>/resolve/` | `OrphanChargeResolveView` | `IsAdminUser` (MIG-391) |
+| POST | `/<pk>/gateway-link/` | `SubscriptionGatewayLinkView` | `IsAdminUser` (MIG-322) |
 | GET | `/duplicate-subscriptions/` | `DuplicateSubscriptionsView` | `IsAdminUser` |
 | POST | `/deduplicate-subscriptions/` | `DeduplicateSubscriptionsView` | `IsAdminUser` |
 | POST | `/plan-price/sync-gateway/<pk>/` | `PlanPriceGatewaySyncView` | `IsAdminUser` |

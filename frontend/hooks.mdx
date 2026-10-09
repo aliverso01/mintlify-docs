@@ -260,4 +260,23 @@ const { shouldShow, complete, hide } = useWelcomeTour(clientId, enabled);
 ```
 </Accordion>
 
+<Accordion title="useFacebookPixel (MIG-422)">
+`src/hooks/useFacebookPixel.ts:25-80`
+
+```ts
+export const useFacebookPixel = (): void;
+export const enqueueFacebookEvent: (eventName: string, params?: Record<string, any>) => void;
+```
+
+Dispara o evento `PageView` do Meta Pixel a cada troca de rota (`useLocation`), operando exclusivamente no domínio de produção (`app.miggomkt.com.br`) para evitar poluição dos dados de tráfego em desenvolvimento e homologação.
+
+- `enqueueFacebookEvent`: enfileira eventos em `sessionStorage` que precedem recargas de tela (como o cadastro por e-mail), disparando-os logo após o reload sem perder a requisição.
+- Eventos padrão mapeados no app: `PageView` (rotas), `StartTrial` (`PlanStep`), `CompleteRegistration` (`SignupStep`) e `Purchase` (`Success`, deduplicado no `localStorage`).
+
+**Uso real** (`src/components/common/RouteAnalytics.tsx:8`):
+```ts
+useFacebookPixel();
+```
+</Accordion>
+
 </AccordionGroup>

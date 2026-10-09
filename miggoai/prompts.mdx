@@ -48,6 +48,12 @@ Fonte: `backend/apps/prompts/data/seed_prompts.json`, aplicado por `python manag
   (`_CHAIN_ONLY_KEYS`, ver <a href="/miggoai/arquitetura">Arquitetura</a>).
 </Note>
 
+<Note>
+  **Workflows com prompt em código (MIG-419):** Os workflows `grid` (mosaico 3x3) e `bio` (bio de perfil) possuem seus prompts montados diretamente em código Python (`grid_workflow.py` e `bio_workflow.py`) e não possuem `PromptDefinition` cadastrado no CMS nem no seed.
+
+  **Remoção de prompt de arte de destaques (MIG-416):** O prompt `destaques-capa-arte` foi descontinuado e excluído do banco (migration `0004_remove_prompt_destaques_capa_arte.py`). As capas de destaque do Instagram passaram a ser geradas exclusivamente por composição gráfica HTML/CSS via Playwright, sem geração de imagem por IA.
+</Note>
+
 ## Renderização (`apps/prompts/services/rendering.py`)
 
 Módulo puro (sem I/O, sem chamada a IA), usado tanto pela API de preview quanto pelos workflows reais.

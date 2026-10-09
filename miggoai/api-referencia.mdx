@@ -118,6 +118,15 @@ Fonte: `backend/apps/generations/urls.py`, `backend/apps/generations/views.py`.
 | POST | `/api/generations/production/` | `GenerationProductionView` | Roda 1 workflow em ambiente PRODUCTION. |
 | POST | `/api/generations/test/complete/` | `GenerationCompleteTestView` | Roda os 4 workflows encadeados em TEST. |
 | POST | `/api/generations/production/complete/` | `GenerationCompleteProductionView` | Roda os 4 workflows encadeados em PRODUCTION. |
+| POST | `/api/generations/grid/` | `GridView` | Gera o mosaico 3x3 do onboarding (MIG-408, MIG-419). |
+| POST | `/api/generations/perfil/bio/` | `BioView` | Gera bio institucional e sugestão de nome (MIG-418, MIG-419). |
+| POST | `/api/generations/perfil/banner/` | `GerarBannerView` | Gera banner de LinkedIn via Playwright (MIG-409, MIG-418). |
+| POST | `/api/generations/perfil/destaques/` | `GerarDestaquesView` | Gera capas de destaques via Playwright (MIG-409, MIG-416). |
+| POST | `/api/generations/gerar-agora/` | `GerarAgoraView` | Acionamento imediato vindo do backend-miggo (MIG-379). |
+| POST | `/api/generations/gerar-card/` | `GerarCardView` | Dispara geração para card específico. |
+| POST | `/api/generations/regenerate/` | `RegenerateView` | Solicita regeração de peça. |
+| GET | `/api/generations/linhas/` | `LinhaListView` | Lista linhas de produção paginadas com thumbnails. |
+| GET | `/api/generations/execucoes/<int:pk>/` | `ExecucaoDetailView` | Detalhe de execução com trilha completa. |
 | GET | `/api/generations/context/` | `GenerationContextView` | Prévia do contexto (sem chamar IA). |
 | GET | `/api/generations/` | `GenerationListView` | Lista generations (filtros). |
 | GET | `/api/generations/<int:pk>/` | `GenerationDetailView` | Detalhe de uma generation. |

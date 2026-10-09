@@ -45,7 +45,9 @@ Representa o cliente final da plataforma — um `CustomUser` com papel `client` 
 | `company` | `CharField(255)` | Não | `blank=True, null=True` | Nome da empresa |
 | `onboarding_step` | `IntegerField` | Não | `default=0`, choices `ONBOARDING_STEP_CHOICES` (0–5) | Contador legado de marcos do onboarding — nunca regride |
 | `onboarding_skipped` | `BooleanField` | Não | `default=False` | Se o cliente escolheu pular o onboarding |
-| `miggoai_workflow_enabled` | `BooleanField` | Não | `default=False` | Workflow do agente MiggoAI ligado — o `generate_daily_contents` do miggoai-2.0 só gera para quem está `True`. Muda só pelo toggle `miggoai-workflow/<pk>/` (migration `0014`) |
+| `miggoai_workflow_enabled` | `BooleanField` | Não | `default=True`, `db_index=True` | Workflow do agente MiggoAI ligado (MIG-355: nasce ligado). O `generate_daily_contents` do miggoai-2.0 só gera para quem está `True`. |
+| `generation_requested_at` | `DateTimeField` | Não | `null=True, blank=True, db_index=True` | Pedido de geração imediata pendente (MIG-356; limpo pelo MiggoAI ao atender). |
+| `allowed_social_networks` | `ManyToManyField(post.SocialNetwork)` | Não | `blank=True, related_name='allowed_clients'` | Redes sociais que o Admin liberou para este cliente conectar e publicar (MIG-384). |
 | `created_at` | `DateTimeField` | Não (auto) | `auto_now_add=True` | Data de criação |
 
 `ONBOARDING_STEP_CHOICES` (`app/client/models.py:5`): `0=Não iniciado`, `1=Conta verificada`, `2=Plano escolhido`, `3=Redes sociais conectadas`, `4=Brandkit enviado`, `5=Briefing preenchido (Completo)`.
@@ -123,8 +125,13 @@ Prefixo comum: `/api/v1/client/` (definido em `core/urls.py:31`).
 | POST | `/api/v1/client/verify-code/<int:pk>/` | `VerifyClientCodeView` | Default |
 | PATCH | `/api/v1/client/toggle-active/<int:pk>/` | `ToggleClientActiveView` | `IsManagementUser` |
 | GET | `/api/v1/client/trials/` | `TrialsPanelView` | `IsManagementUser` |
+| GET | `/api/v1/client/trials/sales-funnel/` | `SalesFunnelView` | `IsManagementUser` (MIG-336) |
+| POST | `/api/v1/client/trials/<int:pk>/grid-retry/` | `TrialsGridRetryView` | `IsManagementUser` (MIG-414) |
 | GET/PUT | `/api/v1/client/signature-preference/<int:pk>/` | `ClientSignaturePreferenceView` | `IsManagementUser` |
 | PUT | `/api/v1/client/miggoai-workflow/<int:pk>/` | `ClientMiggoAIWorkflowView` | `IsManagementUser` |
+| POST | `/api/v1/client/miggoai-generate-now/<int:pk>/` | `ClientMiggoAIGenerateNowView` | `IsManagementUser` (MIG-356) |
+| GET/PUT | `/api/v1/client/media-preference/<int:pk>/` | `ClientMediaPreferenceView` | `IsManagementUser` (MIG-248) |
+| GET/PUT | `/api/v1/client/allowed-social-networks/<int:pk>/` | `ClientAllowedSocialNetworksView` | `IsManagementUser` (MIG-384) |
 | GET | `/api/v1/client/onboarding-status/<int:pk>/` | `OnboardingStatusView` | Default |
 | PATCH | `/api/v1/client/onboarding-step/<int:pk>/` | `UpdateOnboardingStepView` | Default |
 | POST | `/api/v1/client/onboarding-skip/<int:pk>/` | `SkipOnboardingView` | Default |
@@ -348,9 +355,9 @@ Erros: `404` cliente não encontrado; `400` `enabled` ausente ou não booleano.
 
 ### ClientSerializer (`app/client/serializers.py:4`)
 
-Campos expostos: `id`, `user`, `hash`, `name`, `email`, `phone`, `active`, `company`, `brand_name`, `subscription`, `billing_email`, `onboarding_step`, `onboarding`, `lifecycle`, `created_at`, `miggoai_workflow_enabled`.
+Campos expostos: `id`, `user`, `hash`, `name`, `email`, `phone`, `active`, `company`, `brand_name`, `subscription`, `billing_email`, `onboarding_step`, `onboarding`, `lifecycle`, `created_at`, `miggoai_workflow_enabled`, `allowed_social_network_ids` (MIG-384).
 
-Somente leitura: `id`, `created_at`, `hash`, `user`, `miggoai_workflow_enabled` (só muda pelo toggle `miggoai-workflow/<pk>/`).
+Somente leitura: `id`, `created_at`, `hash`, `user`, `miggoai_workflow_enabled` (só muda pelo toggle `miggoai-workflow/<pk>/`), `allowed_social_network_ids`.
 
 Campos calculados (`SerializerMethodField`):
 - **`brand_name`** — itera `obj.meta.all()` (prefetch) procurando `key='brand_name'`; se não achar, cai em `obj.company`. Evita query extra por cliente.

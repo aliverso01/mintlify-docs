@@ -1,0 +1,38 @@
+---
+title: "Glossário técnico"
+description: "Mapeamento dos termos técnicos, modelos de dados e conceitos dos três repositórios do workspace Miggo."
+icon: "book-a"
+---
+
+Este glossário registra os termos técnicos reais usados no código do workspace (`backend-miggo`, `frontend-miggo` e `miggoai_v2`), mapeando quando aplicável o nome correspondente exibido no menu da plataforma do cliente (`miggo-docs`).
+
+## Termos e Modelos
+
+| Termo técnico | Onde vive | O que significa | Equivalente no menu do cliente |
+|---|---|---|---|
+| `CustomUser` | `backend/app/account` | Modelo de usuário de autenticação. Campo `role` (`admin` ou `client`). | Usuário / Perfil |
+| `Client` | `backend/app/client` | Registro de empresa/marca do cliente final. Dono de assinaturas, posts e mídias. | Conta do cliente |
+| `allowed_social_networks` | `backend/app/client` | Campo ManyToMany em `Client` que restringe quais redes sociais o cliente pode conectar e publicar (MIG-384). | Redes liberadas |
+| `miggoai_workflow_enabled` | `backend/app/client` | Booleano no `Client` que habilita a geração diária automática pelo agente MiggoAI. | Agente Miggo AI |
+| `Brandkit` | `backend/app/brandkit` | Conjunto de identidade visual: logos (`BrandLogo`), paleta de cores (`BrandColor`) e grids (`BrandGrid`). | Minha marca |
+| `PlatformProfileConfig` | `backend/app/post` | Peças institucionais propostas para perfis sociais: bio (`bio`), banner (`cover`), destaques (`highlights`) e calendário em texto (`editorial_calendar`). | Peças de perfil (em Minha marca) |
+| `Post` | `backend/app/post` | Unidade fundamental de conteúdo com data, hora, texto, status e mídia vinculada. | Post / Conteúdo (em Meus conteúdos) |
+| `PostFormat` | `backend/app/post` | Formato suportado por rede social: `feed`, `carrossel`, `story`, `reel`/vídeo vertical. | Formato do post |
+| `PostStatus` | `backend/app/post` | Estado do post na esteira: `pending`, `sent`, `in_review`, `approved`, `scheduled`, `published`, `rejected`, `error`. | Situação do post |
+| `Media` / `MediaPost` | `backend/app/media` / `post` | Arquivos de imagem/vídeo armazenados e tabela associativa ligando mídias a posts. | Minhas fotos / Mídias |
+| `EditorialCalendar` | `backend/app/editorial_calendar` | Regras semanais de frequência, horários, objetivos e formatos por dia da semana. | Meu calendário |
+| `Subscription` | `backend/app/subscription` | Assinatura e ciclo de cobrança via Stripe ou Asaas (`TRIAL`, `ACTIVE`, `PAUSED`, etc.). | Meu plano |
+| `PlatformIntegration` | `backend/app/post` | Conexão ativa com perfil de rede social autorizada via Zernio (Instagram, LinkedIn, TikTok, Facebook) ou ManyChat (WhatsApp). | Redes sociais conectadas |
+| `Zernio` (antigo late.dev) | Provedor externo | API de publicação e coleta de analytics dos posts nas redes sociais. | — |
+| `ManyChat` | Provedor externo | Plataforma que opera o canal do WhatsApp para notificações e fluxos de aprovação com o cliente. | Notificações via WhatsApp |
+| `Generation` | `miggoai/apps/generations` | Registro de auditoria de execução de geração por IA (status, prompt usado, modelo, tokens, imagens geradas e erros). | — |
+| `Workflow` | `miggoai/apps/prompts` | Chave de fluxo no MiggoAI: `title`, `image`, `caption`, `hashtags`, `grid` e `bio`. | — |
+| `Microangle` | `miggoai` | Ângulo editorial/gancho de comunicação gerado pelo agente de título antes de redigir a legenda e a arte. | Título / Ideia do post |
+| `StalledPosts` | `frontend/src/pages/Admin` | Fila de posts travados na esteira em status `sent` aguardando resposta do cliente além do limite tolerado. | Posts parados |
+| `TrialsPanel` | `backend/app/client/trials.py` | Painel comercial e checklist de validação de leads e contas em período de teste gratuito. | Gestão de Trials |
+
+## Regras de Tradução
+
+<Note>
+Na documentação interna (`mintlify-docs`), use sempre os **nomes reais de código** (`PlatformProfileConfig`, app `brandkit`, `allowed_social_networks`). Na documentação pública (`miggo-docs`), use obrigatoriamente a **terminologia da interface** ("Minha marca", "Meus conteúdos", "Meu plano").
+</Note>

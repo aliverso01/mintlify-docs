@@ -40,7 +40,7 @@ O app `post` é o coração operacional da plataforma Miggo: modela o **conteúd
 ### SocialNetwork
 `app/post/models.py:10`
 
-Representa uma rede social (Instagram, LinkedIn, WhatsApp etc.).
+Representa uma rede social (Instagram, LinkedIn, WhatsApp, TikTok, Facebook — MIG-384).
 
 | Campo | Tipo | Obrigatório | Default/Choices | Descrição |
 |---|---|---|---|---|
@@ -294,10 +294,11 @@ Prefixo do app: `/api/v1/post/` (`core/urls.py:32`). Autenticação/permissão p
 | GET | `/api/v1/post/insights/daily-metrics/` | `InsightsDailyMetricsView` | Padrão |
 | GET | `/api/v1/post/insights/follower-stats/` | `InsightsFollowerStatsView` | Padrão |
 | GET | `/api/v1/post/metadata/list/` | `PostMetadataListView` | Padrão |
-| GET | `/api/v1/post/platform-profile-config/list/` | `PlatformProfileConfigListView` | `IsManagementUser` |
+| GET | `/api/v1/post/platform-profile-config/list/` | `PlatformProfileConfigListView` | Padrão (clientes leem as próprias configs; gestão por `IsManagementUser` — MIG-416) |
 | POST | `/api/v1/post/platform-profile-config/create/` | `PlatformProfileConfigCreateView` | `IsManagementUser` |
 | PUT/PATCH | `/api/v1/post/platform-profile-config/update/<int:pk>/` | `PlatformProfileConfigUpdateView` | `IsManagementUser` |
 | DELETE | `/api/v1/post/platform-profile-config/delete/<int:pk>/` | `PlatformProfileConfigDeleteView` | `IsManagementUser` |
+| POST | `/api/v1/post/platform-profile-config/<int:pk>/correction/` | `PlatformProfileConfigCorrectionView` | `IsManagementUser` (MIG-418) |
 
 <Warning>
 As rotas `format/edit/<pk>/`, `format/delete/<pk>/`, `status/edit/<pk>/` e `status/delete/<pk>/` (`app/post/urls.py:18-19,24-25`) apontam para `PostFormatListView`/`PostStatusListView` — a mesma view de **listagem**, não para views de update/delete dedicadas. Na prática essas quatro rotas apenas listam, não editam nem apagam nada.
@@ -330,8 +331,8 @@ Após salvar, dois efeitos colaterais (cada um protegido por `try/except` isolad
 2. Chama `_notify_status_transition` (`app/post/views.py:187-247`), que cria notificações in-app conforme a transição de status:
    - `→ in_review` por admin: notifica o cliente ("Novo conteúdo para revisão").
    - `→ in_review` pelo próprio cliente: notifica admins ("Cliente solicitou alterações").
-   - `→ published`: notifica admins e o cliente.
-   - `→ rejected`: notifica admins, incluindo `post.correction_description` na mensagem.
+   - `→ published`: notifica o cliente (para admins, `post_published` é silenciado no sininho pelo MIG-260).
+   - `→ rejected`: notifica admins, porém `content_rejected` é silenciado no sininho pelo MIG-260 (rotina de esteira).
    - `→ approved`: notificação desabilitada (`pass`).
 
 <ResponseField name="error" type="string">"Este conteúdo já foi publicado e não pode ser editado." (403)</ResponseField>
@@ -361,6 +362,7 @@ Paginação (`StandardPagination`) só é aplicada quando `?stalled_days=` está
 <ParamField path="publish" type="string" required>`"publish"`, `"schedule"` ou `"cancel"`.</ParamField>
 
 Validações antes de disparar:
+- Trava de rede permitida (MIG-384): valida se todas as redes do post constam em `post.client.allowed_social_networks`; retorna `403 Forbidden` se qualquer rede não estiver liberada para o cliente.
 - Post precisa ter `post_format` definido (`400` senão).
 - Post precisa ter ao menos uma `MediaPost` vinculada (`400` senão).
 - Se não houver `PlatformIntegration` para a rede principal do formato, mas houver integração WhatsApp ativa: dispara flow "pode postar" no ManyChat, marca o post como `approved` e retorna `200` sem publicar de fato.
@@ -428,6 +430,10 @@ Resolve/cria o `profile_id` do Late.dev do cliente (nesta ordem): `ClientMeta.la
 Monta a URL de conexão OAuth (`GET /v1/connect/<slug>?profileId=...&redirect_url=...`); o `redirect_path` varia conforme `origin='onboarding'` (volta para a esteira de onboarding) ou não (tela de configurações). Se o Zernio responder "Profile not found" (404), limpa o `profile_id` inválido e tenta recriar/buscar o perfil, refazendo a chamada de conexão.
 
 A integração é criada com `status='inactive'` — só o webhook `account.connected` a ativa.
+
+<Note>
+**Trava de rede permitida (MIG-384):** A view valida se a plataforma consta em `client.allowed_social_networks`. Se o Admin não liberou o canal para este cliente, a conexão é recusada com `403 Forbidden` (`{"error": "A rede X não está liberada para este cliente."}`).
+</Note>
 
 <ParamField path="client" type="integer" required />
 <ParamField path="platform" type="integer" required>ID da `SocialNetwork` (não pode ser WhatsApp).</ParamField>

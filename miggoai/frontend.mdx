@@ -1,0 +1,52 @@
+---
+title: "Frontend do MiggoAI"
+description: "Estrutura do painel SPA do MiggoAI: React 19, Vite, rotas, tipos e gerenciamento de prompts e gerações."
+icon: "layout"
+---
+
+O repositório `miggoai-2.0/miggoai_v2/frontend` contém a aplicação SPA administrativa do serviço MiggoAI, utilizada pela equipe interna para gerenciar prompts, testar gerações e auditar o histórico de execuções de IA.
+
+## Stack Técnica
+
+- **Framework**: React 19 + React Router 8
+- **Bundler**: Vite 8
+- **Estilização**: Tailwind CSS 4
+- **Linter**: `oxlint`
+- **Tipagem**: TypeScript 6
+
+## Comandos
+
+```bash
+cd miggoai-2.0/miggoai_v2/frontend
+npm run dev        # Servidor de desenvolvimento local (Vite)
+npm run build      # tsc -b && vite build
+npm run lint       # oxlint
+```
+
+## Estrutura de Diretórios
+
+```
+miggoai_v2/frontend/
+├── src/
+│   ├── api/            # Clientes HTTP e chamadas REST para /api/
+│   ├── components/     # Componentes reutilizáveis de UI
+│   ├── pages/          # Telas principais (Workflows, Prompts, Gerações, Playground)
+│   ├── types/          # Interfaces TypeScript (Prompt, Workflow, Generation, Post)
+│   └── App.tsx         # Roteamento e layout
+├── vite.config.ts
+└── nginx.conf          # Configuração de SPA com fallback try_files para produção
+```
+
+## Telas Principais
+
+| Rota | Descrição |
+|---|---|
+| `/` | Dashboard com lista de workflows ativos e atalhos rápidos. |
+| `/workflows/:key` | Detalhes do workflow, parâmetros de modelo (`temperature`, `max_tokens`) e prompts vinculados. |
+| `/prompts` | Catálogo de templates de prompt com suporte a variáveis `{{chave}}`, histórico de versões e preview de interpolação. |
+| `/geracoes` | Linhas de geração (`LinhaListView`), trilha de produção com thumbnails e status em tempo real (`PENDING`, `RUNNING`, `SUCCESS`, `FAILED`). |
+| `/playground` | Ambiente de teste interativo para disparar gerações ad-hoc (`test/` ou `production/`) com parâmetros e overrides manuais. |
+
+## Comunicação com a API
+
+A aplicação consome a API REST do Django (`miggoai_v2/backend/core/urls.py`). A URL base da API é configurada via variável `VITE_API_BASE_URL` ou injetada em tempo de execução via `window.__MIGGO_CONFIG__.API_BASE_URL` gerada pelo entrypoint do container Docker.
