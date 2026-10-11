@@ -1,0 +1,103 @@
+---
+title: "Changelog técnico"
+description: "Histórico detalhado de deploys, migrações de banco, contratos de API e infraestrutura entre os repositórios"
+icon: "clock-rotate-left"
+---
+
+<Note>
+**Versão atual da plataforma:** `v2.1.0` · Deploy de produção realizado na madrugada de 11/10/2026.
+</Note>
+
+<Update label="11/10/2026" description="v2.1.0">
+
+## Release v2.1.0 (11/10/2026)
+
+Primeira release formal sob versionamento unificado, consolidando 17 cards de produto, infraestrutura e sustentabilidade operacional entregues na madrugada de 11 de outubro de 2026.
+
+### 📦 Repositórios e PRs em produção
+
+| Repositório | PRs de Produção | Branch Status | Versão Declarada |
+| :--- | :--- | :--- | :--- |
+| `backend-miggo` | PR #51 e PR #52 | `develop` sincronizada com `main` | N/A (sem marcador explícito) |
+| `frontend-miggo` | PR #45 e PR #46 | `develop` sincronizada com `main` | `2.1.0` (`package.json`) |
+| `miggoai-2.0/miggoai_v2` | PR #20 | `develop` sincronizada com `main` | `0.0.0` (`frontend/package.json`) |
+
+---
+
+### 🗄️ Migrações de banco de dados (Migrations)
+
+- **`miggoai-2.0/miggoai_v2`**:
+  - `backend/apps/custos/migrations/0002_chamadaia_sem_preco.py` (**MIG-441**):
+    - Adiciona o campo booleano `sem_preco = models.BooleanField(default=False)` no modelo `ChamadaIA`.
+    - Migration aditiva e idempotente, sem necessidade de backfill de dados retroativos. Já aplicada no banco de dados de produção.
+- **`backend-miggo`**:
+  - Nenhuma migration nova executada nesta release.
+
+---
+
+### 🔌 Contratos de API e Integrações entre Repositórios
+
+#### Refinamento incremental de peças (MIG-439)
+- **MiggoAI (`apps.generations`)**:
+  - Endpoints `/perfil/bio/` e `/perfil/banner/`: quando chamado com feedback de correção, o serviço passa a consumir em `bio_atual` a peça anteriormente gerada (em vez da bio raspada do perfil), instruindo o prompt a manter a essência aprovada e alterar apenas o delta solicitado.
+  - No workflow de banner (`banner_workflow.py`), solicitações com instruções fora do escopo de camadas suportadas passam a reportar `result.banner.nao_atendido = True`.
+- **Frontend (`frontend-miggo`)**:
+  - O modal de solicitação de ajuste não exibe mais confirmação de sucesso para pedidos que foram descartados ou não atendidos pelo backend.
+
+#### Feedback do grid editorial (MIG-437)
+- **Backend (`app.post` / geração)**:
+  - O payload de solicitação de ajuste do grid assegura a persistência integral do texto de observações enviado pelo cliente.
+  - A reserva temporária de geração criada para a execução anterior é desalocada atomicamente com o encerramento do processo, liberando o cliente para reprocessamento imediato sem esperar o próximo ciclo de cron.
+
+---
+
+### ⚙️ Infraestrutura e Operação
+
+#### Auto-recuperação de contêineres na VPS (MIG-431)
+- Criado endpoint `/health/` nos serviços `backend-miggo` e `miggoai_v2` para suporte ao healthcheck automatizado do Dokploy.
+- **Implementação técnica**:
+  - View Django pura (sem Django REST Framework), sem overhead de serialização e sem exigência de autenticação (`IsAuthenticated` / `HasAPIKey`).
+  - Checagem exclusiva de conectividade com o banco de dados relacional (`SELECT 1`). Provedores externos (OpenAI, Stripe, Zernio) foram intencionalmente mantidos fora do healthcheck para evitar que instabilidades de terceiros derrubem os contêineres internos.
+  - Retorno HTTP: `200 OK` com banco conectado; `503 Service Unavailable` em falha de conexão.
+  - **Ajuste de SSL**: rota `/health/` explicitamente isenta de redirecionamento HTTPS no middleware (`SECURE_SSL_REDIRECT`), prevenindo crashloops causados por probes HTTP internos do proxy reverso.
+
+#### Rastreamento e Pixel da Meta (MIG-422)
+- Integrado o SDK da Meta no `frontend-miggo` via hook dedicado `useFacebookPixel` e provedor de contexto.
+- Eventos instrumentados: `PageView`, `StartTrial`, `CompleteRegistration` e `Purchase`.
+- **Guarda de domínio**: execução restrita ao domínio de produção (`app.miggomkt.com.br`), desativada em localhost e ambientes de staging/preview.
+
+#### Auditoria de custos de IA (MIG-411 e MIG-441)
+- O `miggoai_v2` passa a auditar de forma granular o consumo de tokens e custos estimados em dólares por chamada (`apps.custos`).
+- Chamadas para modelos de IA sem precificação configurada em `PrecoModelo` passam a ser explicitamente sinalizadas como `sem_preco=True`, com invalidação de cache via signals (`signals.py`) e exibição de alertas no painel administrativo e relatórios de custo.
+
+---
+
+### 📋 Cards entregues na release (17 cards)
+
+| Card | Repositórios | Tipo | Resumo Técnico da Mudança |
+| :--- | :--- | :--- | :--- |
+| **MIG-439** | Backend, Frontend, MiggoAI | Bugfix / UX | Botões de pedir correção passam a editar a peça anterior em vez de recriar; só o último pedido vai ao prompt; banner reporta não atendido; fim de falso positivo no modal. |
+| **MIG-440** | Frontend | Feature / UI | Nova experiência mobile: barra de navegação inferior (`AppBottomNav`), visualização vertical de conteúdos (`PostRowClientMobile`) e folha de detalhes (`PostViewerSheetClient`). |
+| **MIG-441** | MiggoAI | Auditoria / DB | Campo `sem_preco` em `ChamadaIA` (migration `0002`), cálculo atômico de custo e invalidação de cache para evitar zeros silenciosos na auditoria. |
+| **MIG-442** | Frontend | Refactor | Limpeza de código morto no `EditPostModal`, removendo branches `isClient` legadas após adoção da folha mobile. |
+| **MIG-437** | Backend | Bugfix | Envio completo do texto de feedback no ajuste do grid; atendimento síncrono e descarte imediato da reserva de geração anterior. |
+| **MIG-436** | Backend | Bugfix | Aprovação do grid editorial não redireciona mais o cliente para etapas opcionais de configuração já finalizadas. |
+| **MIG-435** | Frontend | Bugfix | Correção do botão "Ir para a plataforma" na conclusão do onboarding, respondendo no primeiro clique. |
+| **MIG-434** | Backend | Sustentação | Substituição do modelo legado `gpt-3.5-turbo` por `gpt-4o-mini` na análise de perfil e geração de briefing do Instagram. |
+| **MIG-431** | Backend, MiggoAI | Infra / DevOps | Endpoint `/health/` com checagem de DB para Dokploy na VPS; isenção de redirect SSL para prevenir crashloop. |
+| **MIG-426** | Backend | Resiliência | Prevenção contra loops infinitos de regeneração paga do grid editorial em cenários de instabilidade na esteira de IA. |
+| **MIG-424** | Backend | Suporte | Atualização da base de conhecimento e diretrizes do assistente virtual (`SUPPORT_SYSTEM_PROMPT`) com novas features da plataforma. |
+| **MIG-422** | Frontend | Tracking | Integração do Meta Pixel no app com disparo de eventos padrão (`PageView`, `StartTrial`, `CompleteRegistration`, `Purchase`). |
+| **MIG-411** | MiggoAI | Feature / Infra | App `apps.custos` no MiggoAI para contabilização e auditoria de tokens e custo por geração. |
+| **MIG-381** | Backend, Frontend | Admin | Preservação de leads convertidos na listagem de Gestão de Trials com a flag/badge "Convertido". |
+| **MIG-358** | MiggoAI | Bugfix | Título do carrossel passa a refletir a headline completa do primeiro slide em vez de salvar apenas a palavra-chave. |
+| **MIG-346** | Backend | Resiliência | Fallback gracioso na análise de logotipo via GPT Vision (Etapa 7), prevenindo erro HTTP 400 da OpenAI em imagens atípicas. |
+| **MIG-247** | MiggoAI | Refactor | Roteamento em camadas para solicitações de alteração na arte do banner do LinkedIn em Minha marca. |
+
+---
+
+### ⚠️ Nota de controle de escopo
+
+- **MIG-428** (*Infraestrutura / Limites de produção*): **Não entrou nesta release**. O card segue no fluxo de homologação ("Enviado pra teste") aguardando definição de limites de capacidade na infraestrutura de produção.
+
+</Update>

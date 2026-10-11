@@ -1,0 +1,113 @@
+---
+title: "Proposta de versionamento da plataforma"
+description: "Proposta técnica para governança de SemVer e gestão da versão unificada entre os três repositórios (pendente de aprovação)"
+icon: "tag"
+---
+
+<Warning>
+**Proposta pendente de decisão do Alisson**: este documento descreve uma proposta de governança de versionamento para a plataforma Miggo. Os padrões abaixo estão em fase de alinhamento e não devem ser considerados como regras definitivas até a validação do Alisson.
+</Warning>
+
+## 1. Contexto e Diagnóstico Atual
+
+Atualmente, a gestão de versão da plataforma Miggo apresenta a seguinte configuração entre os repositórios:
+
+| Repositório | Arquivo / Ponto de Versão | Versão Atual | Situação |
+| :--- | :--- | :--- | :--- |
+| `frontend-miggo` | `package.json` (`"version"`) | `2.1.0` | **Único marcador ativo** de versão no workspace |
+| `backend-miggo` | Inexistente | Sem versão | Sem variável em settings ou `__init__.py` |
+| `miggoai-2.0/miggoai_v2/frontend` | `package.json` (`"version"`) | `0.0.0` | Desalinhado / valor de scaffold inicial |
+| `miggoai-2.0/miggoai_v2/backend` | Inexistente | Sem versão | Sem variável em settings ou `__init__.py` |
+
+Como o `frontend-miggo` é o único repositório que declara versão explícita, a versão `v2.1.0` passou a ser adotada como o marco da plataforma nesta release de 11/10/2026.
+
+---
+
+## 2. Esquema SemVer Proposto (`MAJOR.MINOR.PATCH`)
+
+Propõe-se a adoção formal do **Semantic Versioning 2.0.0** (`X.Y.Z`) no nível da **Plataforma Miggo**, orientado pelo impacto para os clientes e para a arquitetura:
+
+### 🔴 MAJOR (`X.0.0`) — Quebras de compatibilidade ou marcos estruturais
+Incrementado quando ocorrem mudanças incompatíveis com o estado anterior:
+- **Contratos de API**: remoção de endpoints, alteração incompatível de schemas de request/response ou mudanças na autenticação que quebrem clientes legados.
+- **Banco de dados**: migrations com alterações destrutivas sem retrocompatibilidade (ex.: remoção ou renomeação de colunas/tabelas sem período de depreciação).
+- **Plataforma / Produto**: reformulação arquitetural completa da interface, migração massiva de infraestrutura ou reestruturação das regras de acesso e planos.
+
+### 🟡 MINOR (`x.Y.0`) — Novas funcionalidades retrocompatíveis
+Incrementado quando novas capacidades de produto ou engenharia são adicionadas sem quebrar o ecossistema existente:
+- **Produto**: adição de suporte a novas redes sociais (ex.: TikTok, Facebook), novas ferramentas de criação (ex.: peças de perfil, carrosséis), novos módulos ou abas na plataforma.
+- **Engenharia**: novas migrations aditivas (novos modelos, novos campos opcionais com default), novos endpoints de API REST, novos serviços ou workflows no MiggoAI.
+- **Cadência padrão**: a entrega consolidada de uma sprint com novos cards de produto habitualmente caracteriza um incremento **Minor** (ex.: `2.1.0` → `2.2.0`).
+
+### 🟢 PATCH (`x.y.Z`) — Correções de bugs e melhorias pontuais
+Incrementado para hotfixes e ajustes incrementais que não alteram escopo funcional:
+- **Correções**: bugfixes de interface, correção de bugs de fluxo, alinhamento de textos ou layout mobile.
+- **Sustentação**: melhorias de resiliência e fallbacks, ajustes de prompts sem alteração de schema, otimizações de performance e endpoints de telemetria/healthcheck.
+- **Exemplo**: correções pontuais pós-deploy em produção sob a mesma sprint geram `2.1.1`, `2.1.2`, etc.
+
+---
+
+## 3. Onde o número de versão deve viver (Single Source of Truth)
+
+Para que a versão não exista apenas no frontend, propõem-se duas abordagens para avaliação:
+
+### Opção A (Recomendada): Versão Unificada com Marcadores Sincronizados
+A plataforma opera como um produto coeso sob uma **única versão global** (`v2.1.0`). Cada repositório passa a registrar e expor essa versão:
+
+1. **`frontend-miggo`**:
+   - Mantém `package.json` (`"version": "2.1.0"`).
+   - Injeta a versão no build via Vite (`__APP_VERSION__ = pkg.version`) para exibição discreta no rodapé das configurações ou painel de suporte.
+2. **`backend-miggo`**:
+   - Criação de `core/__version__.py` contendo `__version__ = "2.1.0"`.
+   - `core/settings.py` importa e expõe `PLATFORM_VERSION = __version__`.
+   - **Endpoint `/health/`**: como o endpoint `/health/` **já existe e está rodando em produção em ambos os backends** (entregue no card MIG-431 desta release), expor a versão aqui consiste apenas em adicionar uma chave ao JSON de resposta já existente (`{"status": "ok", "version": PLATFORM_VERSION}`), sem custo de arquitetura nem criação de rota nova.
+   - O middleware de API adiciona o cabeçalho `X-Platform-Version: 2.1.0` nas respostas HTTP.
+3. **`miggoai-2.0/miggoai_v2`**:
+   - **Frontend (`package.json`)**: salto de `0.0.0` para `2.1.0`. O valor `0.0.0` atual é residual do scaffold inicial do Vite e nunca foi versionado nem publicado separadamente. O salto direto para `2.1.0` alinha o serviço imediatamente à versão da plataforma sem gerar ruído de histórico.
+   - **Backend**: criação de `backend/core/__version__.py` (`__version__ = "2.1.0"`). O endpoint `/health/` (também já existente via MIG-431) passa a incluir a chave `version` no payload JSON.
+4. **Git Tags**:
+   - A cada deploy de release na `main`, uma tag git anotada é criada simultaneamente nos três repositórios: `v2.1.0`.
+
+*Vantagens*: Custo de implementação praticamente nulo (o endpoint `/health/` já opera em produção) e rastreabilidade perfeita entre logs, relatórios de erro (Sentry), chamadas HTTP e deploys na VPS.
+
+### Opção B: Versionamento de Serviços Independentes + Release da Plataforma
+Cada repositório gerencia seu próprio ciclo semver (ex.: Backend `v1.12.0`, Frontend `v2.1.0`, MiggoAI `v0.4.0`), e a equipe define uma "Release Tag" de produto para a plataforma.
+
+*Desvantagens*: Aumenta o custo cognitivo da equipe e dos agentes para saber quais versões dos 3 serviços são mutuamente compatíveis em produção.
+
+---
+
+## 4. Fluxo Operacional de Bump e Deploy
+
+Caso aprovada a Opção A, o fluxo de fechamento de sprint seria:
+
+```text
+[Sprint Concluída]
+       │
+       ▼
+1. Tech Lead ou Driver define o incremento (Patch ou Minor)
+       │
+       ▼
+2. Atualização dos arquivos de versão (script `npm run bump` ou comando do workspace)
+       │
+       ▼
+3. Criação da entrada em `releases/index.mdx` (doc técnica) e `novidades.mdx` (doc pública)
+       │
+       ▼
+4. Merge dos PRs de release na `main` dos 3 repositórios
+       │
+       ▼
+5. Criação das tags git: `git tag -a v2.2.0 -m "Release v2.2.0"` nos 3 repos
+       │
+       ▼
+6. Deploy Dokploy na VPS ( Dokploy reinicia contêineres e valida `/health/` )
+```
+
+---
+
+## 5. Pontos em Aberto para Decisão do Alisson
+
+1. **Adoção da Opção A (Versão Unificada)**: aprova manter os 3 repositórios sincronizados sob o mesmo número de versão da plataforma (`v2.1.0` → `v2.2.0`), ou prefere ciclos semver independentes por repositório?
+2. **Localização no Backend**: prefere `core/__version__.py` lido pelo settings e pelo endpoint `/health/`, ou um arquivo plano `.version` na raiz de cada repositório?
+3. **Exibição na Interface do Cliente**: devemos exibir o número da versão (ex.: `v2.1.0`) na interface pública do cliente (ex.: no rodapé da barra lateral ou na tela de Meu Perfil)?
+4. **Automação de Tags**: as tags git nos 3 repositórios devem ser criadas manualmente pelo Tech Lead no deploy ou automatizadas via GitHub Actions / scripts de release?

@@ -148,6 +148,23 @@
             ]
           }
         ]
+      },
+      {
+        "tab": "Releases",
+        "groups": [
+          {
+            "group": "Histórico de releases",
+            "pages": [
+              "releases/index"
+            ]
+          },
+          {
+            "group": "Governança e versionamento",
+            "pages": [
+              "releases/proposta-versionamento"
+            ]
+          }
+        ]
       }
     ],
     "global": {
@@ -171,6 +188,10 @@
   },
   "navbar": {
     "links": [
+      {
+        "label": "v2.1.0",
+        "href": "/releases"
+      },
       {
         "label": "Plataforma",
         "href": "https://app.miggomkt.com.br"
