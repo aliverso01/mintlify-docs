@@ -24,7 +24,7 @@ O processamento de webhooks da Stripe em tempo real **não vive neste app** — 
 | `app/subscription/apps.py` | `AppConfig` padrão (`app.subscription`). |
 | `app/subscription/stripe_gateway.py` | Camada única de acesso à Stripe: configuração de API key, mapas de status, resolução de Customer/Client/PlanPrice, espelhamento de `Subscription`/`Invoice`, operações de checkout/portal/cancelamento. |
 | `app/subscription/asaas_gateway.py` | Equivalente ao `stripe_gateway` para o Asaas: chamada HTTP, mapas de status, espelhamento de pagamento em `Invoice`. |
-| `app/subscription/access.py` | **Ponto único** de duas perguntas sobre assinatura: `pode_publicar(client)` (direito de entrega, MIG-394) e `e_pagante_ativo(client)` (direito de pagante, MIG-387). Ver [Direito de entrega x direito de pagante](#direito-de-entrega-x-direito-de-pagante-access-py). |
+| `app/subscription/access.py` | **Ponto único** de duas perguntas sobre assinatura: `pode_publicar(client)` (direito de entrega, MIG-394), `com_direito_de_publicacao(queryset)` (a mesma pergunta para um conjunto, MIG-399) e `e_pagante_ativo(client)` (direito de pagante, MIG-387). Ver [Direito de entrega x direito de pagante](#direito-de-entrega-x-direito-de-pagante-access-py). |
 | `app/subscription/fidelity.py` | Regras de permanência mínima (fidelidade): cálculo do fim do compromisso, mensalidades restantes, data de encerramento de cancelamento. |
 | `app/subscription/cron.py` | Rotinas agendadas: aviso de trial acabando, expiração de trial, dunning de faturas, suspensão por inadimplência, reconciliação Stripe/Asaas. |
 | `app/subscription/management/commands/check_invoices.py` | Management command que roda `cron.check_invoices()`. |
@@ -496,6 +496,7 @@ Duas perguntas diferentes sobre a mesma assinatura, respondidas **no mesmo módu
 | Pergunta | Função | Nasceu em |
 |---|---|---|
 | "esta conta pode **entregar conteúdo**?" | `pode_publicar(client) -> (bool, motivo)` | MIG-394 |
+| "**quais** destas contas podem entregar conteúdo?" | `com_direito_de_publicacao(queryset) -> queryset` | MIG-399 |
 | "esta conta **paga**?" | `e_pagante_ativo(client) -> bool` | MIG-387 |
 
 **A diferença está no TRIAL, e é o ponto todo:** o teste grátis entrega conteúdo, mas não paga.
@@ -513,6 +514,8 @@ Detalhes que valem para as duas:
 - **Basta UMA assinatura dar direito** (`Subscription.objects.filter(client=client)`, sem `order_by`): quem reassinou costuma carregar a antiga cancelada do lado, e olhar só a mais recente bloquearia quem pagou.
 - `ACTIVE` ignora `expires_at` porque a data de uma assinatura paga é a **próxima cobrança**, não um prazo de validade — quem move para `EXPIRED` é o `cron.check_subscriptions()`. Exigir data futura aqui cortaria cliente adimplente a cada atraso do cron ou do webhook de renovação.
 - A carência de `UNPAID` é a mesma que o `check_subscriptions` respeita (`BILLING_GRACE_DAYS`, default 5).
+
+`com_direito_de_publicacao(queryset)` é a versão-de-conjunto de `pode_publicar`: filtra um queryset de `Client` com um `Exists` sobre `Subscription`, traduzindo a **mesma** tabela de status acima para SQL (`STATUS_LIVRE`; `TRIAL` com `expires_at__gte=agora`; `UNPAID` com `expires_at__gt=agora - BILLING_GRACE_DAYS`). Existe para a esteira diária do MiggoAI perguntar o mesmo que a publicação pergunta sem trazer a carteira inteira para a memória — e, principalmente, sem uma segunda redação da regra. O `expires_at__gte` já descarta data nula (comparar com `NULL` é falso no SQL), que é o mesmo efeito do `assinatura.expires_at and ...` da versão unitária, e basta **uma** assinatura dar direito, como no laço de lá. Mudou a regra, muda nas duas: o teste de paridade em `app/subscription/tests_access.py` é o que segura as duas lendo igual. Primeiro consumidor: `GET /api/v1/client/list/` nos dois filtros da esteira (ver [client](/backend/apps/client)).
 
 `pode_publicar` devolve `(bool, motivo)`; o `motivo` é **texto de produto** (`MOTIVO_SEM_ASSINATURA`, `MOTIVO_TRIAL_VENCIDO`, `MOTIVO_INADIMPLENTE`, `MOTIVO_EXPIRADA`), escolhido pela assinatura mais recente e exibido direto na tela. `e_pagante_ativo` devolve só o booleano — a mensagem do caso dele vive no app consumidor.
 

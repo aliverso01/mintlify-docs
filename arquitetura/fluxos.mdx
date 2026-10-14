@@ -55,7 +55,7 @@ O card nasce com status `pending` e volta como `scheduled`. Cliente da integraç
 
 ### Geração diária no MiggoAI 2.0
 
-No `miggoai-2.0` a geração automática roda por um management command diário, sem worker nem `enable_workflow`. Quem decide se o cliente entra é a flag `Client.miggoai_workflow_enabled` do `backend-miggo`, ligada pelo admin em **Predefinições de Criação de Conteúdo**.
+No `miggoai-2.0` a geração automática roda por um management command diário, sem worker nem `enable_workflow`. Quem decide se o cliente entra é a flag `Client.miggoai_workflow_enabled` do `backend-miggo`, ligada pelo admin em **Predefinições de Criação de Conteúdo** — somada, desde a MIG-399, ao direito de publicar: a listagem que alimenta a esteira devolve só quem pode entregar conteúdo agora (trial vencido sai e volta sozinho ao assinar). Ver [client](/backend/apps/client).
 
 ```mermaid
 sequenceDiagram
@@ -65,7 +65,7 @@ sequenceDiagram
     participant OAI as OpenAI
 
     CRON->>AI: manage.py generate_daily_contents
-    AI->>BE: GET client/list/?miggoai_workflow_enabled=true
+    AI->>BE: GET client/list/?miggoai_workflow_enabled=true (só elegíveis)
     AI->>BE: GET editorial-calendar/list/ (dias de postagem do cliente)
     AI->>BE: GET post/list/ (pending do 1º dia programado no trial, do 2º fora dele)
     AI->>BE: PATCH post/update/{id} (processing)

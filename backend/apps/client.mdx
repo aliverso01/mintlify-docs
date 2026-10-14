@@ -236,13 +236,22 @@ Escopo: se o usuário autenticado é `role='client'`, o queryset é restrito ao 
 <ParamField path="subscription__plan_price__plan" type="int">Filtro exato</ParamField>
 <ParamField path="subscription" type="bool">`isnull`</ParamField>
 <ParamField path="user" type="int">Filtro exato</ParamField>
-<ParamField path="miggoai_workflow_enabled" type="bool">Filtro exato — usado pela geração diária do MiggoAI para listar só os clientes com o workflow ligado</ParamField>
+<ParamField path="miggoai_workflow_enabled" type="bool">Filtro exato — usado pela geração diária do MiggoAI para listar só os clientes com o workflow ligado. **Com `true`, a lista passa a ser de elegíveis** (ver abaixo)</ParamField>
+<ParamField path="generation_requested_at__isnull" type="bool">`false` lista os clientes com pedido de geração pendente (MIG-356). **Também devolve só elegíveis**</ParamField>
 <ParamField path="integration" type="string">Filtra por plataforma integrada ativa (`icontains` em `platform_integrations__platform__name`)</ParamField>
 <ParamField path="lifecycle" type="string">Lista separada por vírgula — filtra pelo `lifecycle` anotado (`lead`, `active`, `unconverted`, `churned`, `inactive`)</ParamField>
 <ParamField path="stage" type="string">Lista separada por vírgula — filtra pela etapa real da esteira (`stage` anotado), distinto do `onboarding_step` legado</ParamField>
 <ParamField path="stage_estimated" type="bool">Quando `false`, esconde clientes cuja etapa é só aproximada (calculada pelo contador legado)</ParamField>
 <ParamField path="search" type="string">Busca textual em `name`, `email`, `company`, `phone`</ParamField>
 <ParamField path="ordering" type="string">`name`, `created_at`, `onboarding_step`, `stage`, `lifecycle`</ParamField>
+
+<Note>
+**Nos dois caminhos da esteira, a lista é de elegíveis** (MIG-399). Quando a requisição traz `?miggoai_workflow_enabled=true` **ou** `?generation_requested_at__isnull=false` — exatamente os dois filtros que o `miggoai-2.0` usa para montar a rodada —, o queryset passa por `subscription.access.com_direito_de_publicacao` e **quem não pode publicar agora sai da lista** (trial vencido, inadimplente fora da carência, sem assinatura). Antes, conta com teste vencido continuava recebendo post da esteira diária e a operação pausava na mão.
+
+A reativação é automática: assinou, volta a aparecer no ciclo seguinte — a lista é dinâmica e o MiggoAI não guarda carteira. A **forma da resposta não mudou**, então o `miggoai-2.0` não precisou de alteração nenhuma.
+
+Fora da pausa, de propósito: o painel do admin e a consulta por `?id=` continuam enxergando a base inteira, inclusive quem está fora — e o disparo manual (`gerar-agora`) é ação deliberada do operador.
+</Note>
 
 Resposta: lista paginada de `ClientSerializer`.
 </Accordion>

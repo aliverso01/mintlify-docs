@@ -234,7 +234,7 @@ python manage.py generate_daily_contents --dry-run        # só lista os cards
 
 Fluxo por card:
 
-1. Clientes: `client/list/?miggoai_workflow_enabled=true` (todas as páginas) — `apps.clients.services.list_workflow_enabled_clients`, que devolve `{id, em_trial}` a partir do `subscription.status`. A flag é ligada/desligada pelo admin em **Predefinições de Criação de Conteúdo** (ver [client](/backend/apps/client)).
+1. Clientes: `client/list/?miggoai_workflow_enabled=true` (todas as páginas) — `apps.clients.services.list_workflow_enabled_clients`, que devolve `{id, em_trial}` a partir do `subscription.status`. A flag é ligada/desligada pelo admin em **Predefinições de Criação de Conteúdo** (ver [client](/backend/apps/client)). Desde a MIG-399 essa listagem já chega **filtrada por elegibilidade** no backend-miggo (trial vencido e inadimplente fora da carência não vêm); nada mudou aqui, a forma da resposta é a mesma.
 2. Cards: `post/list/?client_id=&status=pending&start_date=&end_date=` na janela do cliente.
 3. Reserva: `PATCH post/update/<id>/` → status `processing`, para duas execuções não pegarem o mesmo card.
 4. Gera: `run_complete(...)`. Qualquer passo que não termine em `SUCCESS` aborta o card.
