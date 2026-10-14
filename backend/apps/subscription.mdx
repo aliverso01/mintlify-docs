@@ -604,7 +604,17 @@ Todos chamam funções de `app/subscription/cron.py`, são idempotentes e devolv
 ```
 
 - **`notify_trial_ending`** (`cron.py:95-158`) — avisa clientes em `TRIAL` local com `expires_at` batendo D-3 ou D-1 (`TRIAL_WARNING_DAYS = (3, 1)`); dispara notificação in-app + flow do ManyChat (`flow_ns='content20260818212324_989229'`); marca `SubscriptionMeta.trial_ending_notified_at` para não repetir em 20h. Só cobre trial local — trial com cartão já recebe aviso do evento Stripe `customer.subscription.trial_will_end`.
-- **`expire_trials`** (`cron.py:163-225`) — trials `TRIAL`/`trial=True` com `expires_at` vencido; antes de expirar, se houver `stripe_subscription_id` vinculado, relê na Stripe (a assinatura pode ter virado `active` sem o webhook chegar); só marca `EXPIRED` se não confirmar `ACTIVE`/`TRIAL` remotamente; falha de rede não expira ninguém (fica para o próximo ciclo).
+- **`expire_trials`** (`cron.py:272-348`) — trials `TRIAL`/`trial=True` com `expires_at` vencido; antes de expirar, se houver `stripe_subscription_id` vinculado, relê na Stripe (a assinatura pode ter virado `active` sem o webhook chegar); só marca `EXPIRED` se não confirmar `ACTIVE`/`TRIAL` remotamente; falha de rede não expira ninguém (fica para o próximo ciclo). Na transição `TRIAL → EXPIRED` dispara também o **aviso de fim de teste no WhatsApp** (`_avisar_fim_do_teste`, abaixo).
+- **`_avisar_fim_do_teste(subscription)`** (`cron.py:217-269`, MIG-453) — manda o flow do ManyChat de "seu teste terminou". Antes o disparo era um *delay* dentro do próprio flow, contando dias corridos desde o cadastro: trial postergado pelo Admin avisava na data errada. Agora o aviso nasce colado na transição `TRIAL → EXPIRED`, obedecendo o mesmo `expires_at` que corta o acesso — e, por ser transição de status, sai uma vez só.
+
+  O `flow_ns` vem da env **`TRIAL_ENDED_FLOW_ID`**, sem default. Todo desfecho fica em `Integration` (`service='sendFlow Trial Ended'`, `method='CRON'`, `path='/cron/billing/expire_trials'`, helper `_log_trial_ended`):
+
+  - env vazia → `flow_nao_configurado` (`200`), mais um `warning` no log: o aviso **não sai**;
+  - cliente sem subscriber ManyChat → `sem_subscriber` (`200`) — não é erro, o aviso in-app já saiu;
+  - ManyChat aceitou → `flow_enviado` (`200`); recusou → `flow_falhou` (`502`).
+
+  O disparo também vira rastro na thread do cliente (`conversation_services.log_automation`, `automation='trial_ended'`) — sem isso a mensagem sai e não aparece em Conversas. **Falha de envio não desfaz a expiração**: o acesso já foi cortado, e a retentativa é a do próprio `_manychat_post`.
+
 - **`check_invoices`** — ver seção de faturas acima.
 - **`check_subscriptions`** (`cron.py:326-393`) — expira `UNPAID` que passou de `BILLING_GRACE_DAYS` (env, default 5, `core/settings.py:325`) e `ACTIVE`/`PENDING` com `expires_at` vencido; mesma lógica de reconfirmar na Stripe antes de cortar acesso.
 - **`sync_stripe_billing(limit=None)`** (`cron.py:398-439`) — rede de segurança: relê todas as `SubscriptionMeta.stripe_subscription_id` (sem teto por padrão — um `limit` fixo visitava sempre as mesmas assinaturas antigas) e reespelha status + últimas 12 faturas de cada.
