@@ -86,14 +86,32 @@ Foto do **acervo interno da Miggo** — não pertence a nenhum cliente. Definido
 | `palavras_chave` | `JSONField` | Não | `default=list, blank=True` | Lista de strings, no mesmo padrão do `Media.ai_keywords`. |
 | `origem` | `CharField(255)` | Não | `blank=True, default=''` | Origem/licença, texto livre — sem validação e sem auditoria. |
 | `ativo` | `BooleanField` | Não | `default=True`, `db_index=True` | **É a curadoria**: desligar tira a foto do acervo sem apagar o arquivo. |
+| `escopo` | `CharField(20)`, choices | Não | `global` / `restrita`, **default `global`**, `db_index=True` | De quem é a foto (MIG-456). O default é `global` porque é o que a 455 entregou: as fotos que já estão lá continuam sendo de todos. |
+| `clientes_permitidos` | `ManyToManyField(client.Client)` | Não | `blank=True`, `related_name='stock_photos_permitidas'` | Vínculo nominal da foto restrita. |
+| `nichos_permitidos` | `ManyToManyField(client.Niche)` | Não | `blank=True`, `related_name='stock_photos_permitidas'` | Vínculo por nicho da foto restrita. |
 | `enviado_por` | `ForeignKey(CustomUser)` | Não | `null=True, blank=True`, `on_delete=SET_NULL`, `related_name='stock_photos'` | Preenchido pelo servidor; somente leitura na API. |
 | `created_at` / `updated_at` | `DateTimeField` | Não | `auto_now_add` / `auto_now` | — |
 
 `Meta.ordering = ['-created_at', '-id']`.
 
 <Note>
-  **Não há campo de cliente nem de escopo, de propósito.** A alocação (acervo global x por cliente/nicho) é a MIG-456 e não foi implementada nesta fatia. Nicho/tema/sentimento são `CharField` em vez de modelo de Tag com M2M porque taxonomia livre não estava pedida aqui.
+  **`nicho` (texto) e `nichos_permitidos` (M2M) são coisas diferentes, e misturá-las é o erro fácil aqui.** O `CharField` `nicho` segue sendo **eixo de busca e categorização** — é o que o filtro da listagem usa. Quem **restringe** quem vê a foto é `escopo` + os dois M2M (MIG-456). Tema e sentimento continuam `CharField` porque taxonomia livre não estava pedida.
 </Note>
+
+#### Elegibilidade: `StockPhoto.objects.elegiveis_para(client)`
+
+**Fonte única da regra de escopo** (`StockPhotoQuerySet`, MIG-456). Uma foto entra quando está `ativo=True` **e** (é `global`, **ou** o cliente está em `clientes_permitidos`, **ou** o nicho do cliente está em `nichos_permitidos`).
+
+Duas consequências são o coração do card, nenhuma acidental:
+
+- **Cliente sem nicho** (`Client.niche` nulo) nunca casa restrição por nicho: vê o pool global e o que for restrito nominalmente a ele.
+- **Restrita sem nenhum vínculo não aparece para ninguém.** O default é fechado — foto marcada como restrita e esquecida sem destinatário fica invisível, em vez de vazar para a carteira inteira por omissão. É o que o campo de resposta `visivel_para_ninguem` sinaliza para a tela.
+
+`client=None` devolve só as globais. O `distinct()` não é enfeite: os dois M2M viram JOIN, e sem ele a foto restrita ao cliente **e** ao nicho dele volta duplicada.
+
+<Warning>
+  Toda consulta de pool passa por aqui, inclusive a seleção automática de imagem (MIG-371c). **Uma segunda redação desta regra é uma segunda chance de vazar foto de um cliente para outro** — não refaça o filtro à mão numa view nova.
+</Warning>
 
 **Funções auxiliares do módulo**
 - `get_stock_upload_path(instance, filename)` — `acervo/<hash32>` mais a extensão inferida por `_sniffed_extension`. O **conteúdo** decide a extensão: nome enviado não entra no caminho, para um `.html` não ser servido como HTML no domínio da mídia.
@@ -110,14 +128,23 @@ Prefixo do app: `/api/v1/media/` (`core/urls.py:35`).
 | PATCH/PUT | `/api/v1/media/update/<int:pk>/` | `MediaUpdateView` | `HasAPIKeyOrIsAuthenticated` + escopo por cliente (ver abaixo) |
 | DELETE | `/api/v1/media/delete/<int:pk>/` | `MediaDeleteView` | `HasAPIKeyOrIsAuthenticated` (default global) |
 | DELETE | `/api/v1/media/<int:pk>/` | `MediaDeleteView` | `HasAPIKeyOrIsAuthenticated` (default global) |
-| GET | `/api/v1/media/acervo/` | `StockPhotoListCreateView` | `IsManagementUser` — MIG-455 |
-| POST | `/api/v1/media/acervo/` | `StockPhotoListCreateView` | `IsManagementUser` — MIG-455 |
-| PATCH | `/api/v1/media/acervo/<int:pk>/` | `StockPhotoDetailView` | `IsManagementUser` — MIG-455 |
-| DELETE | `/api/v1/media/acervo/<int:pk>/` | `StockPhotoDetailView` | `IsManagementUser` — MIG-455 |
+| GET | `/api/v1/media/acervo/` | `StockPhotoListCreateView` | `IsManagementUserOnly` — MIG-455, endurecida na MIG-456 |
+| POST | `/api/v1/media/acervo/` | `StockPhotoListCreateView` | `IsManagementUserOnly` — idem |
+| GET | `/api/v1/media/acervo/nichos/` | `NicheListView` | `IsManagementUserOnly` — MIG-456 |
+| GET | `/api/v1/media/acervo/elegiveis/` | `StockPhotoElegiveisView` | `IsManagementUserOnly` — MIG-456 |
+| PATCH | `/api/v1/media/acervo/<int:pk>/` | `StockPhotoDetailView` | `IsManagementUserOnly` — MIG-455, endurecida na MIG-456 |
+| DELETE | `/api/v1/media/acervo/<int:pk>/` | `StockPhotoDetailView` | `IsManagementUserOnly` — idem |
 
 As views de `Media` não declaram `permission_classes` nem `authentication_classes` próprios; herdam o default do projeto (`core/settings.py:135-141`): autenticação JWT (`rest_framework_simplejwt`) e permissão `app.account.permissions.HasAPIKeyOrIsAuthenticated` (libera acesso por API key OU usuário autenticado).
 
-**As duas views do acervo são a exceção**: declaram `permission_classes = [IsManagementUser]` (`app/account/permissions.py:37`) — inclusive no `PATCH` e no `DELETE`, que costumam ficar de fora. Cliente autenticado recebe `403` com `{"detail": "Acesso restrito à equipe Miggo."}`.
+**As views do acervo são a exceção**, e desde a MIG-456 são a exceção mais dura do projeto: declaram `permission_classes = [IsManagementUserOnly]` (`app/account/permissions.py:52`) — inclusive no `PATCH` e no `DELETE`, que costumam ficar de fora.
+
+- Cliente autenticado: `403` com `{"detail": "Acesso restrito à equipe Miggo."}`.
+- **API key sozinha: `401`** — ela não entra em nenhuma rota do acervo. Sem usuário autenticado o DRF responde `401`, não `403`.
+
+A diferença para a `IsManagementUser` (que devolve `True` para qualquer API key antes de olhar o usuário) é deliberada: a chave de serviço é **uma só**, compartilhada, não escopada por cliente e já circulou no bundle do frontend. Tolerável numa rota de gestão genérica, deixou de ser aqui — o acervo passou a carregar o **mapa de alocação cliente↔foto** (os dois M2M em toda resposta, e `/acervo/elegiveis/?client_id=` devolvendo o pool exato de um cliente a partir de um id da query string). Com a chave, varrer `client_id` de 1 a N reconstrói justamente o isolamento que o card existe para garantir.
+
+A restrição vale **só nas rotas do acervo**: `IsManagementUser` segue como está e nenhuma outra rota muda. Serviço que precise consumir o acervo (a MIG-371c, por exemplo) pede credencial escopada, com o `client_id` vindo da credencial e nunca da query string — e isso é desenho daquela volta.
 
 <AccordionGroup>
 <Accordion title="POST /api/v1/media/create/ — MediaCreateView">
@@ -176,6 +203,7 @@ Acervo interno da Miggo. `IsManagementUser` nas duas verbas; `MultiPartParser`/`
 <ParamField query="tema" type="string">Idem.</ParamField>
 <ParamField query="sentimento" type="string">Idem.</ParamField>
 <ParamField query="ativo" type="string">`true`/`1`/`yes` ou qualquer outra coisa para `false`. Omitido, traz os dois.</ParamField>
+<ParamField query="escopo" type="string">`global` ou `restrita` (MIG-456) — separa o pool compartilhado do que é de alguém. Outro valor é ignorado.</ParamField>
 <ParamField query="q" type="string">Busca em `titulo`, `descricao` e `palavras_chave` (`icontains` sobre o texto cru do JSON — basta para a tela e não exige campo novo).</ParamField>
 <ParamField query="page" type="integer" />
 <ParamField query="page_size" type="integer">10, 30, 50 ou 100 (default 10).</ParamField>
@@ -187,6 +215,8 @@ Resposta `200`: `{ "count", "next", "previous", "results": [StockPhoto] }`.
 <ParamField body="image" type="file" required>Repita o campo para enviar várias (`images` também é aceito). Máximo **20** por requisição (`MAX_ARQUIVOS_POR_LOTE`).</ParamField>
 <ParamField body="titulo / descricao / nicho / tema / sentimento / origem" type="string">Valem para **o lote inteiro** — a tela sobe um conjunto já categorizado e a edição fina é o `PATCH`.</ParamField>
 <ParamField body="palavras_chave" type="string">Campo repetido, ou uma string separada por vírgula.</ParamField>
+<ParamField body="escopo" type="string">`global` (default) ou `restrita` — vale para o lote inteiro (MIG-456).</ParamField>
+<ParamField body="clientes_permitidos / nichos_permitidos" type="string">Ids, campo repetido no multipart (`getlist`). Valem para o lote inteiro.</ParamField>
 
 `201` quando **ao menos uma** entrou; `400` com o **mesmo corpo** quando nenhuma entrou:
 
@@ -202,10 +232,24 @@ Resposta `200`: `{ "count", "next", "previous", "results": [StockPhoto] }`.
 Um arquivo ruim **não derruba o lote**: a recusa entra em `falhas` com o motivo e o resto segue. Recusas por arquivo (`_erro_do_arquivo_de_acervo`, `views.py:454-468`): acima de `UPLOAD_MAX_IMAGE_SIZE_MB`, ou conteúdo que não é JPG/PNG/GIF/WEBP pelos magic bytes. `400` **sem as listas** (`{"error": "..."}`) quando não veio arquivo nenhum ou passaram de 20.
 </Accordion>
 
-<Accordion title="PATCH/DELETE /api/v1/media/acervo/<pk>/ — StockPhotoDetailView (MIG-455)">
-`IsManagementUser` nas duas verbas.
+<Accordion title="GET /api/v1/media/acervo/nichos/ — NicheListView (MIG-456)">
+A taxonomia para o picker de alocação. Devolve `[{id, nome, slug, ativo}]` — **a lista inteira, inativos incluídos**, porque o picker precisa rotular um vínculo que já existe para um nicho desativado.
 
-**PATCH** — edição parcial de tags e curadoria, inclusive `ativo` (tirar do acervo sem apagar o arquivo). `200` com o objeto; `400` com os erros por campo do serializer; `404` `{"error": "Foto não encontrada."}`.
+Nesta volta a tabela tem só a linha semeada **"Não informado"** (`slug='nao-informado'`, migration `app/client/migrations/0022_seed_niche_nao_informado.py`): a taxonomia validada e a reclassificação dos clientes são uma data migration posterior, pendente de decisão de negócio. O estado "sem nicho" precisava existir explícito e endereçável.
+</Accordion>
+
+<Accordion title="GET /api/v1/media/acervo/elegiveis/?client_id=<id> — StockPhotoElegiveisView (MIG-456)">
+O pool **pelo olhar de um cliente**: roda `StockPhoto.objects.elegiveis_para(client)` e devolve a lista paginada igual à do `/acervo/`. É a ferramenta de conferência da equipe — antes de afirmar que o isolamento funciona, dá para ver a lista exata que aquele cliente alcança. Usa o **mesmo** `elegiveis_para` da seleção de imagem: se esta tela e a geração divergissem, a conferência não valeria nada.
+
+<ParamField query="client_id" type="integer" required>Só dígitos. Ausente ou inválido: `400` `{"error": "Informe um client_id válido."}`. Cliente inexistente: `404` `{"error": "Cliente não encontrado."}`.</ParamField>
+
+Resposta `200`: mesmo envelope paginado da listagem.
+</Accordion>
+
+<Accordion title="PATCH/DELETE /api/v1/media/acervo/<pk>/ — StockPhotoDetailView (MIG-455)">
+`IsManagementUserOnly` nas duas verbas.
+
+**PATCH** — edição parcial de tags, curadoria (`ativo`) e **alocação** (`escopo`, `clientes_permitidos`, `nichos_permitidos`, MIG-456). `200` com o objeto; `400` com os erros por campo do serializer; `404` `{"error": "Foto não encontrada."}`.
 
 **DELETE** — `204` sem corpo; `404` com o mesmo formato.
 </Accordion>
@@ -304,7 +348,9 @@ Assinante pago (`Subscription.status == 'ACTIVE'`) não sofre nenhuma trava de t
 - `generate_thumb` em `Media.save()` só cobre extensões de imagem fixas (`.png/.jpg/.jpeg/.gif/.webp`); vídeos e outros formatos nunca recebem thumbnail automática. Qualquer falha na geração é engolida (só `print`), então uma mídia pode ficar sem `thumbnail` silenciosamente.
 - A galeria listada em `MediaListView` exclui mídia já vinculada a um post (`media_posts__isnull=True`); uma mídia da galeria some da listagem assim que é usada em um post, mesmo mantendo `from_media_library=True`.
 - O job `analyze_media_library` descarta definitivamente (sem `ai_description`) imagens cujo arquivo sumiu do storage ou que a Vision recusa de forma não recuperável — reprocessar exige `--force` explicitamente.
-- **Acervo e galeria são tabelas diferentes.** `StockPhoto` não aparece em `/api/v1/media/list/` e não tem campo de cliente: foto do acervo nunca vaza para a galeria de um cliente, e esconder a tela não é o que garante isso. Ao mexer no acervo, não "resolva" nada com flag na `Media` — a separação é o mecanismo de isolamento.
+- **Acervo e galeria são tabelas diferentes.** `StockPhoto` não aparece em `/api/v1/media/list/`: foto do acervo nunca vaza para a galeria de um cliente, e esconder a tela não é o que garante isso. Ao mexer no acervo, não "resolva" nada com flag na `Media` — a separação é o mecanismo de isolamento.
+- **Vínculo com `escopo=global` é recusado com `400`, nunca corrigido em silêncio** (`StockPhotoSerializer.validate`, MIG-456). É a falha mais perigosa do card e a mais fácil de cometer: o formulário diz "estas fotos são do cliente X", os vínculos são gravados, e `elegiveis_para` casa pelo ramo `escopo='global'` — a foto entra no pool da carteira inteira sem nada na tela indicando isso (`visivel_para_ninguem` só fala de restrita). A mensagem pede que se escolha um dos dois: `{"escopo": "Foto com cliente ou nicho vinculado precisa ter escopo \"restrita\". Para deixá-la global, remova os vínculos."}`.
+- `visivel_para_ninguem` é **somente leitura** e sai em toda resposta de foto: `true` quando a foto é `restrita` e não tem nenhum vínculo. Ela é válida e existe — só não aparece para ninguém, que é o default fechado, não um bug.
 - Tirar uma foto do acervo é `ativo=false` (PATCH), não `DELETE`: o arquivo continua no storage e a foto pode voltar.
 - O `404` do acervo vem com texto diferente em cada verbo — `"Foto não encontrada."` no `PATCH` e `"Foto nao encontrada."` (sem acento) no `DELETE`, `views.py:601` vs `views.py:613`. Quem tratar a mensagem no cliente não deve comparar string.
 - `generate_media_description_async` e o job de `cron.py`/`analysis.py` são dois mecanismos de IA independentes, escrevendo em campos diferentes (`description` vs. `ai_description`/`ai_keywords`) — não confundir um com o outro ao investigar por que uma mídia "não tem descrição".

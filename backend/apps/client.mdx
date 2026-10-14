@@ -45,6 +45,7 @@ Representa o cliente final da plataforma — um `CustomUser` com papel `client` 
 | `company` | `CharField(255)` | Não | `blank=True, null=True` | Nome da empresa |
 | `onboarding_step` | `IntegerField` | Não | `default=0`, choices `ONBOARDING_STEP_CHOICES` (0–5) | Contador legado de marcos do onboarding — nunca regride |
 | `onboarding_skipped` | `BooleanField` | Não | `default=False` | Se o cliente escolheu pular o onboarding |
+| `niche` | `ForeignKey(Niche)` | Não | `null=True, blank=True`, `on_delete=PROTECT`, `related_name='clients'` | Nicho de mercado (MIG-456). **`NULL` = ainda não reclassificado**, não "sem nicho genérico" — a reclassificação da carteira é uma data migration posterior. `PROTECT`: nicho em uso não se apaga por acidente |
 | `miggoai_workflow_enabled` | `BooleanField` | Não | `default=False` | Workflow do agente MiggoAI ligado — o `generate_daily_contents` do miggoai-2.0 só gera para quem está `True`. Muda só pelo toggle `miggoai-workflow/<pk>/` (migration `0014`) |
 | `created_at` | `DateTimeField` | Não (auto) | `auto_now_add=True` | Data de criação |
 
@@ -60,6 +61,24 @@ Representa o cliente final da plataforma — um `CustomUser` com papel `client` 
 
 <Note>
 `ONBOARDING_STEP_CHOICES` define 6 etapas (0 a 5), mas o texto descritivo do `Meta.fieldsets` em `app/client/admin.py:21-24` lista apenas até "4=Brandkit enviado (Completo)", sem mencionar a etapa 5 ("Briefing preenchido"). É uma divergência de texto no admin, não no dado.
+</Note>
+
+### Niche
+
+Nicho de mercado do cliente — a taxonomia que o acervo usa para restringir foto por segmento. `app/client/models.py:14` (MIG-456), migrations `0021_niche_client_niche` e `0022_seed_niche_nao_informado`.
+
+| Campo | Tipo | Obrigatório | Default | Descrição |
+|---|---|---|---|---|
+| `nome` | `CharField(120)` | Sim | `unique=True` | — |
+| `slug` | `CharField(140)` | Sim | `unique=True` | — |
+| `ativo` | `BooleanField` | Não | `default=True` | Nicho desativado continua rotulando vínculos que já existem |
+
+`Meta`: `ordering = ['nome']`, `verbose_name='Nicho'`.
+
+**Tabela, e não texto livre**, porque a restrição de uma foto do acervo aponta para uma linha daqui: texto solto faria "Saúde" e "saude" serem dois nichos diferentes para o isolamento. Não confundir com o `CharField` `nicho` do `StockPhoto`, que é eixo de **busca**, não de permissão — ver [media](/backend/apps/media).
+
+<Note>
+  Nesta volta a tabela nasce com **uma linha só**: "Não informado" (`slug='nao-informado'`), semeada pela migration `0022`. É o estado explícito de quem ainda não foi classificado (31% da carteira). A taxonomia validada e a reclassificação dos clientes atuais são decisão de negócio pendente e entram numa data migration posterior.
 </Note>
 
 ### ClientMeta

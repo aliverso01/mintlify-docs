@@ -74,7 +74,7 @@ As telas exclusivas da equipe vivem em `src/pages/Admin/`. As demais rotas de `/
     | `/admin/logs` | `Admin/IntegrationLogs` | Auditoria das chamadas a APIs externas (tabela `Integration` do backend) |
     | `/admin/notifications` | `Admin/NotificationHistory` | Histórico de notificações enviadas |
     | `/admin/design-references` | `Admin/DesignReferences` | Referências visuais |
-    | `/admin/acervo` | `Admin/AcervoMiggo` | Acervo interno de imagens da Miggo (MIG-455) — ver nota abaixo |
+    | `/admin/acervo` | `Admin/AcervoMiggo` | Acervo interno de imagens da Miggo (MIG-455/456) — ver nota abaixo |
   </Accordion>
 
   <Accordion title="Comunicação">
@@ -106,9 +106,17 @@ As telas exclusivas da equipe vivem em `src/pages/Admin/`. As demais rotas de `/
 </AccordionGroup>
 
 <Note>
-  **Acervo Miggo (`/admin/acervo`)** — tela sem par em `/app/*`, ao contrário da maioria. No menu lateral fica no grupo *Gestão*, logo depois de *Biblioteca de Mídias* (`src/layout/AppSidebar.tsx:81`), mas as duas são coisas diferentes: a Biblioteca é por cliente e o cliente a abre; o acervo é da Miggo e não aparece para ele. Arquivos em `src/pages/Admin/`: `AcervoMiggo.tsx` (grid paginado, filtros e busca), `AcervoUploadModal.tsx` (envio em lote — a seleção acima de 20 é dividida em envios sucessivos, porque a API aceita 20 por requisição), `AcervoEditModal.tsx` (PATCH de tags e curadoria, DELETE com confirmação) e `acervoTypes.ts`.
+  **Acervo Miggo (`/admin/acervo`)** — tela sem par em `/app/*`, ao contrário da maioria. No menu lateral fica no grupo *Gestão*, logo depois de *Biblioteca de Mídias* (`src/layout/AppSidebar.tsx:81`), mas as duas são coisas diferentes: a Biblioteca é por cliente e o cliente a abre; o acervo é da Miggo e não aparece para ele. Arquivos em `src/pages/Admin/`: `AcervoMiggo.tsx` (grid paginado, filtros e busca), `AcervoUploadModal.tsx` (envio em lote — a seleção acima de 20 é dividida em envios sucessivos, porque a API aceita 20 por requisição), `AcervoEditModal.tsx` (PATCH de tags, curadoria e alocação, DELETE com confirmação), `AcervoAlocacaoFields.tsx` (o bloco de escopo + vínculos, reaproveitado pelo envio e pela edição), `ClientMultiSelect.tsx` em `src/components/form/` e `acervoTypes.ts`.
 
-  **Esconder a tela não é o isolamento.** O acervo é tabela separada (`StockPhoto`) e as rotas são `IsManagementUser` — cliente autenticado recebe `403`. A `MediaLibrary`, que serve `/admin` e `/app` com o mesmo componente, ficou intocada de propósito.
+  **O que a MIG-456 acrescentou na tela**, todo item amarrado a um critério do card:
+
+  - **Badge de alocação no card da foto** — `Restrita · 2 clientes · 1 nicho` (âmbar), montado por `descreverAlocacao` em `acervoTypes.ts`. Global fica **neutra, sem badge**: marcar as duas poluiria o grid inteiro. Dá para ver de quem é a foto sem abrir.
+  - **Alerta `Sem vínculo — ninguém vê`** (vermelho, ao lado do badge) quando a API devolve `visivel_para_ninguem: true` — foto restrita e sem destinatário é válida, existe e não aparece para ninguém; a tela avisa em vez de deixar o silêncio.
+  - **Filtro por escopo** — *Global e restritas* (default), *Somente globais*, *Somente restritas*; vira `?escopo=` na listagem.
+  - **"Conferir como um cliente vê"** — seletor que troca a listagem para `GET /acervo/elegiveis/?client_id=`. Nessa visão os filtros de tag ficam desabilitados: o que se está conferindo é o pool do cliente, não uma busca. É a materialização do critério 4 e usa o mesmo `elegiveis_para` da seleção automática de imagem — se a tela e a geração divergissem, a conferência não valeria nada.
+  - **Picker de nichos** alimentado por `GET /acervo/nichos/`. Nesta volta a taxonomia tem só "Não informado": o vínculo por nicho existe e fica quase vazio até a data migration da taxonomia validada.
+
+  **Esconder a tela não é o isolamento.** O acervo é tabela separada (`StockPhoto`) e as rotas são `IsManagementUserOnly` desde a MIG-456 — cliente autenticado recebe `403` e **API key sozinha recebe `401`**, porque o acervo passou a carregar o mapa de alocação cliente↔foto. A `MediaLibrary`, que serve `/admin` e `/app` com o mesmo componente, ficou intocada de propósito.
 </Note>
 
 ## Endpoints administrativos consumidos
@@ -124,7 +132,7 @@ As telas administrativas consomem os mesmos apps do backend, em rotas ou filtros
 | E-mail marketing | [E-mail marketing](/backend/apps/emailmarketing) |
 | Notificações | [Notification](/backend/apps/notification) |
 | Cards parados | [Post](/backend/apps/post) |
-| Acervo Miggo | [Media](/backend/apps/media) — `/api/v1/media/acervo/`, `IsManagementUser` |
+| Acervo Miggo | [Media](/backend/apps/media) — `/api/v1/media/acervo/{,<pk>/,nichos/,elegiveis/}`, `IsManagementUserOnly` |
 
 ## Regra ao criar tela nova
 
