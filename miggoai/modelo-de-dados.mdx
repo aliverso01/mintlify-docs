@@ -78,6 +78,7 @@ erDiagram
         int post_id "nullable, sem FK local"
         string environment "TEST|PRODUCTION"
         string status "PENDING|RUNNING|SUCCESS|FAILED"
+        string idempotency_key "nullable, unique"
         string stage
         json variables_used
         json result "nullable"
@@ -231,6 +232,7 @@ Registro de auditoria de cada execução de workflow — criado como `RUNNING` e
 | `post_id` | `PositiveIntegerField` | `null=True, blank=True` — sem FK. |
 | `environment` | `CharField(12)`, choices | `TEST` ("Teste") ou `PRODUCTION` ("Produção"). |
 | `status` | `CharField(10)`, choices, default `PENDING` | `PENDING`, `RUNNING`, `SUCCESS`, `FAILED`. |
+| `idempotency_key` | `CharField(64)` | `null=True, blank=True`, **`unique=True`** (migration `0009`) — chave da geração lógica, enviada pelo backend-miggo no `POST /api/generations/grid/`. É o `unique` que impede a segunda peça paga quando o chamador repete o pedido (MIG-427). |
 | `stage` | `CharField(255)` | Estágio textual atualizado ao vivo durante a execução (ex.: "Gerando imagem 2/3"), para polling do frontend. |
 | `variables_used` | `JSONField` | `default=dict` — overrides enviados na chamada. |
 | `result` | `JSONField` | `null=True, blank=True` — saída do workflow (estrutura varia por tipo, ver <a href="/miggoai/workflows">Workflows</a>). |
