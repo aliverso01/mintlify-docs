@@ -125,7 +125,9 @@ Pontos-chave do encadeamento (`runner.py:167-215`):
 4. **Imagem** não depende do texto de legenda/hashtags — roda em paralelo lógico à legenda (mesma entrada: título + formato).
 5. **Hashtags** depende do texto da legenda gerada no passo 3.
 
-Cada ambiente (`TEST`/`PRODUCTION`) grava as imagens em subpastas separadas dentro de `MEDIA_ROOT` (`_image_dir`, `runner.py:49-51`), e generations de `TEST` podem ser apagadas manualmente ou por rotina de limpeza (`cleanup_test_generations`, ver <a href="/miggoai/workflows">Workflows</a>).
+Cada ambiente (`TEST`/`PRODUCTION`) grava as imagens em subpastas separadas dentro de `MEDIA_ROOT` (`imagens.pasta_da_geracao`, `backend/apps/generations/services/imagens.py:17-21`), e generations de `TEST` podem ser apagadas manualmente ou por rotina de limpeza (`cleanup_test_generations`, ver <a href="/miggoai/workflows">Workflows</a>).
+
+Nem todo arquivo da pasta está em `image_paths`: o workflow do banner também guarda ali a arte de fundo (`arte_banner.png`), cujo caminho sai em `result.banner.arte_path` e é reaproveitado no ajuste seguinte quando o pedido não fala da arte. Quem apaga uma geração deve usar `imagens.caminhos_salvos(generation)`, que soma os dois, em vez de só `image_paths`.
 
 <Columns cols={2}>
   <Card title="Referência de API" icon="plug" href="/miggoai/api-referencia">Todos os endpoints do backend.</Card>
