@@ -124,6 +124,8 @@ Fonte: `backend/apps/generations/urls.py`, `backend/apps/generations/views.py`.
 | GET | `/api/generations/` | `GenerationListView` | Lista generations (filtros). |
 | GET | `/api/generations/<int:pk>/` | `GenerationDetailView` | Detalhe de uma generation. |
 | DELETE | `/api/generations/<int:pk>/` | `GenerationDetailView` | Remove uma generation (só ambiente TEST). |
+| POST | `/api/generations/grid/` | `GridView` | Gera o mosaico 3x3 do onboarding (síncrono) e devolve a imagem em base64. Quem chama é o backend-miggo, nunca o navegador. |
+| GET | `/api/generations/grid/by-key/<str:idempotency_key>/` | `GridByKeyView` | Estado de uma geração de grid **pela chave de idempotência**, não pelo pk. |
 
 **POST `/api/generations/{test,production}/`**
 <ParamField path="workflow_key" type="string" required>`title`, `image`, `caption` ou `hashtags`.</ParamField>
@@ -165,6 +167,43 @@ Rodam a mesma rotina do cron (`services.rodada`), então a execução manual pro
 </Warning>
 
 Os dois só tomam o lock na thread da requisição — é a única forma de a resposta saber o desfecho. `400` quando falta `client_id` (ou `post_id`), ou quando não são números.
+
+**POST `/api/generations/grid/`**
+<ParamField path="client_id" type="integer" required>Id do cliente no backend-miggo — é a quem o registro `Generation` fica pendurado.</ParamField>
+<ParamField path="cores" type="array">Lista de hex da paleta (`400` se não for lista de strings).</ParamField>
+<ParamField path="nicho" type="string" />
+<ParamField path="descricao_referencia" type="string" />
+<ParamField path="feedback" type="string">Pedido de ajuste do cliente.</ParamField>
+<ParamField path="referencia_url" type="string">Referência de estilo. Sem ela o grid é gerado do zero.</ParamField>
+<ParamField path="logo_url" type="string" />
+<ParamField path="peca_anterior_url" type="string">O grid que o cliente já viu e pediu para ajustar — com `feedback`, seleciona o modo correção.</ParamField>
+<ParamField path="idempotency_key" type="string">Opcional, máximo 64 caracteres (`400` acima disso). Identifica **uma geração lógica**: repetição por retry/timeout reusa a mesma chave (MIG-427).</ParamField>
+
+<ResponseField name="200 OK" type="object">`{image_b64, generation_id, reused}`. `reused: true` quando a peça já existia para aquela chave — **não gerou nem cobrou de novo**.</ResponseField>
+<ResponseField name="409 Conflict" type="object">`{status, generation_id, detail}` — a geração daquela chave está `PENDING`/`RUNNING`. Não inicia outra: é a trava que evita a segunda cobrança.</ResponseField>
+<ResponseField name="502 Bad Gateway" type="object">`{error, generation_id}` — a peça não saiu (`FAILED` ou geração sem imagem). É "não produziu", não "pedido errado".</ResponseField>
+
+O que a chave faz em cada estado:
+
+| Estado da chave no MiggoAI | Comportamento |
+|---|---|
+| sem `idempotency_key` no corpo | igual a antes da MIG-427 — gera e cobra (compat com chamador antigo) |
+| inexistente | gera, cobra e grava a chave na `Generation`; `reused: false` |
+| `SUCCESS` | devolve a peça já gerada, `reused: true`, **sem gerar nem cobrar** |
+| `PENDING`/`RUNNING` | `409`, sem iniciar outra |
+| `FAILED` | re-executa sob a **mesma** `Generation` (a chave é unique); só cobra se concluir |
+| de outro `client_id` | `400` — a chave é de uma geração de um cliente só |
+
+Corrida entre duas chamadas com a mesma chave: o `unique` do banco é a guarda final; o `IntegrityError` é capturado e devolve o estado do registro que ganhou (nada foi gerado nem cobrado no perdedor).
+
+**GET `/api/generations/grid/by-key/<idempotency_key>/`**
+
+Existe porque no caso da MIG-427 o chamador **nunca recebeu o pk**: o POST estourou o read timeout de 300s do lado dele enquanto a geração seguia aqui. Sem este endpoint a única saída da plataforma era regerar — a duplicata cobrada.
+
+<ParamField query="client_id" type="integer">Opcional. Presente e a chave sendo de outro cliente → **404**, o mesmo de chave desconhecida (a diferença entre os dois contaria que aquela chave existe). `client_id` ilegível vale como filtro que não casa. O backend-miggo envia sempre.</ParamField>
+
+<ResponseField name="200 OK" type="object">`{status, generation_id}` + `image_b64` quando `SUCCESS`, ou + `error` quando `FAILED`. `SUCCESS` sem imagem é registro inconsistente e responde como `FAILED` — devolver `SUCCESS` sem imagem faria a plataforma gravar vazio.</ResponseField>
+<ResponseField name="404 Not Found" type="object">`{error: 'chave desconhecida.'}`.</ResponseField>
 
 **GET `/api/generations/context/`**
 <ParamField path="client_id" type="integer" required />

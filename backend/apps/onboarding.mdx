@@ -915,7 +915,21 @@ Base URL por `MIGGOAI_API_URL` (default `http://localhost:10000`); credenciais p
 | `trigger_regenerate(token, miggo_post_id, target='legenda', instruction='') -> dict` (`miggoai.py:117`) | `POST /api/generate/regenerate/` com `{post_id, target, instruction}` | `target` aceita `titulo`, `imagem` ou `legenda`. |
 | `get_job(token, job_id) -> dict` (`miggoai.py:130`) | `GET /api/generate/jobs/{job_id}/` | `{status, logs:[{stage,message,level,ts}], result, error}`. **Intencionalmente fora da auditoria** — é chamada em polling e encheria a tabela `Integration` de ruído. |
 
-Todas as chamadas passam por `_audit(...)` (`miggoai.py:27`), que grava em `Integration` de forma blindada. `MiggoAIError` (`miggoai.py:51`) sinaliza falha de comunicação.
+| `gerar_grid_v2(token, ..., miggo_client_id=None, idempotency_key='')` (`miggoai.py:374`) | `POST /api/generations/grid/` | Gera o mosaico 3x3 do onboarding e devolve os bytes do PNG (MIG-408). Timeout `(5, 300)`: conexão curta, leitura acompanhando a geração de imagem do outro lado. Com `idempotency_key`, a mesma geração lógica repetida não produz nem cobra peça nova (MIG-427). |
+| `consultar_grid_por_chave(token, idempotency_key, client_id=None)` (`miggoai.py:333`) | `GET /api/generations/grid/by-key/<chave>/?client_id=<id>` | Estado daquela geração. O `client_id` vai **sempre**: do outro lado, chave de outro cliente responde 404 igual a chave inexistente. Devolve `None` quando não dá para concluir nada (404, serviço fora, resposta fora do contrato) — quem chama trata `None` como falha, nunca como sucesso. Timeout `(5, 20)`: é consulta de estado, não geração. |
+
+Todas as chamadas passam por `_audit(...)` (`miggoai.py:27`), que grava em `Integration` de forma blindada. `MiggoAIError` (`miggoai.py:51`) sinaliza falha de comunicação; `MiggoAIIndisponivel` (`miggoai.py:319`) é "não respondeu", e `MiggoAIGeracaoEmAndamento` (`miggoai.py:322`) é o `409` do contrato do grid — herda de `MiggoAIIndisponivel` porque a decisão de quem chama é a mesma ("volte depois", sem consumir tentativa), mas aqui **não se regera e não se rotaciona a chave**.
+
+<Accordion title="Idempotência da geração do grid (MIG-427)">
+
+Um read timeout estourava **depois** de o MiggoAI ter concluído e cobrado: cada retomada virava imagem nova, paga, que nunca chegava ao cliente — 21 grids cobrados em 20h no caso que originou o card.
+
+- **A chave nasce aqui**, UUID4 em `grid['generation_key']` do estado da sessão, gravada **antes** da chamada (`_chave_de_geracao`, `services.py:4214`). Sem ela persistida, um timeout deixaria a geração sem nome e a recuperação sem o que perguntar. Se duas execuções correrem, vale a chave que foi gravada primeiro — as duas precisam falar da mesma geração.
+- **Retry e timeout reusam a chave** (é o mesmo pedido). **Rotacionam** a chave (`_rotacionar_chave_de_geracao`, `services.py:4244`): pedido de ajuste novo do cliente, reset pelo admin e a conclusão bem-sucedida — são pedidos diferentes, e reusar faria o MiggoAI devolver a imagem antiga como resposta ao pedido novo.
+- **Na queda** (`_recuperar_grid_por_chave`, `services.py:4255`), antes de contar a falha: `SUCCESS` → usa a imagem recuperada e segue o caminho normal de sucesso; `PENDING`/`RUNNING` → `MiggoAIGeracaoEmAndamento`, sem regerar, e o próximo ciclo do cron pergunta de novo; `FAILED`, chave desconhecida ou consulta indisponível → propaga a exceção original (caminho de falha de hoje, que preserva a imagem anterior).
+- **`paid_generations` conta o que o MiggoAI cobrou**: o caminho de recuperação também incrementa. Antes, o teto de gerações era cego justamente no caminho do timeout — que era onde a cobrança acontecia.
+
+</Accordion>
 
 ### Cron e management commands
 
