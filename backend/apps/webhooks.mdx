@@ -9,7 +9,7 @@ icon: "webhook"
 `app/webhooks` é o app Django que recebe callbacks HTTP assíncronos de dois provedores externos:
 
 - **Stripe** — eventos de cobrança (checkout, assinatura, fatura) que movem o fluxo de billing da Miggo.
-- **Zernio** — confirmação de conexão de conta de rede social (ex.: Instagram, TikTok) feita por um provedor de integração externo.
+- **Zernio** — confirmação de conexão de conta de rede social (ex.: Instagram, TikTok) feita por um provedor de integração externo, e o **desfecho da publicação** de um post (MIG-454).
 
 <Note>
 O app não tem `models.py`, `admin.py` nem `urls.py` próprios — são todos stubs vazios gerados pelo `startapp` do Django (`app/webhooks/models.py:1-3`, `app/webhooks/admin.py:1-3`). As rotas dos webhooks são registradas diretamente em `core/urls.py`, e a persistência dos eventos acontece em models de **outros** apps (`app.subscription`, `app.integration`, `app.post`). Isso está documentado como está — não é uma omissão desta página.
@@ -19,7 +19,7 @@ O app não tem `models.py`, `admin.py` nem `urls.py` próprios — são todos st
 
 | Arquivo | Conteúdo |
 |---|---|
-| `app/webhooks/views.py` | As duas views reais do app: `webhook_stripe` (`app/webhooks/views.py:62`) e `webhook_zernio_account` (`app/webhooks/views.py:417`) |
+| `app/webhooks/views.py` | As três views reais do app: `webhook_stripe` (`app/webhooks/views.py:62`), `webhook_zernio_account` (`app/webhooks/views.py:698`) e `webhook_zernio_status` (`app/webhooks/views.py:807`) |
 | `app/webhooks/models.py` | Vazio — stub do `startapp`, sem models próprios (`app/webhooks/models.py:1-3`) |
 | `app/webhooks/admin.py` | Vazio — stub do `startapp`, nada registrado no Django admin (`app/webhooks/admin.py:1-3`) |
 | `app/webhooks/apps.py` | `WebhooksConfig`, `name = 'app.webhooks'` (`app/webhooks/apps.py:4-6`) |
@@ -79,7 +79,8 @@ Prefixo de rota: as URLs abaixo estão registradas **fora** do prefixo `api/v1/`
 | Método | Rota completa | View | Permissão |
 |---|---|---|---|
 | `POST` | `/webhooks/` | `webhook_stripe` (`app/webhooks/views.py:62`) | Nenhuma (`permission_classes = []`, `authentication_classes = []`) — autenticação é a assinatura do header Stripe |
-| `POST` | `/webhooks/zernio/account/` | `webhook_zernio_account` (`app/webhooks/views.py:417`) | Nenhuma (`permission_classes = []`) — sem verificação de assinatura no código |
+| `POST` | `/webhooks/zernio/account/` | `webhook_zernio_account` (`app/webhooks/views.py:698`) | Nenhuma (`permission_classes = []`) — sem verificação de assinatura no código |
+| `POST` | `/webhooks/zernio/status/` | `webhook_zernio_status` (`app/webhooks/views.py:807`) | Nenhuma no DRF — a autenticação é o token do header, conferido contra `ZERNIO_WEBHOOK_TOKEN` |
 
 <Note>
 `/webhooks/manychat/` e `/webhooks/manychat/dynamic-block/continue/` também estão registrados em `core/urls.py:49-53`, mas as views (`webhook_manychat`, `manychat_dynamic_block_continue`) pertencem a `app/conversation/webhooks.py`, não a este app. Ver o card "Conversation" ao final desta página.
@@ -194,6 +195,37 @@ Para `account.connected` processado: `{"detail": "integration_activated", "integ
 </ResponseField>
 
 </Accordion>
+
+<Accordion title="POST /webhooks/zernio/status/ — Zernio (desfecho da publicação)">
+
+`webhook_zernio_status` (`app/webhooks/views.py:807`, MIG-454). É o caminho rápido para tirar o post de "Enviando": o Zernio avisa que a publicação terminou, e a `PostPublication` correspondente vira `published` ou `failed`.
+
+**Autenticação**: token fixo nosso, cadastrado no painel do Zernio e devolvido no header `Zernio-Webhook-Token` (aceita também `X-Webhook-Token`), comparado com `ZERNIO_WEBHOOK_TOKEN` via `hmac.compare_digest`. Deliberadamente diferente do `webhook_zernio_account`, que não valida nada: aqui o payload move status de post de cliente.
+
+- Sem `ZERNIO_WEBHOOK_TOKEN` configurado: `503` e recusa de **todo** evento.
+- Token divergente: `401`.
+
+**Eventos**: `post.published`/`post.failed` e as grafias equivalentes (`EVENTOS_PUBLICADO`/`EVENTOS_FALHA` em `app/webhooks/views.py`). Evento fora das listas vira log + `200 {"detail": "ignored_event"}` — nunca descartado calado, nunca `500` (que faria o Zernio reenviar para sempre).
+
+**Idempotência**: a chave do evento (`id`/`eventId` do payload, ou `evento:postId:status`) é gravada em `Integration` (`service='Zernio Status'`) e consultada em `response__event_key`. Reentrega responde `200 {"detail": "already_processed"}` sem reescrever `published_at` nem gerar `PostStatusEvent` de novo. Não há tabela própria de eventos.
+
+**Casamento**: só atualiza `PostPublication` cujo `external_post_id` já exista no banco. Id desconhecido (outro ambiente, post criado fora da Miggo) vira log + `200 {"detail": "publication_not_found"}`. Payload sem id de post: `200 {"detail": "event without post id"}`.
+
+<ResponseField name="200 OK" type="object">
+Processado: `{"detail": "publication_updated", "event_key", "publication_id", "status", "changed"}`. Demais casos acima também respondem `200`, com o `detail` correspondente.
+</ResponseField>
+<ResponseField name="401 Unauthorized" type="object">
+`{"detail": "invalid token"}`.
+</ResponseField>
+<ResponseField name="503 Service Unavailable" type="object">
+`{"detail": "webhook token not configured"}`.
+</ResponseField>
+
+<Note>
+Este webhook é o caminho rápido, não o único. O comando `reconcile_zernio_posts` (ver [Comandos](/backend/comandos)) é a rede de segurança para quando ele não estiver configurado no painel do Zernio ou a entrega se perder. Não confundir também com `POST /api/v1/post/webhook-update-post/` (app `post`), que é o webhook antigo, por `Post`, sem token e casado por `PostMetadata.late_post_id`.
+</Note>
+
+</Accordion>
 </AccordionGroup>
 
 ## Serializers
@@ -238,7 +270,7 @@ Usada por `_handle_trial_will_end` para não duplicar o aviso de fim de trial no
 </Warning>
 
 <Warning>
-**Webhook Zernio sem verificação de assinatura**: `webhook_zernio_account` não valida nenhum header/token. Qualquer request `POST` bem formado para `/webhooks/zernio/account/` com `event: "account.connected"`, `platform` e `profileId` válidos ativa a integração correspondente — inclusive marcando `status = 'active'` sem confirmar que a chamada realmente veio da Zernio. Compare com o webhook ManyChat (`app/conversation/webhooks.py`), que exige `MANYCHAT_WEBHOOK_TOKEN` no header.
+**Webhook Zernio de conta sem verificação de assinatura**: `webhook_zernio_account` não valida nenhum header/token (o `webhook_zernio_status`, mais novo, valida). Qualquer request `POST` bem formado para `/webhooks/zernio/account/` com `event: "account.connected"`, `platform` e `profileId` válidos ativa a integração correspondente — inclusive marcando `status = 'active'` sem confirmar que a chamada realmente veio da Zernio. Compare com o webhook ManyChat (`app/conversation/webhooks.py`), que exige `MANYCHAT_WEBHOOK_TOKEN` no header.
 </Warning>
 
 <Warning>

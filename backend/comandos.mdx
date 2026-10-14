@@ -94,10 +94,12 @@ Argumentos (`app/media/management/commands/analyze_media_library.py:26-46`):
 | Comando | Arquivo | Agendado | O que faz |
 |---|---|---|---|
 | `backfill_post_status_events` | `app/post/management/commands/backfill_post_status_events.py:1` | Sob demanda | Reconstrói `PostStatusEvent` a partir dos snapshots (`field_snapshot['status']`) gravados em `History`. Idempotente — não duplica eventos já existentes; cobertura limitada ao período em que o `History` registrou posts. |
+| `reconcile_zernio_posts` | `app/post/management/commands/reconcile_zernio_posts.py:1` | `*/10 * * * *` (no Dokploy, não em `CRONJOBS`) | Fecha as publicações presas em `sending`/`pending`: pergunta o desfecho ao Zernio e leva o post a *Publicado* (ou a *Falhou*, quando a rede recusou de verdade). Rede de segurança do webhook `/webhooks/zernio/status/` — sem ele, timeout na chamada de publicação deixava o card preso no kanban (MIG-454). Idempotente: não toca em publicação já `published`/`canceled`, nem em `scheduled` cuja data não chegou, e **não** marca falha no que não conseguiu confirmar. |
 | `repair_platform_integrations` | `app/post/management/commands/repair_platform_integrations.py:1` | Sob demanda (correção do incidente MIG-185) | Realinha `PlatformIntegration` com as contas realmente conectadas no Zernio (`GET /v1/accounts?profileId=`) — conserta o embaralhamento causado por um webhook antigo que casava a integração só por `profileId` do cliente. |
 
 Argumentos:
 - `backfill_post_status_events`: `--dry-run` (flag) — só relata quantos eventos seriam criados (`app/post/management/commands/backfill_post_status_events.py:20-25`).
+- `reconcile_zernio_posts`: `--minutos <n>` (int, default `15` — idade mínima da publicação para ser conferida; vem de `status_sync.MINUTOS_PRESO`).
 - `repair_platform_integrations`: `--apply` (flag, sem ela só relata) e `--client <id>` (int, limita a um cliente) — `app/post/management/commands/repair_platform_integrations.py:26-36`.
 
 ```bash
@@ -109,6 +111,9 @@ Argumentos:
 
 # relatório de integrações desalinhadas de um cliente
 ./venv/Scripts/python.exe manage.py repair_platform_integrations --client 42
+
+# fecha publicações sem desfecho no Zernio (o cron roda sem flag)
+./venv/Scripts/python.exe manage.py reconcile_zernio_posts --minutos 5
 
 # corrige de fato
 ./venv/Scripts/python.exe manage.py repair_platform_integrations --client 42 --apply

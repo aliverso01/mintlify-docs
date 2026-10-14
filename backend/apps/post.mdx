@@ -258,6 +258,7 @@ Prefixo do app: `/api/v1/post/` (`core/urls.py:32`). Autenticação/permissão p
 | DELETE | `/api/v1/post/delete/<int:pk>/` | `PostDeleteView` | Padrão |
 | GET | `/api/v1/post/detail/<int:pk>/` | `PostDetailView` | Padrão |
 | POST | `/api/v1/post/publish/` | `PublishPostView` | Padrão |
+| POST | `/api/v1/post/publication/<int:pk>/check-status/` | `PostPublicationCheckStatusView` | Exige usuário autenticado (API key não basta); cliente só confere publicação do próprio `Client` |
 | POST | `/api/v1/post/webhook-update-post/` | `webhookUpdatePostView` | `AllowAny` (sem autenticação) |
 | POST | `/api/v1/post/webhook-account-connected/` | `webhookAccountConnectedView` | `AllowAny` (sem autenticação) |
 | POST | `/api/v1/post/format/create/` | `PostFormatCreateView` | Padrão |
@@ -375,6 +376,28 @@ Validações antes de disparar:
 <ResponseField name="message" type="string">Mensagem de confirmação (assíncrona) ou de post aprovado via WhatsApp.</ResponseField>
 
 **Erros**: `400` (formato/mídia ausente, estado inválido do post, `publish` inválido, proporção de imagem inválida, tipo de arquivo não suportado), `404` (post/integração não encontrados).
+
+**Timeout não é falha** (MIG-454). As chamadas ao Zernio (presign e `POST /v1/posts`) usam `zernio.publish_timeout()` — `ZERNIO_PUBLISH_TIMEOUT`, default `120` segundos, antes 25s fixos. Se ainda assim estourar, a thread de background grava a `PostPublication` como `sending` ("enviado, desfecho desconhecido") e leva o `Post` para `holding`, em vez de marcar `failed`: o post costuma ter sido criado do outro lado. Quem fecha o estado depois é o webhook `/webhooks/zernio/status/`, a checagem manual abaixo ou o comando `reconcile_zernio_posts`.
+</Accordion>
+
+<Accordion title="POST /api/v1/post/publication/<int:pk>/check-status/ — PostPublicationCheckStatusView">
+`app/post/views.py:1904`. Checagem **manual** do desfecho de uma `PostPublication` no Zernio — é o botão "Verificar status" do modal do post no frontend. Roda, de forma síncrona e para aquela publicação, a mesma `status_sync.conferir_publicacao` usada pelo cron de reconciliação.
+
+Não aceita API key de serviço: sem usuário não há cliente a quem limitar a consulta. Usuário que não é gestão só consulta publicação do próprio `Client` — sem isso, qualquer autenticado enumeraria `pk`.
+
+**Freio de 30s por publicação** (`INTERVALO_MINIMO`), medido pelo último registro `Integration` de `service='Zernio Status Check'` — e não por cache de processo, que com vários workers valeria por worker.
+
+<ResponseField name="200 OK" type="object">
+`{publication_id, status, status_display, post_status, permalink, external_post_id, published_at, changed, detail}`. `changed` diz se a checagem alterou alguma coisa.
+</ResponseField>
+<ResponseField name="429 Too Many Requests" type="object">
+`{detail, retry_after}` — `retry_after` em segundos, o que falta do freio de 30s.
+</ResponseField>
+<ResponseField name="502 Bad Gateway" type="object">
+`{detail}` — o Zernio não respondeu. **Não muda o status da publicação**: não se sabe nada de novo.
+</ResponseField>
+
+**Outros erros**: `401` (sem usuário autenticado), `403` (publicação de outro cliente), `404` (publicação inexistente).
 </Accordion>
 
 <Accordion title="POST /api/v1/post/webhook-update-post/ — webhookUpdatePostView">
@@ -386,7 +409,7 @@ Responde `200` imediatamente e processa em **thread de background** (`_process_w
 - `post.failed`: marca `PostStatus='error'` e notifica o cliente.
 
 <Note>
-Este endpoint não valida nenhum token/assinatura do Zernio — está exposto publicamente sem verificação de origem.
+Este endpoint não valida nenhum token/assinatura do Zernio — está exposto publicamente sem verificação de origem. O webhook novo de desfecho por publicação, `/webhooks/zernio/status/` (MIG-454), exige token no header — ver [Webhooks](/backend/apps/webhooks).
 </Note>
 </Accordion>
 

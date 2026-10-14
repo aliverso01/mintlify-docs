@@ -118,6 +118,14 @@ Roda em lote sobre as imagens que o cliente subiu e ainda não foram lidas pela 
 
 Modelo de IA usado: `MEDIA_ANALYSIS_MODEL`.
 
+## Desfecho das publicações no Zernio
+
+`app/post/status_sync.py` — comando `reconcile_zernio_posts`, agendado no Dokploy (sugestão: `*/10 * * * *`), **não** em `CRONJOBS`.
+
+Procura `PostPublication` presa em `sending`/`pending` há pelo menos `--minutos` (default `15`), pergunta o desfecho ao Zernio e aplica: *Publicado* com `permalink` e `published_at`, ou *Falhou* quando a rede recusou de verdade. É a rede de segurança do webhook `/webhooks/zernio/status/` — enquanto ele não estiver configurado no painel do Zernio, ou quando a entrega se perder, é este comando que tira o post de "Enviando" (MIG-454).
+
+Idempotente: não toca em publicação já `published`/`canceled`, nem em `scheduled` cuja data ainda não chegou, e não marca falha no que não conseguiu confirmar.
+
 ## Revisões de post agendadas
 
 `app/post/cron.py` — função `send_scheduled_reviews()`. É o **único** job declarado em `CRONJOBS` (`core/settings.py:374`), com expressão de cada minuto.
