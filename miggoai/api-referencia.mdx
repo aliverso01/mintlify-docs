@@ -119,6 +119,8 @@ Fonte: `backend/apps/generations/urls.py`, `backend/apps/generations/views.py`.
 | POST | `/api/generations/test/complete/` | `GenerationCompleteTestView` | Roda os 4 workflows encadeados em TEST. |
 | POST | `/api/generations/production/complete/` | `GenerationCompleteProductionView` | Roda os 4 workflows encadeados em PRODUCTION. |
 | GET | `/api/generations/context/` | `GenerationContextView` | Prévia do contexto (sem chamar IA). |
+| POST | `/api/generations/gerar-agora/` | `GerarAgoraView` | Gera agora o próximo card `pending` do cliente, fora da rodada diária. Chamado pelo `backend-miggo` (botão **Criar agora**). |
+| POST | `/api/generations/gerar-card/` | `GerarCardView` | Geração completa de UM card já existente (título → imagem → legenda → hashtags). Chamado pelo `backend-miggo`. |
 | GET | `/api/generations/` | `GenerationListView` | Lista generations (filtros). |
 | GET | `/api/generations/<int:pk>/` | `GenerationDetailView` | Detalhe de uma generation. |
 | DELETE | `/api/generations/<int:pk>/` | `GenerationDetailView` | Remove uma generation (só ambiente TEST). |
@@ -139,6 +141,30 @@ Status HTTP: `201` se `Generation.status == SUCCESS`, senão `502`.
 <ResponseField name="[]" type="array">Lista de 1 a 4 objetos `Generation` (título, imagem, legenda, hashtags, na ordem — a cadeia para no primeiro que falhar).</ResponseField>
 
 Status HTTP: `201` se todas tiverem `status == SUCCESS`, senão `502`.
+
+**POST `/api/generations/gerar-agora/`** e **POST `/api/generations/gerar-card/`** — disparo fora da rodada diária (MIG-379)
+
+Rodam a mesma rotina do cron (`services.rodada`), então a execução manual produz o mesmo resultado da automática. Respondem **`202` e trabalham em thread**: o resultado aparece no painel de gerações, nunca nesta requisição.
+
+<ParamField path="client_id" type="integer" required>Id do cliente no `backend-miggo`. Obrigatório nos dois endpoints.</ParamField>
+<ParamField path="post_id" type="integer" required>Só em `gerar-card/`: id do card a processar.</ParamField>
+<ParamField path="extra_days" type="integer">Só em `gerar-agora/`: dias extras de antecedência na busca do card. Default `0`.</ParamField>
+<ParamField path="limit" type="integer">Só em `gerar-agora/`: teto de cards da rodada. Default sem limite.</ParamField>
+
+<ResponseField name="status" type="string">`aceito` — o lock da rodada foi tomado e a geração começou nesta chamada. `na_fila` — já havia rodada em andamento, o pedido **não** foi tomado e fica para a próxima passada do cron.</ResponseField>
+<ResponseField name="client_id" type="integer">Ecoa o cliente pedido.</ResponseField>
+<ResponseField name="post_id" type="integer">Só em `gerar-card/`: ecoa o card pedido.</ResponseField>
+
+```json
+{"client_id": 42, "status": "aceito"}
+{"post_id": 5409, "client_id": 42, "status": "na_fila"}
+```
+
+<Warning>
+  **Decida pelo `status` do corpo, nunca pelo código HTTP.** Os dois desfechos são `202` de propósito: adiar é desfecho normal, não falha de disparo, e um não-2xx seria auditado e logado como erro no `backend-miggo` — mentira. Quem consome trata `aceito` como "começou agora" e **qualquer outra coisa** (`na_fila`, campo ausente, corpo que não é dict, valor desconhecido) como "ficou para o cron"; é o que o `backend-miggo` faz ao traduzir em `disparo` (ver <a href="/backend/apps/client">app client</a>).
+</Warning>
+
+Os dois só tomam o lock na thread da requisição — é a única forma de a resposta saber o desfecho. `400` quando falta `client_id` (ou `post_id`), ou quando não são números.
 
 **GET `/api/generations/context/`**
 <ParamField path="client_id" type="integer" required />
