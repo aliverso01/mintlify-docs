@@ -163,7 +163,7 @@ Demais integrações (ManyChat, Asaas, GetLate/Zernio, Apify, HtmlToCssImage, Mi
 | Suporte/Jira | `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_PROJECT_KEY`, `JIRA_ISSUE_TYPE` |
 | WhatsApp/ManyChat | `MANYCHAT_API_KEY`, `MANYCHAT_WEBHOOK_TOKEN`, `CONTENT_APPROVATION_FLOW_ID`, `CONTENT_APPROVATION_CONNECTED_FLOW_ID`, `GRID_APPROVAL_FLOW_ID`, `GRID_APPROVAL_REMINDER_INTERVAL_HOURS`, `GRID_APPROVAL_MAX_REMINDERS`, `DYNAMIC_FLOW_STARTER_FLOW_ID`, `WHATSAPP_SEND_FLOW_DELAY`, `WHATSAPP_FLOW_RETRY_ATTEMPTS`, `WHATSAPP_FLOW_RETRY_BACKOFF` |
 | Acervo Miggo | `ACERVO_SERVICE_TOKEN` (credencial de serviço das rotas `media/acervo/{elegiveis,uso}/`, sem default — ausente, o caminho de serviço é recusado) |
-| Redes sociais | `LATE_API_KEY` (GetLate/Zernio) |
+| Redes sociais | `LATE_API_KEY` (GetLate/Zernio), `ZERNIO_PUBLISH_TIMEOUT` (segundos de espera nas chamadas de publicação — presign e `POST /v1/posts`; default `120`, era 25s fixo), `ZERNIO_WEBHOOK_TOKEN` (token do header `Zernio-Webhook-Token` em `/webhooks/zernio/status/`; **sem ele o webhook devolve `503` e recusa todo evento**) |
 | Onboarding/scraping | `APIFY_TOKEN`, `ONBOARDING_IG_MIN_POSTS`, `ONBOARDING_WEBSITE_BUDGET`, `ONBOARDING_ANALYSIS_STALL`, `HTMLTOCSSIMAGE_ID`, `HTMLTOCSSIMAGE_API_KEY` |
 | MiggoAI (serviço de IA) | `MIGGOAI_API_URL`, `MIGGOAI_USERNAME`, `MIGGOAI_PASSWORD` |
 | URLs base | `FRONTEND_URL`, `BACKEND_URL` |
