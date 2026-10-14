@@ -27,11 +27,11 @@ Definidos em `core/urls.py:28-56`. Todos os apps de negócio (exceto `webhooks`)
 | `/api/v1/email-marketing/` | `emailmarketing` |
 | `/api/v1/benefits/` | `benefits` |
 | `/api/schema/`, `/api/schema/swagger-ui/`, `/api/schema/redoc/` | drf-spectacular |
-| `/webhooks/`, `/webhooks/zernio/account/`, `/webhooks/manychat/`, `/webhooks/manychat/dynamic-block/continue/` | `webhooks` + `conversation.webhooks` |
+| `/webhooks/`, `/webhooks/zernio/account/`, `/webhooks/zernio/status/`, `/webhooks/manychat/`, `/webhooks/manychat/dynamic-block/continue/` | `webhooks` + `conversation.webhooks` |
 | `/media/<path>` | serve de arquivos de mídia (fallback sem Nginx) |
 
 <Note>
-  `webhooks` não tem `urls.py` próprio: suas views (`webhook_stripe`, `webhook_zernio_account`) são importadas direto em `core/urls.py:23`, junto com as views de webhook do app `conversation` (`webhook_manychat`, `manychat_dynamic_block_continue`, `core/urls.py:24`).
+  `webhooks` não tem `urls.py` próprio: suas views (`webhook_stripe`, `webhook_zernio_account`, `webhook_zernio_status`) são importadas direto em `core/urls.py:23`, junto com as views de webhook do app `conversation` (`webhook_manychat`, `manychat_dynamic_block_continue`, `core/urls.py:24`).
 </Note>
 
 ## Schema OpenAPI (drf-spectacular)
@@ -57,6 +57,12 @@ Config em `SPECTACULAR_SETTINGS` (`core/settings.py:159-164`): título "Miggo AP
 
   <Accordion title="POST /webhooks/zernio/account/ — Zernio/GetLate">
     `webhook_zernio_account` (`app/webhooks/views.py:417`). Sem autenticação DRF. Só trata o evento `account.connected`: localiza a `PlatformIntegration` pendente por `profile_id` (+ `platform`, quando resolvido) e ativa (`status='active'`), notificando o cliente. Demais eventos são apenas logados em `Integration`.
+  </Accordion>
+
+  <Accordion title="POST /webhooks/zernio/status/ — Zernio/GetLate (desfecho da publicação)">
+    `webhook_zernio_status` (`app/webhooks/views.py:807`, MIG-454). Sem autenticação DRF — a validação é o token do header `Zernio-Webhook-Token` (aceita também `X-Webhook-Token`), comparado com `ZERNIO_WEBHOOK_TOKEN` por `hmac.compare_digest`. Sem o token configurado, recusa com `503`; token divergente, `401`.
+
+    Trata `post.published`/`post.failed` (e grafias equivalentes), atualizando a `PostPublication` casada por `external_post_id`. Idempotência via chave do evento gravada em `Integration` (`service='Zernio Status'`) — reentrega vira `200 already_processed`. Evento não reconhecido, sem id de post ou de publicação desconhecida: `200` com o `detail` correspondente, nunca `500`. Detalhe em [webhooks](/backend/apps/webhooks).
   </Accordion>
 
   <Accordion title="POST /webhooks/manychat/">
@@ -110,7 +116,7 @@ Detalhes de payload/resposta de auth: [Autenticação](/backend/autenticacao). D
 
 ### post — `/api/v1/post/`
 
-`list/`, `publish/`, `detail/<pk>/`, `create/`, `update/<pk>/`, `delete/<pk>/`, `webhook-update-post/`, `webhook-account-connected/`, `format/{create,list,edit/<pk>,delete/<pk>}/`, `status/{create,list,edit/<pk>,delete/<pk>}/`, `social-network/list/`, `media-post/{create,list,update/<pk>,delete/<pk>}/`, `platform-integration/{create,list,retrieve/<client>,update/<pk>,delete/<pk>}/`, `platform-integration/whatsapp/{create,verify}/`, `send-post-whatsapp/`, `media-view/<token>/{,info/,download/}` (públicos, protegidos por token na URL), `<post_id>/media-link/` (exige token compartilhado no header), `schedule-review/`, `create-posts/`, `insights/{list,create,sync,timeline,daily-metrics,follower-stats}/`, `metadata/list/`, `platform-profile-config/{list,create,update/<pk>,delete/<pk>}/`. Detalhe em [post](/backend/apps/post).
+`list/`, `publish/`, `publication/<pk>/check-status/`, `detail/<pk>/`, `create/`, `update/<pk>/`, `delete/<pk>/`, `webhook-update-post/`, `webhook-account-connected/`, `format/{create,list,edit/<pk>,delete/<pk>}/`, `status/{create,list,edit/<pk>,delete/<pk>}/`, `social-network/list/`, `media-post/{create,list,update/<pk>,delete/<pk>}/`, `platform-integration/{create,list,retrieve/<client>,update/<pk>,delete/<pk>}/`, `platform-integration/whatsapp/{create,verify}/`, `send-post-whatsapp/`, `media-view/<token>/{,info/,download/}` (públicos, protegidos por token na URL), `<post_id>/media-link/` (exige token compartilhado no header), `schedule-review/`, `create-posts/`, `insights/{list,create,sync,timeline,daily-metrics,follower-stats}/`, `metadata/list/`, `platform-profile-config/{list,create,update/<pk>,delete/<pk>}/`. Detalhe em [post](/backend/apps/post).
 
 ### editorial-calendar — `/api/v1/editorial-calendar/`
 
