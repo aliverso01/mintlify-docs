@@ -85,7 +85,7 @@ O cliente aprova ou pede ajuste no conteúdo por WhatsApp, através do ManyChat.
 | Engine do fluxo | `app/conversation/` — veja [Conversation](/backend/apps/conversation) |
 | Webhook de entrada | `POST /webhooks/manychat/` |
 | Continuação do Dynamic Block | `POST /webhooks/manychat/dynamic-block/continue/` |
-| Flows configurados | `CONTENT_APPROVATION_FLOW_ID` (rede não conectada), `CONTENT_APPROVATION_CONNECTED_FLOW_ID` (rede conectada), `GRID_APPROVAL_FLOW_ID`, `DYNAMIC_FLOW_STARTER_FLOW_ID` |
+| Flows configurados | `CONTENT_APPROVATION_FLOW_ID` (rede não conectada), `CONTENT_APPROVATION_CONNECTED_FLOW_ID` (rede conectada), `GRID_APPROVAL_FLOW_ID`, `DYNAMIC_FLOW_STARTER_FLOW_ID`, `TRIAL_ENDED_FLOW_ID` (fim do período de teste, disparado pelo cron `expire_trials`) |
 | Escolha do flow de aprovação | `app.post.services.approval_flow_ns` — pela integração ativa da rede do post (antes era uma tag no ManyChat) |
 | Reenvio e tolerância a falha | `WHATSAPP_FLOW_RETRY_ATTEMPTS`, `WHATSAPP_FLOW_RETRY_BACKOFF`, `WHATSAPP_SEND_FLOW_DELAY`, `GRID_APPROVAL_MAX_REMINDERS` |
 
