@@ -94,6 +94,7 @@ Ver detalhes completos em [Autenticação](/backend/autenticacao).
 | `name`, `email` (único), `phone`, `company` | | |
 | `active` | `BooleanField`, default `True` | |
 | `niche` | FK → `Niche` (`PROTECT`, `related_name='clients'`), `null=True` — MIG-456; `NULL` = não reclassificado | |
+| `media_preference` | reverse `OneToOne` de `ClientMediaPreference` (`usage`, `reuse_days`, `use_stock` — MIG-248/457) | |
 | `onboarding_step` | `IntegerField`, `choices` 0-5 (Não iniciado…Briefing preenchido) | |
 | `onboarding_skipped` | `BooleanField` | |
 | `created_at` | | |
@@ -227,6 +228,9 @@ Taxonomia de nicho de mercado: `nome` (único), `slug` (único), `ativo`. `order
 Acervo interno da Miggo, **tabela própria** (migration `0014_stockphoto`): `image` (`FileField`, `acervo/<hash32><ext>` com a extensão vinda dos magic bytes), `thumbnail` (300x300, gerada no `save()`), `titulo`, `descricao`, `nicho`/`tema`/`sentimento` (`CharField(120)`, indexados — são os filtros da listagem), `palavras_chave` (JSON list), `origem` (texto livre, origem/licença), `ativo` (bool, `default=True`, indexado — é a curadoria: desliga sem apagar o arquivo), `enviado_por` FK → `CustomUser` (`SET_NULL`, `related_name='stock_photos'`), `created_at`, `updated_at`. `ordering = ['-created_at', '-id']`.
 
 A **alocação** (MIG-456) entrou em `escopo` (`global`/`restrita`, default `global`, indexado) + M2M `clientes_permitidos` → `Client` e `nichos_permitidos` → `Niche`. A regra de quem vê o quê tem uma redação só, o manager `StockPhoto.objects.elegiveis_para(client)`. Tabela separada em vez de flag na `Media` para o isolamento ser por construção: a galeria do cliente consulta `Media` e foto do acervo nunca está lá. As rotas são `IsManagementUserOnly` — nem API key entra (ver [media](/backend/apps/media)).
+
+### `StockPhotoUsage` — `app/media/models.py` (MIG-457)
+Log de uso de foto do acervo por cliente: `stock_photo` FK **`PROTECT`** (`related_name='usos'`), `client` FK (`CASCADE`), `generation_id` (char 64), `used_at`. `unique_together = ('stock_photo', 'client', 'generation_id')` — é o que torna o `POST /acervo/uso/` idempotente —, índice `(client, used_at)`, `ordering = ['-used_at', '-id']`. Alimenta o anti-fadiga do banco (`?fadiga=1`), com janela igual ao `reuse_days` da `ClientMediaPreference` do cliente. Migration `0016_stockphotousage`.
 
 ## agenda
 

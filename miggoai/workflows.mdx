@@ -97,6 +97,7 @@ Ver detalhes em <a href="/miggoai/prompts">Prompts</a>. Define 4 contratos (`TIT
 3. Exige `texto_imagem` (`str` ou `list[str]`, 1 item por card no carrossel) — `RuntimeError` se ausente.
 4. **Sorteio 50/50** (`usar_midia_cliente = random.choice([True, False])`) decide se a galeria de mídia do cliente é CONSULTADA nesta geração (não qual foto — isso é decidido depois).
 5. Se consultada: busca `get_client_media_library`, e por card roda `media_matcher.rankear` (peneira léxica) seguido de `media_classifier.selecionar` (julgamento por IA da descrição). Toda a trilha de decisão (candidatos, score, motivo) é registrada em `midia_cliente` no resultado, para auditoria.
+   - **Banco de imagens da Miggo** (MIG-457): se a preferência do cliente tem `use_stock=True`, o pool do banco é **unido ao da galeria** e segue o mesmo funil — `_deve_consultar_banco` é irmã de `_deve_consultar_galeria` e roda depois dela, então o banco só entra quando esta geração já ia usar foto real. Detalhe em [Banco de imagens no funil](#banco-de-imagens-no-funil-mig-457).
 6. `_resolver_marca` decide logo/assinatura: por padrão consulta a preferência salva no backend-miggo (`get_signature_preference`, MIG-266); `variable_overrides` com `marca_modo`/`assinatura_tipo`/`assinatura_texto` sobrescrevem pontualmente sem persistir.
 7. Para cada texto (1 por card), renderiza o prompt `imagem-post`, chama `openai_service.generate_image` passando o grid + foto do cliente (se aprovada) + logo (se aplicável) como referências, e redimensiona (`redimensionar_para_entrega`) — normalmente um no-op porque o tamanho pedido já é o tamanho final.
 
@@ -123,6 +124,18 @@ Ver detalhes em <a href="/miggoai/prompts">Prompts</a>. Define 4 contratos (`TIT
 - Monta `hashtags_recentes` (até 30 hashtags únicas dos últimos 10 posts do histórico), renderiza `hashtags-post`, chama a OpenAI com o contrato `HASHTAGS`.
 
 **Retorna**: `{prompt_slug: 'hashtags-post', prompt_version_used, format_key, hashtags, reason}` (ou `skipped`).
+
+### Banco de imagens no funil (MIG-457)
+
+A foto do banco entra no **mesmo ponto** do pipeline que a foto de galeria — é isso que garante, por construção, que layout, paleta e tipografia da marca não mudem por causa da origem da imagem.
+
+- **Quando entra**: `_deve_consultar_banco(usar_midia_cliente, client_id, use_stock, media_id_forcado)` — exige que a geração já fosse usar foto real, que o cliente tenha `use_stock=True` e que não haja `media_id` forçado.
+- **De onde vem**: `clients_services.get_acervo_elegiveis(client_id)` chama `GET media/acervo/elegiveis/?client_id=&fadiga=1` no backend-miggo com o header `Acervo-Service-Token` — **nunca** a `MIGGO_API_KEY`, que aquelas rotas recusam desde a MIG-456. A anti-fadiga do banco é server-side (a janela é o `reuse_days` do cliente); a da galeria continua sendo a local (`_media_usadas_recentemente`).
+- **Como se mistura**: `_adaptar_foto_do_banco` traduz a foto do acervo para o **formato da galeria**, em vez de cada etapa ganhar um ramo "se for do banco"; a origem fica em `_fonte` (`galeria`/`banco`) e o id no pool unido é o id real **negativo**, porque as duas sequências começam em 1. O `rankear` → `selecionar` segue igual.
+- **Registro de uso**: quando a peça sai com foto do banco, o `runner` chama `registrar_usos_do_banco`, que faz `POST media/acervo/uso/`. Fica no `runner`, e não no workflow, porque "concluída" só é verdade depois das imagens salvas — registrar antes marcaria fadiga por uma geração que ainda podia falhar. A falha desse POST é logada e **não derruba** a geração.
+- **Sem `ACERVO_SERVICE_TOKEN` o banco é simplesmente ignorado**, com `WARNING` no log: a ausência da credencial não pode virar "o banco está vazio" em silêncio, que é indistinguível de cliente sem foto elegível.
+
+A trilha fica em `midia_cliente` no resultado (inclui `banco_habilitado` e a fonte usada), que é o que o admin lê para auditar a escolha.
 
 ### `media_matcher.py` — peneira léxica da galeria
 

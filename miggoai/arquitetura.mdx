@@ -42,11 +42,14 @@ Os únicos dados que o `backend-miggo` expõe e o MiggoAI consome:
 | Formatos de post | `post/format/list/` | `apps.posts.services.get_post_formats` |
 | Status de post | `post/status/list/` | `apps.posts.services.get_post_statuses` |
 | Clientes com workflow ligado | `client/list/?miggoai_workflow_enabled=true` | `apps.clients.services.list_workflow_enabled_clients` |
+| Predefinição de foto real | `client/media-preference/<id>/` | `apps.clients.services.get_client_media_preference` (`usage`, `reuse_days`, `use_stock`) |
+| Banco de imagens elegível | `media/acervo/elegiveis/?client_id=&fadiga=1` | `apps.clients.services.get_acervo_elegiveis` — header `Acervo-Service-Token`, não a `MIGGO_API_KEY` (MIG-457) |
 
 **Escrita** — só a geração diária escreve no `backend-miggo` (`apps/generations/services/delivery.py`, via `miggo_client.post`/`patch`):
 
 | Ação | Endpoint |
 |---|---|
+| Registrar uso de foto do banco | `POST media/acervo/uso/` — `apps.clients.services.registrar_uso_do_acervo`, com o token do acervo (MIG-457) |
 | Subir imagem gerada | `POST media/create/` (multipart) |
 | Ligar imagem ao card | `POST post/media-post/create/` |
 | Reservar / devolver / concluir card | `PATCH post/update/<id>/` (`processing` → `pending` ou `scheduled`, com título/legenda/formato) |

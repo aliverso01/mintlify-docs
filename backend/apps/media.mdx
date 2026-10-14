@@ -113,6 +113,25 @@ Duas consequências são o coração do card, nenhuma acidental:
   Toda consulta de pool passa por aqui, inclusive a seleção automática de imagem (MIG-371c). **Uma segunda redação desta regra é uma segunda chance de vazar foto de um cliente para outro** — não refaça o filtro à mão numa view nova.
 </Warning>
 
+### `StockPhotoUsage`
+
+Registro de que uma foto do acervo foi usada por um cliente. `app/media/models.py`, migration `0016_stockphotousage` (MIG-457).
+
+| Campo | Tipo | Detalhe |
+|---|---|---|
+| `stock_photo` | `ForeignKey(StockPhoto)` | **`on_delete=PROTECT`**, `related_name='usos'` |
+| `client` | `ForeignKey(client.Client)` | `on_delete=CASCADE`, `related_name='stock_photo_usos'` |
+| `generation_id` | `CharField(64)` | Id da geração que consumiu a foto |
+| `used_at` | `DateTimeField` | `auto_now_add=True` |
+
+`Meta`: `unique_together = ('stock_photo', 'client', 'generation_id')`, índice `(client, used_at)`, `ordering = ['-used_at', '-id']`.
+
+Existe para o **anti-fadiga**: sem log, a mesma foto do banco voltaria na geração seguinte e o cliente veria a própria marca repetindo a imagem. A janela é o `reuse_days` da preferência **dele** (`ClientMediaPreference`, ver [client](/backend/apps/client)) — a mesma régua que já governa a galeria; `0` desliga a janela, como lá.
+
+- **Repetição entre clientes é permitida** (suposição reversível da MIG-371): o log e a exclusão são por cliente, então a mesma foto global pode servir a marcas diferentes.
+- A unicidade da tripla deixa o `POST /acervo/uso/` **idempotente**: retry da mesma geração não vira uso novo e não reabre a janela de fadiga.
+- **`PROTECT` na foto** — apagar do acervo uma foto já usada apagaria a prova de que ela foi usada, e a exclusão de fadiga passaria a mentir. Na prática: `DELETE /acervo/<pk>/` de foto já usada responde `409`, não `500`.
+
 **Funções auxiliares do módulo**
 - `get_stock_upload_path(instance, filename)` — `acervo/<hash32>` mais a extensão inferida por `_sniffed_extension`. O **conteúdo** decide a extensão: nome enviado não entra no caminho, para um `.html` não ser servido como HTML no domínio da mídia.
 - `get_stock_thumbnail_path(instance, filename)` — mesmo padrão, para a miniatura.
@@ -131,7 +150,8 @@ Prefixo do app: `/api/v1/media/` (`core/urls.py:35`).
 | GET | `/api/v1/media/acervo/` | `StockPhotoListCreateView` | `IsManagementUserOnly` — MIG-455, endurecida na MIG-456 |
 | POST | `/api/v1/media/acervo/` | `StockPhotoListCreateView` | `IsManagementUserOnly` — idem |
 | GET | `/api/v1/media/acervo/nichos/` | `NicheListView` | `IsManagementUserOnly` — MIG-456 |
-| GET | `/api/v1/media/acervo/elegiveis/` | `StockPhotoElegiveisView` | `IsManagementUserOnly` — MIG-456 |
+| GET | `/api/v1/media/acervo/elegiveis/` | `StockPhotoElegiveisView` | `IsManagementUserOnly` **ou** token de serviço — MIG-456/457 |
+| POST | `/api/v1/media/acervo/uso/` | `StockPhotoUsageView` | `IsManagementUserOnly` **ou** token de serviço — MIG-457 |
 | PATCH | `/api/v1/media/acervo/<int:pk>/` | `StockPhotoDetailView` | `IsManagementUserOnly` — MIG-455, endurecida na MIG-456 |
 | DELETE | `/api/v1/media/acervo/<int:pk>/` | `StockPhotoDetailView` | `IsManagementUserOnly` — idem |
 
@@ -144,7 +164,14 @@ As views de `Media` não declaram `permission_classes` nem `authentication_class
 
 A diferença para a `IsManagementUser` (que devolve `True` para qualquer API key antes de olhar o usuário) é deliberada: a chave de serviço é **uma só**, compartilhada, não escopada por cliente e já circulou no bundle do frontend. Tolerável numa rota de gestão genérica, deixou de ser aqui — o acervo passou a carregar o **mapa de alocação cliente↔foto** (os dois M2M em toda resposta, e `/acervo/elegiveis/?client_id=` devolvendo o pool exato de um cliente a partir de um id da query string). Com a chave, varrer `client_id` de 1 a N reconstrói justamente o isolamento que o card existe para garantir.
 
-A restrição vale **só nas rotas do acervo**: `IsManagementUser` segue como está e nenhuma outra rota muda. Serviço que precise consumir o acervo (a MIG-371c, por exemplo) pede credencial escopada, com o `client_id` vindo da credencial e nunca da query string — e isso é desenho daquela volta.
+A restrição vale **só nas rotas do acervo**: `IsManagementUser` segue como está e nenhuma outra rota muda.
+
+**A credencial de serviço (MIG-457).** O MiggoAI precisava de duas rotas e só delas, então ganhou token próprio em vez da chave compartilhada: `HasAcervoServiceToken` (`app/account/permissions.py`) compara o header **`Acervo-Service-Token`** com a env **`ACERVO_SERVICE_TOKEN`** em tempo constante (`compare_digest` — o token é fixo e longo, e `==` vazaria o prefixo pelo tempo de resposta).
+
+- Vale **apenas** em `GET /acervo/elegiveis/` e `POST /acervo/uso/`, declarado como `[IsManagementUserOnly | HasAcervoServiceToken]`. As demais rotas do acervo seguem só para gente da equipe.
+- **Sem a env configurada o caminho de serviço é recusado** e o motivo vai para o log — não há default, nem vazio nem de exemplo: um default seria credencial publicada no repositório.
+- O token é escopado **por rota, não por cliente**. Foi decisão explícita: o consumidor legítimo é a rodada do MiggoAI, que precisa do pool da carteira inteira, e um token por cliente não casaria com esse uso. O token vive só em env, nunca em bundle.
+- **No caminho de serviço a resposta é enxuta**: sem `clientes_permitidos`/`nichos_permitidos` (`StockPhotoServicoSerializer`). Quem consome não precisa saber com quais outras marcas a foto é compartilhada; para usuário de gestão a resposta segue completa, porque na tela os vínculos são o assunto.
 
 <AccordionGroup>
 <Accordion title="POST /api/v1/media/create/ — MediaCreateView">
@@ -242,8 +269,23 @@ Nesta volta a tabela tem só a linha semeada **"Não informado"** (`slug='nao-in
 O pool **pelo olhar de um cliente**: roda `StockPhoto.objects.elegiveis_para(client)` e devolve a lista paginada igual à do `/acervo/`. É a ferramenta de conferência da equipe — antes de afirmar que o isolamento funciona, dá para ver a lista exata que aquele cliente alcança. Usa o **mesmo** `elegiveis_para` da seleção de imagem: se esta tela e a geração divergissem, a conferência não valeria nada.
 
 <ParamField query="client_id" type="integer" required>Só dígitos. Ausente ou inválido: `400` `{"error": "Informe um client_id válido."}`. Cliente inexistente: `404` `{"error": "Cliente não encontrado."}`.</ParamField>
+<ParamField query="fadiga" type="string">`1`/`true` tira do pool o que **este** cliente já usou dentro da janela de reuso dele (MIG-457) — o `reuse_days` da `ClientMediaPreference`, `0` desliga. É assim que o Orquestrador não repete a mesma foto em gerações seguidas.</ParamField>
 
-Resposta `200`: mesmo envelope paginado da listagem.
+Resposta `200`: mesmo envelope paginado da listagem — **completa** para usuário de gestão, **enxuta** (sem os dois M2M) para quem entrou pelo token de serviço.
+</Accordion>
+
+<Accordion title="POST /api/v1/media/acervo/uso/ — StockPhotoUsageView (MIG-457)">
+Registra que uma foto do acervo foi usada. Quem chama é o MiggoAI, **depois** de a geração concluir com uma foto do banco — é este registro que alimenta o `?fadiga=1` da rota acima.
+
+<ParamField body="client_id" type="integer" required />
+<ParamField body="stock_photo_id" type="integer" required />
+<ParamField body="generation_id" type="string" required>Id da geração que consumiu a foto (truncado em 64 caracteres).</ParamField>
+
+<ResponseField name="201 Created" type="object">`{id, client_id, stock_photo_id, generation_id, used_at, ja_registrado: false}`.</ResponseField>
+<ResponseField name="200 OK" type="object">Mesmo corpo com `ja_registrado: true` — a tripla é única, então o retry da mesma geração é inofensivo e **não reabre a janela de fadiga**.</ResponseField>
+<ResponseField name="400 Bad Request" type="object">Campos faltando/invalidos, cliente inexistente, ou **foto fora do pool daquele cliente** (`{"error": "Esta foto não está disponível para este cliente."}`).</ResponseField>
+
+A elegibilidade é reconferida aqui, e não confiada ao chamador: o pool pode ter mudado entre a consulta e a geração, e registrar uso de foto fora do pool gravaria como verdade exatamente o vazamento que a MIG-456 fechou.
 </Accordion>
 
 <Accordion title="PATCH/DELETE /api/v1/media/acervo/<pk>/ — StockPhotoDetailView (MIG-455)">
@@ -251,7 +293,7 @@ Resposta `200`: mesmo envelope paginado da listagem.
 
 **PATCH** — edição parcial de tags, curadoria (`ativo`) e **alocação** (`escopo`, `clientes_permitidos`, `nichos_permitidos`, MIG-456). `200` com o objeto; `400` com os erros por campo do serializer; `404` `{"error": "Foto não encontrada."}`.
 
-**DELETE** — `204` sem corpo; `404` com o mesmo formato.
+**DELETE** — `204` sem corpo; `404` com o mesmo formato; **`409` quando a foto já foi usada** por algum cliente (`StockPhotoUsage` a segura com `PROTECT`): `{"error": "Esta foto já foi usada em conteúdo de cliente e não pode ser apagada. Desative-a para tirá-la do acervo."}`. Sem esse tratamento a `ProtectedError` subia como `500` com stack trace na tela.
 </Accordion>
 
 </AccordionGroup>
