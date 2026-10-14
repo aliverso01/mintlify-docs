@@ -219,6 +219,11 @@ Métodos de validação (`validate_catalog_selection`) e sincronização de espe
 ### `Media` — `app/media/models.py:45`
 `user` FK → `CustomUser`, `client_hash`, `media_path`, `media` (`FileField`), `thumbnail` (`ImageField`, gerado automaticamente no `save()` para imagens), `description`, `ai_description`, `ai_keywords` (JSON list), `ai_raw_analysis` (JSON), `analyzed`, `analyzed_at`, `generated_url`, `from_media_library` (bool — diferencia mídia da biblioteca vs. gerada para um post específico).
 
+### `StockPhoto` — `app/media/models.py:157` (MIG-455)
+Acervo interno da Miggo, **tabela própria** (migration `0014_stockphoto`): `image` (`FileField`, `acervo/<hash32><ext>` com a extensão vinda dos magic bytes), `thumbnail` (300x300, gerada no `save()`), `titulo`, `descricao`, `nicho`/`tema`/`sentimento` (`CharField(120)`, indexados — são os filtros da listagem), `palavras_chave` (JSON list), `origem` (texto livre, origem/licença), `ativo` (bool, `default=True`, indexado — é a curadoria: desliga sem apagar o arquivo), `enviado_por` FK → `CustomUser` (`SET_NULL`, `related_name='stock_photos'`), `created_at`, `updated_at`. `ordering = ['-created_at', '-id']`.
+
+**Não tem campo de cliente nem de escopo, de propósito** — a alocação global x por cliente/nicho é a MIG-456. Tabela separada em vez de flag na `Media` para o isolamento ser por construção: a galeria do cliente consulta `Media` e foto do acervo nunca está lá. As rotas são `IsManagementUser` (ver [media](/backend/apps/media)).
+
 ## agenda
 
 ### `AgendaSuggestion` — `client` FK (`related_name='agenda_suggestions'`), `title`, `description`, `suggested_date`, `post_format` FK opcional (`SET_NULL`) → `post.PostFormat`, `media` (`FileField`), `status` (`pending, approved, rejected`), `post` FK opcional (`SET_NULL`) → `post.Post` (vínculo após aprovação), `admin_notes`.

@@ -12,6 +12,8 @@ Ele é consumido em dois cenários:
 - **Galeria do cliente** (`from_media_library=True`): mídia enviada pelo cliente para reuso em posts futuros. O frontend lista via `MediaListView` e o mesmo registro pode depois ser vinculado a um post (`app.post.MediaPost`), o que o tira da listagem da galeria (`media_posts__isnull=True`).
 - **Upload de mídia de post**: usa o mesmo endpoint de criação (`MediaCreateView`); o vínculo `MediaPost` é criado logo em seguida e o `from_media_library` correspondente vira `False`.
 
+Desde a MIG-455 o app guarda também o **acervo interno da Miggo** (`StockPhoto`): fotos da equipe, sem dono, **em tabela própria**. A separação é deliberada — em vez de uma flag na `Media`, o isolamento é por construção: a galeria do cliente consulta `Media` e foto do acervo nunca está lá. As rotas do acervo são restritas à equipe (`IsManagementUser`); cliente autenticado recebe `403`.
+
 A mídia da galeria é também insumo para o serviço de IA (MiggoAI): a análise por IA implementada em `analysis.py` e agendada via `cron.py`/management command grava `ai_description`/`ai_keywords`, usados pelo `media_matcher` do MiggoAI para escolher uma foto do cliente como referência ao compor a imagem de um post (`app/media/analysis.py:1-17`).
 
 ## Arquivos
@@ -21,7 +23,7 @@ A mídia da galeria é também insumo para o serviço de IA (MiggoAI): a anális
 | `app/media/models.py` | Model `Media`, funções de resolução de caminho de upload (`get_upload_path`, `get_thumbnail_path`) e geração de thumbnail no `save()`. |
 | `app/media/serializers.py` | `MediaSerializer` — campos expostos, download de mídia por URL, resolução de `client`/`client_hash`/`media_path` na criação. |
 | `app/media/views.py` | Views de criação, listagem, atualização e exclusão; notificação de admins sobre novo upload na galeria. |
-| `app/media/urls.py` | Rotas do app (`create/`, `list/`, `update/<pk>/`, `delete/<pk>/`, `<pk>/`). |
+| `app/media/urls.py` | Rotas do app (`create/`, `list/`, `update/<pk>/`, `delete/<pk>/`, `<pk>/`, `acervo/`, `acervo/<pk>/`). `acervo/` vem **antes** de `<int:pk>/` para não ser lido como pk. |
 | `app/media/admin.py` | Registro simples do model `Media` no Django Admin. |
 | `app/media/apps.py` | `AppConfig` padrão do app. |
 | `app/media/analysis.py` | Chamada à Vision (OpenAI) para descrever a imagem, normalização de keywords e montagem do texto de busca (MIG-138). |
@@ -68,6 +70,35 @@ Representa um arquivo de mídia (imagem ou vídeo) pertencente a um usuário/cli
 - `_sniffed_extension(file_field)`: quando o upload não tem extensão reconhecível, lê os 16 primeiros bytes do arquivo e usa `utils.toolkit.extension_from_magic_bytes` para inferir o formato pelo conteúdo.
 - `_resolved_upload_name(instance, filename)`: gera o nome final via `utils.toolkit.generate_hashed_filename`, complementando com `_sniffed_extension` quando o hash não veio com extensão.
 
+### StockPhoto
+
+Foto do **acervo interno da Miggo** — não pertence a nenhum cliente. Definido em `app/media/models.py:157`, tabela própria criada pela migration `app/media/migrations/0014_stockphoto.py` (só `CreateModel`, sem operação destrutiva). MIG-455.
+
+| Campo | Tipo | Obrigatório | Default/Choices | Descrição |
+|---|---|---|---|---|
+| `image` | `FileField` | Sim | `upload_to=get_stock_upload_path` | Arquivo em `acervo/<hash32><ext>`. A extensão vem dos **magic bytes**, não do nome enviado. |
+| `thumbnail` | `ImageField` | Não | `null=True, blank=True` | 300x300, gerada no `save()` quando ainda não existe. Somente leitura na API. |
+| `titulo` | `CharField(255)` | Não | `blank=True, default=''` | — |
+| `descricao` | `TextField` | Não | `blank=True, default=''` | — |
+| `nicho` | `CharField(120)` | Não | `default=''`, `db_index=True` | Eixo de categorização; filtro da listagem. |
+| `tema` | `CharField(120)` | Não | `default=''`, `db_index=True` | Idem. |
+| `sentimento` | `CharField(120)` | Não | `default=''`, `db_index=True` | Idem. |
+| `palavras_chave` | `JSONField` | Não | `default=list, blank=True` | Lista de strings, no mesmo padrão do `Media.ai_keywords`. |
+| `origem` | `CharField(255)` | Não | `blank=True, default=''` | Origem/licença, texto livre — sem validação e sem auditoria. |
+| `ativo` | `BooleanField` | Não | `default=True`, `db_index=True` | **É a curadoria**: desligar tira a foto do acervo sem apagar o arquivo. |
+| `enviado_por` | `ForeignKey(CustomUser)` | Não | `null=True, blank=True`, `on_delete=SET_NULL`, `related_name='stock_photos'` | Preenchido pelo servidor; somente leitura na API. |
+| `created_at` / `updated_at` | `DateTimeField` | Não | `auto_now_add` / `auto_now` | — |
+
+`Meta.ordering = ['-created_at', '-id']`.
+
+<Note>
+  **Não há campo de cliente nem de escopo, de propósito.** A alocação (acervo global x por cliente/nicho) é a MIG-456 e não foi implementada nesta fatia. Nicho/tema/sentimento são `CharField` em vez de modelo de Tag com M2M porque taxonomia livre não estava pedida aqui.
+</Note>
+
+**Funções auxiliares do módulo**
+- `get_stock_upload_path(instance, filename)` — `acervo/<hash32>` mais a extensão inferida por `_sniffed_extension`. O **conteúdo** decide a extensão: nome enviado não entra no caminho, para um `.html` não ser servido como HTML no domínio da mídia.
+- `get_stock_thumbnail_path(instance, filename)` — mesmo padrão, para a miniatura.
+
 ## Endpoints
 
 Prefixo do app: `/api/v1/media/` (`core/urls.py:35`).
@@ -79,8 +110,14 @@ Prefixo do app: `/api/v1/media/` (`core/urls.py:35`).
 | PATCH/PUT | `/api/v1/media/update/<int:pk>/` | `MediaUpdateView` | `HasAPIKeyOrIsAuthenticated` + escopo por cliente (ver abaixo) |
 | DELETE | `/api/v1/media/delete/<int:pk>/` | `MediaDeleteView` | `HasAPIKeyOrIsAuthenticated` (default global) |
 | DELETE | `/api/v1/media/<int:pk>/` | `MediaDeleteView` | `HasAPIKeyOrIsAuthenticated` (default global) |
+| GET | `/api/v1/media/acervo/` | `StockPhotoListCreateView` | `IsManagementUser` — MIG-455 |
+| POST | `/api/v1/media/acervo/` | `StockPhotoListCreateView` | `IsManagementUser` — MIG-455 |
+| PATCH | `/api/v1/media/acervo/<int:pk>/` | `StockPhotoDetailView` | `IsManagementUser` — MIG-455 |
+| DELETE | `/api/v1/media/acervo/<int:pk>/` | `StockPhotoDetailView` | `IsManagementUser` — MIG-455 |
 
-Nenhuma view do app declara `permission_classes` ou `authentication_classes` próprios; ambas herdam o default do projeto (`core/settings.py:135-141`): autenticação JWT (`rest_framework_simplejwt`) e permissão `app.account.permissions.HasAPIKeyOrIsAuthenticated` (libera acesso por API key OU usuário autenticado).
+As views de `Media` não declaram `permission_classes` nem `authentication_classes` próprios; herdam o default do projeto (`core/settings.py:135-141`): autenticação JWT (`rest_framework_simplejwt`) e permissão `app.account.permissions.HasAPIKeyOrIsAuthenticated` (libera acesso por API key OU usuário autenticado).
+
+**As duas views do acervo são a exceção**: declaram `permission_classes = [IsManagementUser]` (`app/account/permissions.py:37`) — inclusive no `PATCH` e no `DELETE`, que costumam ficar de fora. Cliente autenticado recebe `403` com `{"detail": "Acesso restrito à equipe Miggo."}`.
 
 <AccordionGroup>
 <Accordion title="POST /api/v1/media/create/ — MediaCreateView">
@@ -130,6 +167,49 @@ Erros: `404` — pk fora do escopo do cliente ou inexistente.
 <Accordion title="DELETE /api/v1/media/delete/<pk>/ e /api/v1/media/<pk>/ — MediaDeleteView">
 Exclui o registro (`DestroyAPIView` puro, sem lógica adicional além do queryset completo). As duas rotas apontam para a mesma view.
 </Accordion>
+<Accordion title="GET/POST /api/v1/media/acervo/ — StockPhotoListCreateView (MIG-455)">
+Acervo interno da Miggo. `IsManagementUser` nas duas verbas; `MultiPartParser`/`FormParser`.
+
+**GET** — lista paginada (`StandardPagination`, `utils/pagination.py`), ordenada por `-created_at, -id`.
+
+<ParamField query="nicho" type="string">Casa exato, *case-insensitive* (`__iexact`).</ParamField>
+<ParamField query="tema" type="string">Idem.</ParamField>
+<ParamField query="sentimento" type="string">Idem.</ParamField>
+<ParamField query="ativo" type="string">`true`/`1`/`yes` ou qualquer outra coisa para `false`. Omitido, traz os dois.</ParamField>
+<ParamField query="q" type="string">Busca em `titulo`, `descricao` e `palavras_chave` (`icontains` sobre o texto cru do JSON — basta para a tela e não exige campo novo).</ParamField>
+<ParamField query="page" type="integer" />
+<ParamField query="page_size" type="integer">10, 30, 50 ou 100 (default 10).</ParamField>
+
+Resposta `200`: `{ "count", "next", "previous", "results": [StockPhoto] }`.
+
+**POST** — upload em **lote** no mesmo multipart.
+
+<ParamField body="image" type="file" required>Repita o campo para enviar várias (`images` também é aceito). Máximo **20** por requisição (`MAX_ARQUIVOS_POR_LOTE`).</ParamField>
+<ParamField body="titulo / descricao / nicho / tema / sentimento / origem" type="string">Valem para **o lote inteiro** — a tela sobe um conjunto já categorizado e a edição fina é o `PATCH`.</ParamField>
+<ParamField body="palavras_chave" type="string">Campo repetido, ou uma string separada por vírgula.</ParamField>
+
+`201` quando **ao menos uma** entrou; `400` com o **mesmo corpo** quando nenhuma entrou:
+
+```json
+{
+  "criadas": [ { "id": 12, "image": "...", "thumbnail": "...", "nicho": "odontologia", "ativo": true, "enviado_por": 3 } ],
+  "falhas":  [ { "arquivo": "virus.txt", "error": "não é uma imagem suportada (aceitos: JPG, PNG, GIF, WEBP)" } ],
+  "total_enviado": 3,
+  "total_criado": 2
+}
+```
+
+Um arquivo ruim **não derruba o lote**: a recusa entra em `falhas` com o motivo e o resto segue. Recusas por arquivo (`_erro_do_arquivo_de_acervo`, `views.py:454-468`): acima de `UPLOAD_MAX_IMAGE_SIZE_MB`, ou conteúdo que não é JPG/PNG/GIF/WEBP pelos magic bytes. `400` **sem as listas** (`{"error": "..."}`) quando não veio arquivo nenhum ou passaram de 20.
+</Accordion>
+
+<Accordion title="PATCH/DELETE /api/v1/media/acervo/<pk>/ — StockPhotoDetailView (MIG-455)">
+`IsManagementUser` nas duas verbas.
+
+**PATCH** — edição parcial de tags e curadoria, inclusive `ativo` (tirar do acervo sem apagar o arquivo). `200` com o objeto; `400` com os erros por campo do serializer; `404` `{"error": "Foto não encontrada."}`.
+
+**DELETE** — `204` sem corpo; `404` com o mesmo formato.
+</Accordion>
+
 </AccordionGroup>
 
 ## Serializers
@@ -152,6 +232,13 @@ Exclui o registro (`DestroyAPIView` puro, sem lógica adicional além do queryse
 - Se não houver `user` resolvido (nem `client` válido nem usuário autenticado), levanta `ValidationError({'user': ...})`.
 - Resolve `client_hash`: por `user.client.hash` (client), depois `user.hash` (fallback), depois `'unknown'`.
 - Resolve `media_path`: busca a última `Media` do mesmo `client_hash`; se existe e tem menos de 100 itens nesse `media_path`, reaproveita o mesmo path; caso contrário (ou se não há mídia anterior), gera um novo via `utils.toolkit.generate_unique_media_path()`. Efeito: mídias do mesmo cliente são agrupadas em lotes de até 100 por "pasta" lógica.
+
+### StockPhotoSerializer (`app/media/serializers.py:137`)
+`ModelSerializer` sobre `StockPhoto`, campos explícitos (não `'__all__'`): `id`, `image`, `thumbnail`, `titulo`, `descricao`, `nicho`, `tema`, `sentimento`, `palavras_chave`, `origem`, `ativo`, `enviado_por`, `created_at`, `updated_at`.
+
+**Campos somente-leitura**: `id`, `thumbnail`, `enviado_por`, `created_at`, `updated_at` — os arquivos e o autor são escritos pelo servidor; quem sobe não escolhe caminho nem autor (`enviado_por` vem de `request.user` no `save()` da view).
+
+**`validate_palavras_chave`**: aceita lista ou string. String é quebrada por vírgula (multipart manda campo repetido ou texto separado por vírgula), `None`/`''` viram `[]`, e qualquer outro tipo levanta `ValidationError`. Itens em branco são descartados.
 
 ## Regras de negócio e funções
 
@@ -217,6 +304,9 @@ Assinante pago (`Subscription.status == 'ACTIVE'`) não sofre nenhuma trava de t
 - `generate_thumb` em `Media.save()` só cobre extensões de imagem fixas (`.png/.jpg/.jpeg/.gif/.webp`); vídeos e outros formatos nunca recebem thumbnail automática. Qualquer falha na geração é engolida (só `print`), então uma mídia pode ficar sem `thumbnail` silenciosamente.
 - A galeria listada em `MediaListView` exclui mídia já vinculada a um post (`media_posts__isnull=True`); uma mídia da galeria some da listagem assim que é usada em um post, mesmo mantendo `from_media_library=True`.
 - O job `analyze_media_library` descarta definitivamente (sem `ai_description`) imagens cujo arquivo sumiu do storage ou que a Vision recusa de forma não recuperável — reprocessar exige `--force` explicitamente.
+- **Acervo e galeria são tabelas diferentes.** `StockPhoto` não aparece em `/api/v1/media/list/` e não tem campo de cliente: foto do acervo nunca vaza para a galeria de um cliente, e esconder a tela não é o que garante isso. Ao mexer no acervo, não "resolva" nada com flag na `Media` — a separação é o mecanismo de isolamento.
+- Tirar uma foto do acervo é `ativo=false` (PATCH), não `DELETE`: o arquivo continua no storage e a foto pode voltar.
+- O `404` do acervo vem com texto diferente em cada verbo — `"Foto não encontrada."` no `PATCH` e `"Foto nao encontrada."` (sem acento) no `DELETE`, `views.py:601` vs `views.py:613`. Quem tratar a mensagem no cliente não deve comparar string.
 - `generate_media_description_async` e o job de `cron.py`/`analysis.py` são dois mecanismos de IA independentes, escrevendo em campos diferentes (`description` vs. `ai_description`/`ai_keywords`) — não confundir um com o outro ao investigar por que uma mídia "não tem descrição".
 
 ## Relacionados

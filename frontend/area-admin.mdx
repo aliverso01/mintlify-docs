@@ -74,6 +74,7 @@ As telas exclusivas da equipe vivem em `src/pages/Admin/`. As demais rotas de `/
     | `/admin/logs` | `Admin/IntegrationLogs` | Auditoria das chamadas a APIs externas (tabela `Integration` do backend) |
     | `/admin/notifications` | `Admin/NotificationHistory` | Histórico de notificações enviadas |
     | `/admin/design-references` | `Admin/DesignReferences` | Referências visuais |
+    | `/admin/acervo` | `Admin/AcervoMiggo` | Acervo interno de imagens da Miggo (MIG-455) — ver nota abaixo |
   </Accordion>
 
   <Accordion title="Comunicação">
@@ -104,6 +105,12 @@ As telas exclusivas da equipe vivem em `src/pages/Admin/`. As demais rotas de `/
   </Accordion>
 </AccordionGroup>
 
+<Note>
+  **Acervo Miggo (`/admin/acervo`)** — tela sem par em `/app/*`, ao contrário da maioria. No menu lateral fica no grupo *Gestão*, logo depois de *Biblioteca de Mídias* (`src/layout/AppSidebar.tsx:81`), mas as duas são coisas diferentes: a Biblioteca é por cliente e o cliente a abre; o acervo é da Miggo e não aparece para ele. Arquivos em `src/pages/Admin/`: `AcervoMiggo.tsx` (grid paginado, filtros e busca), `AcervoUploadModal.tsx` (envio em lote — a seleção acima de 20 é dividida em envios sucessivos, porque a API aceita 20 por requisição), `AcervoEditModal.tsx` (PATCH de tags e curadoria, DELETE com confirmação) e `acervoTypes.ts`.
+
+  **Esconder a tela não é o isolamento.** O acervo é tabela separada (`StockPhoto`) e as rotas são `IsManagementUser` — cliente autenticado recebe `403`. A `MediaLibrary`, que serve `/admin` e `/app` com o mesmo componente, ficou intocada de propósito.
+</Note>
+
 ## Endpoints administrativos consumidos
 
 As telas administrativas consomem os mesmos apps do backend, em rotas ou filtros restritos a staff:
@@ -117,6 +124,7 @@ As telas administrativas consomem os mesmos apps do backend, em rotas ou filtros
 | E-mail marketing | [E-mail marketing](/backend/apps/emailmarketing) |
 | Notificações | [Notification](/backend/apps/notification) |
 | Cards parados | [Post](/backend/apps/post) |
+| Acervo Miggo | [Media](/backend/apps/media) — `/api/v1/media/acervo/`, `IsManagementUser` |
 
 ## Regra ao criar tela nova
 
