@@ -125,6 +125,7 @@ Prefixo comum: `/api/v1/client/` (definido em `core/urls.py:31`).
 | GET | `/api/v1/client/trials/` | `TrialsPanelView` | `IsManagementUser` |
 | GET/PUT | `/api/v1/client/signature-preference/<int:pk>/` | `ClientSignaturePreferenceView` | `IsManagementUser` |
 | PUT | `/api/v1/client/miggoai-workflow/<int:pk>/` | `ClientMiggoAIWorkflowView` | `IsManagementUser` |
+| POST/DELETE | `/api/v1/client/miggoai-generate-now/<int:pk>/` | `ClientMiggoAIGenerateNowView` | `IsManagementUser` |
 | GET | `/api/v1/client/onboarding-status/<int:pk>/` | `OnboardingStatusView` | Default |
 | PATCH | `/api/v1/client/onboarding-step/<int:pk>/` | `UpdateOnboardingStepView` | Default |
 | POST | `/api/v1/client/onboarding-skip/<int:pk>/` | `SkipOnboardingView` | Default |
@@ -340,6 +341,25 @@ Liga/desliga o workflow do agente MiggoAI do cliente — grava `Client.miggoai_w
 <ResponseField name="miggoai_workflow_enabled" type="bool">Estado gravado</ResponseField>
 
 Erros: `404` cliente não encontrado; `400` `enabled` ausente ou não booleano.
+</Accordion>
+
+<Accordion title="POST/DELETE /miggoai-generate-now/<pk>/ — ClientMiggoAIGenerateNowView">
+Dispara a geração fora da rodada diária — é o que o botão **Criar agora** do painel aciona. Restrito a `IsManagementUser`.
+
+O POST faz duas coisas, nesta ordem (MIG-379): marca `Client.generation_requested_at` e chama `POST /api/generations/gerar-agora/` do MiggoAI (`app/onboarding/miggoai.py:gerar_agora_v2`). A marca é a **redundância**: se a chamada falhar, o `generate_daily_contents` do MiggoAI ainda atende o pedido pendente na próxima passada (até 15 min). Por isso falha de chamada não vira erro para o painel — vira `disparo: 'fila'`. O DELETE limpa o pedido (`generation_requested_at = None`).
+
+<ResponseField name="client_id" type="int">Id do cliente</ResponseField>
+<ResponseField name="generation_requested_at" type="string">Quando o pedido foi marcado (`null` no DELETE)</ResponseField>
+<ResponseField name="disparo" type="string">`imediato` — o MiggoAI aceitou e a rodada começou agora. `fila` — o pedido ficou para a rodada do MiggoAI.</ResponseField>
+<ResponseField name="detalhe" type="string">Frase pronta para a tela, conforme o `disparo`.</ResponseField>
+
+<Warning>
+  **`imediato` sai SÓ quando o MiggoAI responde `status: 'aceito'`.** O `202` do `gerar-agora/` diz apenas que o pedido chegou: com uma rodada em andamento o MiggoAI adia o pedido e responde `status: 'na_fila'` — também `202`, de propósito. `na_fila`, campo ausente, corpo que não é dict, valor desconhecido e exceção na chamada caem todos em `disparo: 'fila'`: na dúvida não se promete que a geração começou. Contrato do outro lado em <a href="/miggoai/api-referencia">Referência de API do MiggoAI</a>.
+</Warning>
+
+Os três desfechos saem no log sob a tag `[Admin Trigger]`, distinguíveis entre aceite, adiamento e falha de chamada. É a conclusão do **disparo** — o fim da geração não é informado a este backend.
+
+Repetir o POST não reinicia a espera: o primeiro pedido pendente é mantido. Erros: `404` cliente não encontrado.
 </Accordion>
 
 </AccordionGroup>
