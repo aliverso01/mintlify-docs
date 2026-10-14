@@ -75,6 +75,7 @@ As telas exclusivas da equipe vivem em `src/pages/Admin/`. As demais rotas de `/
     | `/admin/notifications` | `Admin/NotificationHistory` | Histórico de notificações enviadas |
     | `/admin/design-references` | `Admin/DesignReferences` | Referências visuais e acervo de imagens (abas: Grids visuais, Referências de Títulos/Copies e Acervo Miggo — MIG-382, MIG-371) |
     | `/admin/acervo` | redirect | Redireciona para `/admin/design-references?aba=acervo` (MIG-371) — ver nota abaixo |
+    | `/admin/benefits` | `Admin/BenefitsAdmin` | Benefícios oficiais e moderação do que os clientes propõem |
   </Accordion>
 
   <Accordion title="Comunicação">
@@ -136,6 +137,7 @@ As telas administrativas consomem os mesmos apps do backend, em rotas ou filtros
 | Notificações | [Notification](/backend/apps/notification) |
 | Cards parados | [Post](/backend/apps/post) |
 | Acervo Miggo | [Media](/backend/apps/media) — `/api/v1/media/acervo/{,<pk>/,nichos/,elegiveis/,uso/}` e `/api/v1/media/acervo/fontes/*`, `IsManagementUserOnly` |
+| Benefícios | `/api/v1/benefits/admin/*` — ver [Referência de API](/backend/api-referencia#benefits-api-v1-benefits) |
 
 ## Regra ao criar tela nova
 

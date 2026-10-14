@@ -24,6 +24,7 @@ O processamento de webhooks da Stripe em tempo real **não vive neste app** — 
 | `app/subscription/apps.py` | `AppConfig` padrão (`app.subscription`). |
 | `app/subscription/stripe_gateway.py` | Camada única de acesso à Stripe: configuração de API key, mapas de status, resolução de Customer/Client/PlanPrice, espelhamento de `Subscription`/`Invoice`, operações de checkout/portal/cancelamento. |
 | `app/subscription/asaas_gateway.py` | Equivalente ao `stripe_gateway` para o Asaas: chamada HTTP, mapas de status, espelhamento de pagamento em `Invoice`. |
+| `app/subscription/access.py` | **Ponto único** de duas perguntas sobre assinatura: `pode_publicar(client)` (direito de entrega, MIG-394) e `e_pagante_ativo(client)` (direito de pagante, MIG-387). Ver [Direito de entrega x direito de pagante](#direito-de-entrega-x-direito-de-pagante-access-py). |
 | `app/subscription/fidelity.py` | Regras de permanência mínima (fidelidade): cálculo do fim do compromisso, mensalidades restantes, data de encerramento de cancelamento. |
 | `app/subscription/cron.py` | Rotinas agendadas: aviso de trial acabando, expiração de trial, dunning de faturas, suspensão por inadimplência, reconciliação Stripe/Asaas. |
 | `app/subscription/management/commands/check_invoices.py` | Management command que roda `cron.check_invoices()`. |
@@ -488,6 +489,43 @@ Definidos em `app/subscription/serializers.py`.
 
 `PlanMeta` é um par chave/valor genérico por `Plan`. O único uso confirmado nos arquivos lidos é em `app/agenda/views.py:133-140`: para cada formato de post, monta a chave `max_{format_slug}_month` (ex. `max_reels_month`) e, se existir um `PlanMeta` com essa chave para o plano da assinatura ativa do cliente, usa `int(plan_meta.value)` como teto de posts/sugestões aprovadas naquele mês. Sem assinatura ativa, a checagem libera (`return True, None`). Não há, nos arquivos deste app, uma enumeração fechada de todas as chaves de `PlanMeta` em uso — trate como convenção livre entre apps consumidores.
 
+### Direito de entrega x direito de pagante (`access.py`)
+
+Duas perguntas diferentes sobre a mesma assinatura, respondidas **no mesmo módulo de propósito** — um segundo conceito de "ativo" espalhado por outro app divergiria com o tempo, e aí ou o paywall vaza ou corta quem paga.
+
+| Pergunta | Função | Nasceu em |
+|---|---|---|
+| "esta conta pode **entregar conteúdo**?" | `pode_publicar(client) -> (bool, motivo)` | MIG-394 |
+| "esta conta **paga**?" | `e_pagante_ativo(client) -> bool` | MIG-387 |
+
+**A diferença está no TRIAL, e é o ponto todo:** o teste grátis entrega conteúdo, mas não paga.
+
+| Status | `pode_publicar` | `e_pagante_ativo` |
+|---|---|---|
+| `ACTIVE` | sim, **sem olhar `expires_at`** | sim, **sem olhar `expires_at`** |
+| `TRIAL` | sim, enquanto `expires_at >= agora` | **nunca**, mesmo em vigor |
+| `UNPAID` | sim, dentro de `BILLING_GRACE_DAYS` | sim, dentro de `BILLING_GRACE_DAYS` |
+| `PENDING`, `PAUSED`, `EXPIRED`, `CANCELLED` | não | não |
+| cliente sem assinatura, ou usuário sem `client` | não | não |
+
+Detalhes que valem para as duas:
+
+- **Basta UMA assinatura dar direito** (`Subscription.objects.filter(client=client)`, sem `order_by`): quem reassinou costuma carregar a antiga cancelada do lado, e olhar só a mais recente bloquearia quem pagou.
+- `ACTIVE` ignora `expires_at` porque a data de uma assinatura paga é a **próxima cobrança**, não um prazo de validade — quem move para `EXPIRED` é o `cron.check_subscriptions()`. Exigir data futura aqui cortaria cliente adimplente a cada atraso do cron ou do webhook de renovação.
+- A carência de `UNPAID` é a mesma que o `check_subscriptions` respeita (`BILLING_GRACE_DAYS`, default 5).
+
+`pode_publicar` devolve `(bool, motivo)`; o `motivo` é **texto de produto** (`MOTIVO_SEM_ASSINATURA`, `MOTIVO_TRIAL_VENCIDO`, `MOTIVO_INADIMPLENTE`, `MOTIVO_EXPIRADA`), escolhido pela assinatura mais recente e exibido direto na tela. `e_pagante_ativo` devolve só o booleano — a mensagem do caso dele vive no app consumidor.
+
+#### Primeiro consumidor: o paywall de benefícios (MIG-387)
+
+`app.benefits` chama `e_pagante_ativo` em dois pontos, e é o exemplo de como usar a função:
+
+- **`GET /api/v1/benefits/` (vitrine)** — para quem **não** é pagante ativo, o `BenefitSerializer` **omite** três chaves do JSON: `redemption_instructions`, `link` e `coupon_code` (`CAMPOS_DE_RESGATE`). Omitidas, **não vazias**: o front decide o cadeado pela **ausência** da chave, e campo vazio é indistinguível de parceiro que não tem cupom. O corte é no serializer e não na tela porque o critério fala em "retornado via API" — esconder no front deixaria o cupom visível na aba Network. O "é pagante?" é resolvido **uma vez por requisição**, no contexto da view (`pagante_ativo`), não por card. **Contexto ausente = não pagante** (falha fechada): serializer usado em caminho novo sem passar o contexto não vaza cupom por esquecimento.
+- **`POST /api/v1/benefits/submit/`** — não-pagante recebe `403` com `{"error": "Apenas clientes com plano ativo podem divulgar ofertas e serviços na nossa rede de membros. ..."}`. A checagem vem **antes** da de duplicidade; as recusas que já existiam (não é cliente, já enviou uma) seguem iguais.
+- **`GET /api/v1/benefits/mine/`** não corta campos — é a submissão do próprio cliente, conteúdo dele —, mas `can_submit` passou a ser `pagante E (nunca enviou OU foi recusado)`: a tela não promete o que o POST vai recusar.
+
+`/api/v1/benefits/options/` e as rotas `/api/v1/benefits/admin/*` ficaram inalteradas.
+
 ### Ciclo de vida da assinatura
 
 Status e quem os move:
@@ -588,6 +626,7 @@ Classes de compatibilidade `SubscriptionCron`/`InvoiceCron` (`cron.py:504-512`) 
 - **`CreateSubscriptionView`** (`views.py:248-348`, endpoint `/create-subscription/`) apaga (`subscription.delete()`) a assinatura corrente do cliente antes de criar a nova — diferente do padrão "reaproveitar" adotado em `CreateCheckoutSessionView`, então usar esta rota descarta o histórico/metadados da assinatura anterior por cascade.
 - **`stripe_gateway.get_or_create_customer`** cria o `Customer` na Stripe sem `metadata.miggo_client_id` quando `client` não é passado (`client.id if client else ''`) — chamadores que não passam `client` (nenhum encontrado nos arquivos lidos, mas a assinatura permite) deixariam o Customer sem esse vínculo, dificultando `resolve_client` depois.
 - **`Invoice.stripe_invoice_id`** é o único campo de id externo do modelo, reaproveitado com prefixo `asaas_` para pagamentos do Asaas (`asaas_gateway.ID_PREFIX`). Qualquer nova integração de gateway precisaria seguir a mesma convenção de prefixo — não há campo dedicado por gateway.
+- **Não crie um terceiro conceito de "ativo".** `status__in=['ACTIVE', 'TRIAL']` chegou a aparecer em pelo menos seis lugares, com variações (um incluía `UNPAID`, os outros não) — foi o que motivou o `access.py`. Precisa saber se a conta entrega conteúdo? `pode_publicar`. Se a conta paga? `e_pagante_ativo`. Um filtro de status escrito à mão numa view nova volta a divergir.
 - **`restore_lost_trials`** contém dados de um incidente específico (ids de cliente, datas, mapa de `PlanPrice`) hardcoded no próprio comando — é uma correção pontual, não um comando reutilizável; rodá-lo novamente é seguro (idempotente), mas não serve de modelo para futuras restaurações sem edição manual do arquivo.
 
 ## Relacionados

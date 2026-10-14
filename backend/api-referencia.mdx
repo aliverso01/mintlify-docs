@@ -25,6 +25,7 @@ Definidos em `core/urls.py:28-56`. Todos os apps de negócio (exceto `webhooks`)
 | `/api/v1/onboarding/` | `onboarding` |
 | `/api/v1/conversation/` | `conversation` |
 | `/api/v1/email-marketing/` | `emailmarketing` |
+| `/api/v1/benefits/` | `benefits` |
 | `/api/schema/`, `/api/schema/swagger-ui/`, `/api/schema/redoc/` | drf-spectacular |
 | `/webhooks/`, `/webhooks/zernio/account/`, `/webhooks/manychat/`, `/webhooks/manychat/dynamic-block/continue/` | `webhooks` + `conversation.webhooks` |
 | `/media/<path>` | serve de arquivos de mídia (fallback sem Nginx) |
@@ -146,6 +147,21 @@ Detalhes de payload/resposta de auth: [Autenticação](/backend/autenticacao). D
 ### email-marketing — `/api/v1/email-marketing/`
 
 `campaign/`, `campaign/options/`, `campaign/<pk>/`, `campaign/<pk>/preview/`, `campaign/<pk>/audience/`, `asset/`, `settings/`, `click/<uuid:token>/` (rota pública, clicada de dentro do email sem sessão), `dispatch/`. Detalhe em [emailmarketing](/backend/apps/emailmarketing).
+
+### benefits — `/api/v1/benefits/`
+
+Rede de benefícios entre clientes. Cliente: `` (vitrine), `options/`, `submit/`, `mine/`. Equipe (`IsManagementUser`): `admin/`, `admin/<pk>/`, `admin/<pk>/moderate/`.
+
+**Paywall (MIG-387)** — o que depende de ser **pagante ativo** (`app.subscription.access.e_pagante_ativo`; o Trial **não** é pagante):
+
+| Rota | Para não-pagante |
+|---|---|
+| `GET /` | as chaves `redemption_instructions`, `link` e `coupon_code` **são omitidas** do JSON (não vêm vazias) — a vitrine (parceiro, título, vantagem, logo) continua aberta |
+| `POST submit/` | `403` com `{"error": "Apenas clientes com plano ativo podem divulgar ofertas e serviços na nossa rede de membros. ..."}`, antes da checagem de duplicidade |
+| `GET mine/` | não corta campos (conteúdo do próprio cliente), mas `can_submit` é `false` |
+| `GET options/`, `admin/*` | inalteradas |
+
+Regra de leitura no cliente: o cadeado se decide pela **ausência da chave**, nunca por status de assinatura lido no front. Ver [Direito de entrega x direito de pagante](/backend/apps/subscription#direito-de-entrega-x-direito-de-pagante-access-py). Este app ainda **não tem página própria** nesta doc.
 
 ### history — `/api/v1/history/`
 

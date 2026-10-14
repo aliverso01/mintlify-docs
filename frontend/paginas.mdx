@@ -500,6 +500,28 @@ Só em `/app/*` (a equipe tem `AdminSupportPage`, em `area-admin.mdx`).
 
 </Accordion>
 
+<Accordion title="BenefitsPage — rede de benefícios do cliente">
+
+### BenefitsPage — `/app/beneficios`
+**Arquivo:** `src/pages/Benefits/BenefitsPage.tsx` (418 linhas) + `benefitsApi.ts`
+
+"Meus Benefícios": vitrine de cupons e vantagens de parceiros, mais o formulário para o próprio cliente propor uma oferta à rede. Só existe em `/app/*` — a tela da equipe é `Admin/BenefitsAdmin`, em `area-admin.mdx`.
+
+**Endpoints:**
+| Método | Rota | Uso |
+|---|---|---|
+| GET | `/api/v1/benefits/?search=&category=&region=` | vitrine |
+| GET | `/api/v1/benefits/options/` | categorias e regiões dos filtros |
+| GET | `/api/v1/benefits/mine/` | submissão do próprio cliente e `can_submit` |
+| POST | `/api/v1/benefits/submit/` | propor um benefício (`FormData`) |
+
+<Warning>
+  **O paywall é lido pela ausência de chave, nunca por status de assinatura no cliente** (MIG-387). `resgateBloqueado(b)` (`benefitsApi.ts:58`) devolve `true` quando **qualquer uma** de `redemption_instructions`, `link` ou `coupon_code` vem `undefined` — as três somem juntas, e num paywall travar demais é melhor que vazar de menos. Nenhum card some e nenhuma lista é filtrada: o cadeado está no modal de resgate, com o CTA **Assinar um Plano** apontando para `/app/plans` (a mesma rota do `SubscriptionGuard`). Não reintroduza leitura de `subscription.status` aqui — o servidor é quem corta, e o front só reage ao que não veio.
+</Warning>
+
+- **Propor benefício:** o botão fica bloqueado quando `can_submit` é `false` — para não-pagante, porque o `POST` responderia `403`; para quem já enviou e está em análise ou aprovado. Falha ao carregar `mine/` não bloqueia o catálogo.
+</Accordion>
+
 <Accordion title="UserProfiles — perfil do usuário logado">
 
 ### UserProfiles — `/admin/profile` e `/app/profile`
