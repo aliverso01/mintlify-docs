@@ -28,7 +28,7 @@ Todos são idempotentes e devolvem um resumo em `dict`.
 | Comando | Frequência | Função | O que faz |
 | --- | --- | --- | --- |
 | `notify_trial_ending` | 1x/dia | `notify_trial_ending()` | Avisa o cliente de que o teste está acabando |
-| `expire_trials` | 1x/dia | `expire_trials()` | Encerra os testes vencidos |
+| `expire_trials` | 1x/dia | `expire_trials()` | Encerra os testes vencidos e dispara o aviso de fim de teste no WhatsApp |
 | `check_invoices` | 1x/dia | `check_invoices()` | Reconcilia o estado das faturas |
 | `check_subscriptions` | 1x/dia | `check_subscriptions()` | Reconcilia o estado das assinaturas |
 | `sync_stripe_billing` | a cada 6h | `sync_stripe_billing(limit=None)` | Sincroniza cobrança da Stripe |
@@ -43,6 +43,8 @@ Todos são idempotentes e devolvem um resumo em `dict`.
 | `_already_notified(subscription, key, within_hours=20)` | Evita notificar o mesmo assunto duas vezes na janela |
 | `_mark_notified(subscription, key)` | Marca o aviso como enviado |
 | `_log_cron_integration(client, path, payload, response, status_code=200)` | Registra a execução na tabela `Integration` |
+| `_avisar_fim_do_teste(subscription)` | Dispara o flow ManyChat de fim de teste (`TRIAL_ENDED_FLOW_ID`) na transição `TRIAL → EXPIRED`. Falha de envio não desfaz a expiração (MIG-453) |
+| `_log_trial_ended(client, payload, response, status_code=200)` | Auditoria desse aviso em `Integration`, com `service='sendFlow Trial Ended'` |
 | `_status_no_gateway(invoice)` | Resolve o status quando a fatura não tem gateway |
 
 As classes `SubscriptionCron` e `InvoiceCron` (final do arquivo) são apenas invólucros com os métodos `check_subscriptions()` e `check_invoices()`, usados pelo `run_cron.py`.
