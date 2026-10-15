@@ -344,22 +344,26 @@ Sem filtro nem grade — o cliente tem no máximo um brand kit, que é auto-sele
 <Accordion title="Briefing — Briefing">
 
 ### Briefing — `/admin/briefing` e `/app/briefing`
-**Arquivo:** `src/pages/Briefing/Briefing.tsx` (694 linhas)
+**Arquivo:** `src/pages/Briefing/Briefing.tsx` (~760 linhas)
 
-Ficha de briefing da marca (identidade, público, tom, etc.), organizada em seções sanfonadas (`BRIEFING_SECTIONS`, de `src/data/briefingSections.ts`). Inclui um modo de pré-scraping via Instagram antes do preenchimento manual.
+Ficha de briefing da marca (identidade, público, tom, etc.), organizada em seções sanfonadas (`BRIEFING_SECTIONS`, de `src/data/briefingSections.ts`). Inclui modo de pré-scraping e reanálise pelo Instagram com modal de conferência (`BriefingReviewModal`), e painel de upload/gestão de materiais institucionais da marca (`BrandMaterialsPanel`).
 
 **Endpoints:**
 | Método | Rota | Uso |
 |---|---|---|
 | GET | `/api/v1/client/list/` | clientes (admin) |
 | GET | `/api/v1/client/client-meta/list/?client_id=` | respostas já salvas |
-| POST | `/api/v1/client/instagram-scrape/` | pré-preenche a partir do perfil do Instagram |
-| PATCH | `/api/v1/client/client-meta/update/:id/` | atualizar resposta existente |
-| POST | `/api/v1/client/client-meta/create/` | criar nova resposta |
+| POST | `/api/v1/client/instagram-scrape/` | com `preview: true`, retorna propostas de atualização sem gravar |
+| POST | `/api/v1/client/briefing/apply/` | aplica as chaves selecionadas no modal de revisão |
+| GET | `/api/v1/client/brand-materials/?client_id=` | listagem de materiais institucionais do cliente |
+| POST | `/api/v1/client/brand-materials/` | upload de arquivo (PDF/DOCX/PPTX/TXT) ou envio de texto longo |
+| DELETE | `/api/v1/client/brand-materials/:id/` | remoção de material institucional |
+| PATCH | `/api/v1/client/client-meta/update/:id/` | atualizar resposta existente na edição manual |
+| POST | `/api/v1/client/client-meta/create/` | criar nova resposta na edição manual |
 
-- **Hooks:** `useAuthContext`, `usePreview`, `useClient`.
-- **Componentes:** `PlatformProfileConfigPanel`, `Field`/`ListEditor`/`Section`/`TargetPicker` (`src/components/briefing/ReviewFields.tsx`).
-- **Estados:** `loading`, `saving`, `scraping`, `viewMode` (somente leitura), progresso calculado (`answeredCount / totalFields`).
+- **Hooks:** `useAuthContext`, `usePreview`, `useClient`, `useNotification`.
+- **Componentes:** `BriefingReviewModal`, `BrandMaterialsPanel`, `PlatformProfileConfigPanel`, `Field`/`ListEditor`/`Section`/`TargetPicker` (`src/components/briefing/ReviewFields.tsx`).
+- **Estados:** `loading`, `saving`, `scraping`, `applying`, `proposal` (proposta ativa para o modal), `viewMode` (somente leitura), progresso calculado (`answeredCount / totalFields`).
 
 </Accordion>
 
