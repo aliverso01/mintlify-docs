@@ -143,7 +143,6 @@ Bloco extenso (`core/settings.py:382-480`) motivado por um bug histórico: sem c
 | OpenAI | `OPENAI_API_KEY` | `core/settings.py:326` |
 | Jira (suporte) | `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_PROJECT_KEY`, `JIRA_ISSUE_TYPE` | `core/settings.py:352-356` |
 | Google OAuth | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_AUTH_CLOCK_SKEW` | `core/settings.py:359-364` |
-| Pixabay (acervo) | `PIXABAY_API_KEY` | `core/settings.py:510` |
 
 Demais integrações (ManyChat, Asaas, GetLate/Zernio, Apify, HtmlToCssImage, MiggoAI) são lidas via `config(...)` direto nos módulos que as usam, não em `settings.py` — ver a tabela completa em [Instalação](/backend/instalacao).
 
@@ -156,13 +155,11 @@ Demais integrações (ManyChat, Asaas, GetLate/Zernio, Apify, HtmlToCssImage, Mi
 | E-mail | `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_USE_TLS`, `EMAIL_USE_SSL`, `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD` |
 | Storage (S3) | `USE_S3`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_STORAGE_BUCKET_NAME`, `AWS_S3_REGION_NAME`, `AWS_S3_CUSTOM_DOMAIN`, `AWS_S3_PROJECT_FOLDER` |
 | Uploads | `FILE_UPLOAD_MAX_MEMORY_SIZE`, `DATA_UPLOAD_MAX_MEMORY_SIZE`, `TRIAL_MEDIA_MAX_FILES`, `UPLOAD_MAX_IMAGE_SIZE_MB`, `UPLOAD_MAX_VIDEO_SIZE_MB` |
-| Acervo / Bancos de imagem | `PIXABAY_API_KEY` |
 | Billing | `STRIPE_API_KEY`, `STRIPE_PROD_API_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_TRIAL_DAYS`, `BILLING_GRACE_DAYS`, `ASAAS_API_KEY`, `ASAAS_BASE_URL` |
 | IA | `OPENAI_API_KEY`, `OPENAI_API_URL`, `OPENAI_MODEL`, `OPENAI_IMAGE_MODEL`, `MEDIA_ANALYSIS_MODEL` |
 | Auth social | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_AUTH_CLOCK_SKEW` |
 | Suporte/Jira | `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_PROJECT_KEY`, `JIRA_ISSUE_TYPE` |
 | WhatsApp/ManyChat | `MANYCHAT_API_KEY`, `MANYCHAT_WEBHOOK_TOKEN`, `CONTENT_APPROVATION_FLOW_ID`, `CONTENT_APPROVATION_CONNECTED_FLOW_ID`, `GRID_APPROVAL_FLOW_ID`, `GRID_APPROVAL_REMINDER_INTERVAL_HOURS`, `GRID_APPROVAL_MAX_REMINDERS`, `DYNAMIC_FLOW_STARTER_FLOW_ID`, `WHATSAPP_SEND_FLOW_DELAY`, `WHATSAPP_FLOW_RETRY_ATTEMPTS`, `WHATSAPP_FLOW_RETRY_BACKOFF` |
-| Acervo Miggo | `ACERVO_SERVICE_TOKEN` (credencial de serviço das rotas `media/acervo/{elegiveis,uso}/`, sem default — ausente, o caminho de serviço é recusado) |
 | Redes sociais | `LATE_API_KEY` (GetLate/Zernio) |
 | Onboarding/scraping | `APIFY_TOKEN`, `ONBOARDING_IG_MIN_POSTS`, `ONBOARDING_WEBSITE_BUDGET`, `ONBOARDING_ANALYSIS_STALL`, `HTMLTOCSSIMAGE_ID`, `HTMLTOCSSIMAGE_API_KEY` |
 | MiggoAI (serviço de IA) | `MIGGOAI_API_URL`, `MIGGOAI_USERNAME`, `MIGGOAI_PASSWORD` |
