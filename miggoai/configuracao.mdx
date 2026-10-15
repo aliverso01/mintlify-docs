@@ -29,6 +29,7 @@ INSTALLED_APPS = [
     'apps.posts',
     'apps.prompts',
     'apps.generations',
+    'apps.custos',
 ]
 ```
 
@@ -37,7 +38,8 @@ INSTALLED_APPS = [
 | `apps.clients` | Proxy de clientes do `backend-miggo` + modelo local `ClientVariableValue`/`ClientPostHistory`. |
 | `apps.posts` | Proxy de posts (cards)/formatos/status do `backend-miggo`. |
 | `apps.prompts` | CMS de prompts/workflows/variáveis, versionamento. |
-| `apps.generations` | Execução dos workflows de IA e registro de auditoria (`Generation`). |
+| `apps.generations` | Execução dos workflows de IA e registro de auditoria (`Generation`, `Execucao`). |
+| `apps.custos` | Auditoria granular de tokens, tabela de preços dos modelos da OpenAI e cotação USD/BRL (MIG-411, MIG-468). |
 | `apps.common` | Módulo compartilhado (`miggo_client.py`) sem app Django próprio — não está em `INSTALLED_APPS` porque não define models. |
 
 ## Middleware

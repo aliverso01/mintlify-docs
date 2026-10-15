@@ -75,6 +75,10 @@ miggoai-2.0/miggoai_v2/
 │   │   │       ├── title_workflow.py, image_workflow.py, caption_workflow.py, hashtags_workflow.py
 │   │   │       ├── media_matcher.py    # peneira léxica da galeria de mídia
 │   │   │       └── media_classifier.py # julgamento por IA de qual foto usar
+│   │   ├── custos/                 # auditoria de tokens, custos de IA e cotação USD/BRL (MIG-411, MIG-468)
+│   │   │   ├── models.py           # ChamadaIA, PrecoModelo, CotacaoDolar
+│   │   │   ├── services/           # agregados (custo_por_geracao, bloco_custo) e cambio (taxa_vigente)
+│   │   │   └── management/commands # atualizar_cotacao (cron), seed_precos
 │   │   └── common/                 # apps.common.miggo_client — cliente HTTP base para o backend-miggo
 │   └── manage.py
 ├── frontend/                       # SPA React 19 + Vite (painel do MiggoAI)
@@ -96,6 +100,15 @@ miggoai-2.0/miggoai_v2/
   em `modules/openai.py`"). Hoje a versão que roda em produção/no frontend é a do `backend/`; `modules/`+`main.py`
   seguem funcionais mas são standalone (não usam Django, não persistem `Generation`, não passam pelo CMS de prompts).
 </Warning>
+
+## Polling e custos de geração
+
+A tela de Gerações (`frontend/src/pages/Geracoes.tsx`) monitora execuções e gerações em tempo real através de **polling a cada 2 s**, com otimizações para não onerar o servidor:
+
+- **Paginação direto no banco**: `GET /api/generations/linhas/` realiza a união de execuções (`Execucao`) e gerações avulsas (`Generation`) via `UNION` ordenada direto no SQL (`chaves = execucoes.union(avulsas).order_by('-created_at', 'tipo', '-id')[start:start+page_size]`), com teto estrito de `page_size <= 200` (`PAGE_SIZE_MAX`). Antes da MIG-468 todos os registros eram carregados e ordenados em Python a cada chamada.
+- **Leitura de câmbio sem rede**: para converter valores em dólares para reais nas linhas da listagem, o endpoint usa `cambio.taxa_vigente()`, que lê apenas a última cotação já gravada na tabela `CotacaoDolar`. A busca de cotações em fontes externas (Banco Central / AwesomeAPI) é isolada no comando de cron `atualizar_cotacao` (rodado com `forcar=True`), impedindo chamadas externas bloqueantes durante os ciclos de 2 s.
+- **Sensibilidade de visibilidade**: o temporizador do frontend é pausado quando a aba do navegador fica oculta (`document.visibilityState !== "visible"`), economizando requisições quando o operador não está visualizando a tela.
+- **Tratamento de páginas dinâmicas**: caso o total de registros diminua enquanto o operador está numa página avançada (ex.: descarte ou limpeza de testes em lote), o frontend detecta `page > totalPages` e recua automaticamente para a última página válida.
 
 ## Fluxo de geração (título → imagem → legenda → hashtags)
 
