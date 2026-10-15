@@ -73,8 +73,8 @@ As telas exclusivas da equipe vivem em `src/pages/Admin/`. As demais rotas de `/
     | `/admin/content/parados` | `StalledPosts` | Cards travados na esteira de produção |
     | `/admin/logs` | `Admin/IntegrationLogs` | Auditoria das chamadas a APIs externas (tabela `Integration` do backend) |
     | `/admin/notifications` | `Admin/NotificationHistory` | Histórico de notificações enviadas |
-    | `/admin/design-references` | `Admin/DesignReferences` | Referências visuais |
-    | `/admin/acervo` | `Admin/AcervoMiggo` | Acervo interno de imagens da Miggo (MIG-455/456) — ver nota abaixo |
+    | `/admin/design-references` | `Admin/DesignReferences` | Referências visuais e acervo de imagens (abas: Grids visuais, Referências de Títulos/Copies e Acervo Miggo — MIG-382, MIG-371) |
+    | `/admin/acervo` | redirect | Redireciona para `/admin/design-references?aba=acervo` (MIG-371) — ver nota abaixo |
   </Accordion>
 
   <Accordion title="Comunicação">
@@ -106,7 +106,9 @@ As telas exclusivas da equipe vivem em `src/pages/Admin/`. As demais rotas de `/
 </AccordionGroup>
 
 <Note>
-  **Acervo Miggo (`/admin/acervo`)** — tela sem par em `/app/*`, ao contrário da maioria. No menu lateral fica no grupo *Gestão*, logo depois de *Biblioteca de Mídias* (`src/layout/AppSidebar.tsx:81`), mas as duas são coisas diferentes: a Biblioteca é por cliente e o cliente a abre; o acervo é da Miggo e não aparece para ele. Arquivos em `src/pages/Admin/`: `AcervoMiggo.tsx` (grid paginado, filtros e busca), `AcervoUploadModal.tsx` (envio em lote — a seleção acima de 20 é dividida em envios sucessivos, porque a API aceita 20 por requisição), `AcervoEditModal.tsx` (PATCH de tags, curadoria e alocação, DELETE com confirmação), `AcervoAlocacaoFields.tsx` (o bloco de escopo + vínculos, reaproveitado pelo envio e pela edição), `ClientMultiSelect.tsx` em `src/components/form/` e `acervoTypes.ts`.
+  **Acervo Miggo (`/admin/design-references?aba=acervo`)** — tela sem par em `/app/*`, ao contrário da maioria. Inicialmente criada sob `/admin/acervo` no grupo *Gestão* do menu lateral (MIG-455), na MIG-371 o acervo passou a ser a 3ª aba de *Referências de Design* (`/admin/design-references?aba=acervo`), e a rota `/admin/acervo` virou um redirecionamento automático (`Navigate replace`).
+
+  Dentro da aba há uma alternância de visualização entre "Acervo" (galeria interna com filtros e envio em lote via upload manual) e "Importar de banco externo" (`AcervoImportar.tsx`), que permite buscar fotos no Pixabay, filtrar por tipo/orientação/categoria, visualizar selo de "Já importada", selecionar até 20 fotos por envio, alocar/catalogar e creditar o autor original. Arquivos em `src/pages/Admin/`: `DesignReferences.tsx` (orquestra as abas), `AcervoMiggo.tsx` (grid do acervo, filtros, busca e alternância de modo), `AcervoImportar.tsx` (busca externa e importação em lote), `AcervoUploadModal.tsx` (upload multipart em lote), `AcervoEditModal.tsx` (edição parcial de tags/curadoria/alocação e exclusão, com preview da imagem inteira), `AcervoAlocacaoFields.tsx` e `AcervoTagsFields.tsx` (blocos de alocação e catalogação, reaproveitados por envio, edição e importação), `ClientMultiSelect.tsx` em `src/components/form/` e `acervoTypes.ts`.
 
   **O que a MIG-456 acrescentou na tela**, todo item amarrado a um critério do card:
 
@@ -117,6 +119,7 @@ As telas exclusivas da equipe vivem em `src/pages/Admin/`. As demais rotas de `/
   - **Picker de nichos** alimentado por `GET /acervo/nichos/`. Nesta volta a taxonomia tem só "Não informado": o vínculo por nicho existe e fica quase vazio até a data migration da taxonomia validada.
 
   **Esconder a tela não é o isolamento.** O acervo é tabela separada (`StockPhoto`) e as rotas são `IsManagementUserOnly` desde a MIG-456 — cliente autenticado recebe `403` e **API key sozinha recebe `401`**, porque o acervo passou a carregar o mapa de alocação cliente↔foto. A `MediaLibrary`, que serve `/admin` e `/app` com o mesmo componente, ficou intocada de propósito.
+
 </Note>
 
 ## Endpoints administrativos consumidos
@@ -132,7 +135,7 @@ As telas administrativas consomem os mesmos apps do backend, em rotas ou filtros
 | E-mail marketing | [E-mail marketing](/backend/apps/emailmarketing) |
 | Notificações | [Notification](/backend/apps/notification) |
 | Cards parados | [Post](/backend/apps/post) |
-| Acervo Miggo | [Media](/backend/apps/media) — `/api/v1/media/acervo/{,<pk>/,nichos/,elegiveis/}`, `IsManagementUserOnly` |
+| Acervo Miggo | [Media](/backend/apps/media) — `/api/v1/media/acervo/{,<pk>/,nichos/,elegiveis/,uso/}` e `/api/v1/media/acervo/fontes/*`, `IsManagementUserOnly` |
 
 ## Regra ao criar tela nova
 

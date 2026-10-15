@@ -117,7 +117,7 @@ Detalhes de payload/resposta de auth: [Autenticação](/backend/autenticacao). D
 
 ### media — `/api/v1/media/`
 
-`create/` (`csrf_exempt`), `list/`, `update/<pk>/`, `delete/<pk>/`, `<pk>/` (alias de delete), `acervo/`, `acervo/<pk>/`, `acervo/nichos/`, `acervo/elegiveis/?client_id=` e `acervo/uso/` (acervo interno da Miggo, MIG-455/456/457 — **`IsManagementUserOnly`**: cliente autenticado recebe 403 e API key sozinha, 401; as duas últimas aceitam também o token de serviço `Acervo-Service-Token`). Detalhe em [media](/backend/apps/media).
+`create/` (`csrf_exempt`), `list/`, `update/<pk>/`, `delete/<pk>/`, `<pk>/` (alias de delete), `acervo/`, `acervo/<pk>/`, `acervo/nichos/`, `acervo/elegiveis/?client_id=` e `acervo/uso/` (acervo interno da Miggo, MIG-455/456/457 — **`IsManagementUserOnly`**: cliente autenticado recebe 403 e API key sozinha, 401; as duas últimas aceitam também o token de serviço `Acervo-Service-Token`). Fontes externas (MIG-371, `IsManagementUserOnly`): `acervo/fontes/`, `acervo/fontes/<str:fonte>/busca/` e `acervo/fontes/<str:fonte>/importar/`. Detalhe em [media](/backend/apps/media).
 
 ### agenda — `/api/v1/agenda/`
 
