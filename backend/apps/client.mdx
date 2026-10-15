@@ -14,12 +14,13 @@ O app `client` é o núcleo de identidade e ciclo de vida do cliente final da Mi
 
 | Arquivo | Conteúdo |
 |---|---|
-| `app/client/models.py` | Models `Client`, `ClientMeta`, `ClientSignaturePreference` |
+| `app/client/models.py` | Models `Client`, `ClientMeta`, `ClientSignaturePreference`, `BrandMaterial` |
 | `app/client/serializers.py` | `ClientSerializer`, `ClientMetaSerializer`, `ClientSignaturePreferenceSerializer` |
-| `app/client/views.py` | Todas as views (CRUD de cliente, ativação, onboarding, trials, assinatura, Instagram/IA) |
+| `app/client/views.py` | Todas as views (CRUD de cliente, ativação, onboarding, trials, assinatura, Instagram/IA, materiais da marca) |
 | `app/client/urls.py` | Rotas do app, montadas sob `/api/v1/client/` |
 | `app/client/admin.py` | Registro no Django Admin de `Client`, `ClientMeta`, `ClientSignaturePreference` |
 | `app/client/apps.py` | `AppConfig` (`ClientConfig`) |
+| `app/client/brand_materials.py` | Extração de texto de PDF/DOCX/PPTX/TXT, geração de propostas de briefing pela LLM e atualização de `brand_knowledge` (MIG-396) |
 | `app/client/instagram.py` | Raspagem de perfil do Instagram via Apify, com cache por perfil (usada pela view de scraping) |
 | `app/client/lifecycle.py` | Cálculo de `stage` (etapa real do onboarding) e `lifecycle` (lead/ativo/inativo) via anotações de queryset |
 | `app/client/signature.py` | Regra de predefinição de assinatura/logo por cliente e formato (MIG-266) |
@@ -76,7 +77,7 @@ Par chave/valor arbitrário associado a um cliente — usado para armazenar camp
 - `__str__` — retorna `"{key}: {value}"`.
 
 <Note>
-Não há `unique_together` em `(client, key)`. Várias views tratam isso via `update_or_create` (upsert) ou usam `.last()`/`.filter(...).delete()` antes de criar (ex.: código de ativação), indicando que múltiplas linhas para a mesma chave podem coexistir temporariamente.
+Não há `unique_together` em `(client, key)`. Várias views tratam isso via `update_or_create` (upsert) ou usam `.last()`/`.filter(...).delete()` antes de criar (ex.: código de ativação), indicando que múltiplas linhas para a mesma chave podem coexistir temporariamente. Entre as chaves geradas automaticamente pelo backend está `brand_knowledge` (resumo de até 1.500 caracteres dos materiais da marca, atualizado assincronamente pelo módulo `brand_materials` e consumido pelo MiggoAI).
 </Note>
 
 ### ClientSignaturePreference
@@ -102,6 +103,23 @@ Predefinição **manual** (definida pelo admin) de assinatura/logo nas geraçõe
 <Note>
 Sem registro para um `(client, format)`, o formato segue o **padrão automático** (logo > @ do Instagram > "Nome da marca | Ramo"), calculado ao vivo em `signature.resolve_signature` — não existe valor "auto" gravado no banco.
 </Note>
+
+### BrandMaterial
+
+Material de referência da marca (PDF, DOCX, PPTX, TXT ou texto colado) enviado pelo cliente para enriquecer o contexto de IA e propor atualizações no briefing (MIG-396). `app/client/models.py:179`.
+
+| Campo | Tipo | Obrigatório | Default/Choices | Descrição |
+|---|---|---|---|---|
+| `client` | `ForeignKey(Client)` | Sim | `on_delete=CASCADE`, `related_name='brand_materials'` | Cliente dono do material |
+| `kind` | `CharField(10)` | Sim | choices `BRAND_MATERIAL_KIND_CHOICES` (`file` = Arquivo, `text` = Texto colado) | Origem do material |
+| `name` | `CharField(255)` | Sim | — | Nome original do arquivo ou "Texto colado" |
+| `file` | `FileField` | Não | `upload_to=brand_material_upload_path`, `null=True, blank=True` | Não utilizado nas views ativas (sempre nulo): por privacidade e segurança, o arquivo bruto não é mantido no S3/disco |
+| `extracted_text` | `TextField` | Não | `default='', blank=True` | Texto extraído do arquivo ou texto colado, cortado em no máximo 50.000 caracteres |
+| `char_count` | `PositiveIntegerField` | Não | `default=0` | Quantidade de caracteres em `extracted_text` |
+| `created_at` | `DateTimeField` | Não (auto) | `auto_now_add=True` | Data e hora de criação |
+
+**Meta**: `ordering = ['-created_at', '-id']`.
+
 
 ## Endpoints
 
@@ -131,6 +149,10 @@ Prefixo comum: `/api/v1/client/` (definido em `core/urls.py:31`).
 | POST | `/api/v1/client/instagram-scrape/` | `InstagramScrapeAndFillView` | Default |
 | POST | `/api/v1/client/create-bio-agent/` | `CreateBioAgentView` | Default |
 | POST | `/api/v1/client/send-generic-password/` | `SendGenericPasswordView` | `IsManagementUser` + checagem manual `role in ['admin','manager']`/`is_staff` |
+| GET | `/api/v1/client/brand-materials/` | `BrandMaterialListCreateView` | Default (filtra por `?client_id=`; cliente restrito ao próprio) |
+| POST | `/api/v1/client/brand-materials/` | `BrandMaterialListCreateView` | Default (multipart: `client_id` + `file` ou `text`; throttle 20/h para cliente) |
+| DELETE | `/api/v1/client/brand-materials/<int:pk>/` | `BrandMaterialDetailView` | Default (cliente restrito ao próprio) |
+| POST | `/api/v1/client/briefing/apply/` | `BriefingApplyView` | Default (`client_id` + `values`; cliente restrito ao próprio) |
 
 "Default" = sem `permission_classes` explícito na view, então vale `DEFAULT_PERMISSION_CLASSES = ['app.account.permissions.HasAPIKeyOrIsAuthenticated']` (`core/settings.py:139-141`): aceita API key de serviço OU usuário autenticado — **não** restringe por papel, exceto onde a própria view faz a checagem (ex.: `UpdateClientView.patch`, `ListClientsView.get_queryset`).
 
@@ -256,20 +278,24 @@ Erros: `400` se ausente ou fora do intervalo `[0,5]`.
 </Accordion>
 
 <Accordion title="POST /instagram-scrape/ — InstagramScrapeAndFillView">
-Fluxo completo de raspagem + preenchimento automático de briefing via IA. `app/client/views.py:530-1193`. Detalhado em [Regras de negócio e funções](#instagramscrapeandfillview).
+Fluxo de raspagem do perfil público do Instagram via Apify e proposta/preenchimento automático de briefing via IA (MIG-396 adicionou o modo `preview`). `app/client/views.py:530-1340`. Detalhado em [Regras de negócio e funções](#instagramscrapeandfillview). Throttle de 20 requisições/hora por cliente (`_PostThrottle`, `throttle_scope = 'instagram_scrape'`).
 
 <ParamField path="client_id" type="int" required>ID do cliente</ParamField>
 <ParamField path="instagram_username" type="string" required>Handle do Instagram (com ou sem `@`)</ParamField>
 <ParamField path="force" type="bool">Ignora o cache do Apify e força nova raspagem</ParamField>
+<ParamField path="preview" type="bool">Quando `true`, **não grava** nenhuma alteração no banco e retorna a proposta de briefing para conferência (`{proposed, current}`)</ParamField>
 
-<ResponseField name="message" type="string"></ResponseField>
-<ResponseField name="instagram_username" type="string"></ResponseField>
-<ResponseField name="briefing_keys_filled" type="array">Chaves de `ClientMeta` efetivamente salvas</ResponseField>
-<ResponseField name="bio_saved" type="bool">Se a bio atual foi salva em `PlatformProfileConfig`</ResponseField>
-<ResponseField name="raw_scrape_saved" type="bool">Sempre `true` quando chega até aqui</ResponseField>
-<ResponseField name="logo_from_profile" type="bool">Se a foto de perfil foi classificada como logo e virou `BrandLogo`</ResponseField>
+<ResponseField name="instagram_username" type="string">Handle analisado</ResponseField>
+<ResponseField name="preview" type="bool">Presente e `true` quando chamado em modo preview</ResponseField>
+<ResponseField name="proposed" type="object">Mapa `{chave: valor_proposto}` com sugestões de alteração (apenas em modo preview)</ResponseField>
+<ResponseField name="current" type="object">Mapa `{chave: valor_atual}` dos campos do briefing (apenas em modo preview)</ResponseField>
+<ResponseField name="briefing_keys_filled" type="array">Chaves de briefing preenchidas ou propostas</ResponseField>
+<ResponseField name="warning" type="string">Aviso opcional quando a análise por IA falhou e usou fallback</ResponseField>
+<ResponseField name="bio_saved" type="bool">Se a bio atual foi salva em `PlatformProfileConfig` (apenas quando `preview=false`)</ResponseField>
+<ResponseField name="raw_scrape_saved" type="bool">Sempre `true` quando a raspagem é salva (apenas quando `preview=false`)</ResponseField>
+<ResponseField name="logo_from_profile" type="bool">Se a foto de perfil virou `BrandLogo` (apenas quando `preview=false`)</ResponseField>
 
-Erros: `400` campos obrigatórios ausentes; `404` cliente não encontrado ou Apify sem dados para o username; `502` falha de transporte com o Apify (`ApifyUnavailable`).
+Erros: `400` campos obrigatórios ausentes; `404` cliente não encontrado ou Apify sem dados para o username; `429` limite de requisições excedido (mais de 20 análises na última hora); `502` falha de transporte com o Apify (`ApifyUnavailable`).
 </Accordion>
 
 <Accordion title="PATCH /toggle-active/<pk>/ — ToggleClientActiveView">
@@ -340,6 +366,60 @@ Liga/desliga o workflow do agente MiggoAI do cliente — grava `Client.miggoai_w
 <ResponseField name="miggoai_workflow_enabled" type="bool">Estado gravado</ResponseField>
 
 Erros: `404` cliente não encontrado; `400` `enabled` ausente ou não booleano.
+</Accordion>
+
+<Accordion title="GET/POST /brand-materials/ — BrandMaterialListCreateView">
+Listagem e envio de materiais institucionais da marca (PDF, DOCX, PPTX, TXT ou texto colado). `app/client/views.py:2267-2360`. O POST salva o material, extrai o texto, solicita à IA a proposta de briefing (`{proposed, current}`) e dispara a regeneração assíncrona de `ClientMeta brand_knowledge`. Throttle de 20 requisições/hora por cliente (`_PostThrottle`, `throttle_scope = 'brand_materials'`).
+
+#### GET `/api/v1/client/brand-materials/?client_id=<id>`
+Lista os materiais cadastrados do cliente. Usuário com papel `client` só pode listar materiais do seu próprio `Client` (outro cliente retorna `404`).
+
+<ParamField query="client_id" type="int" required>ID do cliente</ParamField>
+
+<ResponseField name="[]" type="array">
+  Lista de objetos:
+  - `id` (int): ID do material
+  - `kind` (string): `file` ou `text`
+  - `name` (string): nome do arquivo ou "Texto colado"
+  - `char_count` (int): total de caracteres do texto extraído
+  - `created_at` (string): timestamp ISO 8601
+</ResponseField>
+
+#### POST `/api/v1/client/brand-materials/`
+Multipart/form-data ou JSON. Aceita `file` **ou** `text` (mutuamente exclusivos).
+
+<ParamField body="client_id" type="int" required>ID do cliente</ParamField>
+<ParamField body="file" type="file">Arquivo `.pdf`, `.docx`, `.pptx` ou `.txt` (máx. 10 MB)</ParamField>
+<ParamField body="text" type="string">Texto colado (máx. 50.000 caracteres)</ParamField>
+
+<ResponseField name="material" type="object">Objeto `{id, kind, name, char_count, created_at}` do material salvo</ResponseField>
+<ResponseField name="proposed" type="object">Mapa `{chave: valor_proposto}` com sugestões de atualização para o briefing</ResponseField>
+<ResponseField name="current" type="object">Mapa `{chave: valor_atual}` com os valores vigentes do briefing</ResponseField>
+<ResponseField name="warning" type="string">Aviso opcional se o texto foi cortado nos 50.000 caracteres ou se a IA falhou ao gerar propostas</ResponseField>
+
+Erros: `400` sem arquivo e sem texto, arquivo e texto enviados juntos, formato não suportado, arquivo acima de 10 MB, texto acima de 50.000 caracteres, limite de 10 materiais atingido ou material ilegível/sem texto; `404` cliente não encontrado; `429` limite de 20 requisições/hora excedido. Falha da IA não impede o salvamento: retorna `201` com `proposed: {}` e mensagem em `warning`.
+</Accordion>
+
+<Accordion title="DELETE /brand-materials/<pk>/ — BrandMaterialDetailView">
+Remove um material da marca (`app/client/views.py:2363-2374`). Restrito ao dono do material (cliente só remove o próprio; caso contrário retorna `404`).
+
+Após a exclusão, dispara a atualização assíncrona do resumo `ClientMeta brand_knowledge` (`refresh_brand_knowledge_async(after_delete=True)`). Se não restarem materiais, a chave `brand_knowledge` é excluída do banco.
+
+Status: `204 No Content`.
+Erros: `404` material não encontrado ou pertencente a outro cliente.
+</Accordion>
+
+<Accordion title="POST /briefing/apply/ — BriefingApplyView">
+Aplica as alterações confirmadas pelo cliente no modal de revisão (`BriefingReviewModal`) diretamente em `ClientMeta` via upsert (`app/client/views.py:2377-2401`).
+
+Aceita apenas as 16 chaves permitidas em `BRIEFING_PROPOSAL_KEYS` (`company`, `business`, `sub_business`, `region`, `target`, `ticket`, `summary`, `audience_profile`, `audience_pain`, `audience_goals`, `tone_of_voice`, `services`, `differential`, `goals`, `ctas`, `extra`). Quaisquer chaves adicionais enviadas no corpo são descartadas.
+
+<ParamField body="client_id" type="int" required>ID do cliente</ParamField>
+<ParamField body="values" type="object" required>Mapa `{chave: valor}` contendo as alterações a gravar</ParamField>
+
+<ResponseField name="updated" type="array">Lista das chaves que foram efetivamente atualizadas</ResponseField>
+
+Erros: `400` `values` ausente/inválido ou valor de campo excedendo o limite de 5.000 caracteres; `404` cliente não encontrado ou não autorizado.
 </Accordion>
 
 </AccordionGroup>
@@ -422,7 +502,31 @@ Raspagem de perfil do Instagram via Apify (actor `aliverso~instagram-profile-scr
 7. **Foto de perfil → logo**: `_maybe_set_logo_from_profile` só age se o cliente ainda não tem nenhuma `BrandLogo`; baixa a foto de perfil, classifica via GPT-4o-mini (`_is_logo_image`, com a imagem enviada em base64 porque o CDN do Instagram recusa fetch direto da OpenAI) se é logotipo ou fotografia; se for logo, cria `Brandkit`/`BrandLogo` e roda a mesma análise de cores do upload manual (`_analyze_logo_with_gpt`/`_apply_analysis_to_logo`, de `app.brandkit.views`).
 8. Registra a chamada à OpenAI em `Integration(service='openai_briefing')`.
 
+Com o MIG-396, a view passa a aceitar `preview=True`: nesse modo, nenhuma alteração é persistida em `ClientMeta`, bio ou logo. O backend gera o mapa de propostas `{proposed, current}` comparando com os valores atuais via `brand_materials.build_proposal` e responde `200` com o preview para conferência do cliente.
+
 Toda a leitura de `OPENAI_API_KEY`/`OPENAI_API_URL`/`APIFY_TOKEN` é feita via `dotenv_values` lida a cada request (não usa cache do `decouple`), com fallback em `os.environ`.
+
+### `app/client/brand_materials.py` (MIG-396)
+
+Centraliza a ingestão de materiais da marca, extração de texto, geração de propostas de briefing via LLM e consolidação do resumo `ClientMeta brand_knowledge`.
+
+- **Validação e extração de documentos (`extract_text_from_upload`)**:
+  - Aceita `.pdf`, `.docx`, `.pptx` e `.txt` (extensões conferidas contra os cabeçalhos reais do arquivo).
+  - Proteção contra zip bomb em DOCX e PPTX: inspeciona o arquivo comprimido antes de descompactar, conferindo tamanho total descompactado (`MAX_ZIP_UNCOMPRESSED_BYTES = 50 MB`), quantidade de entradas (`MAX_ZIP_ENTRIES = 2000`) e razão de descompressão (`MAX_ZIP_RATIO = 100`).
+  - Limite de páginas/slides: até 50 páginas em PDFs (`MAX_PDF_PAGES`) e até 100 slides em apresentações (`MAX_SLIDES`).
+  - Texto extraído cortado em 50.000 caracteres (`MAX_TEXT_CHARS`).
+  - **Não persistência do arquivo bruto**: o arquivo enviado pelo cliente não é mantido no S3 nem no sistema de arquivos local — apenas o texto extraído é salvo no campo `BrandMaterial.extracted_text`.
+- **Proposta de briefing via IA (`propose_from_text`)**:
+  - Chama a OpenAI (`gpt-4o-mini`, timeout 45s) com o texto delimitado como dado (bloqueando injeção de instruções contidas no documento).
+  - Sugere valores apenas para as 16 chaves permitidas em `BRIEFING_PROPOSAL_KEYS` (`company`, `business`, `sub_business`, `region`, `target`, `ticket`, `summary`, `audience_profile`, `audience_pain`, `audience_goals`, `tone_of_voice`, `services`, `differential`, `goals`, `ctas`, `extra`).
+  - Retorna `{proposed, current}`, incluindo em `proposed` apenas valores não vazios e diferentes do que o cliente já possui gravado.
+- **Resumo assíncrono de conhecimento (`refresh_brand_knowledge_async`)**:
+  - Disparado em background (thread separada) após a criação ou exclusão de um material.
+  - Sintetiza todo o conjunto de materiais ativos do cliente em um resumo executivo de até 1.500 caracteres (`BRAND_KNOWLEDGE_MAX_CHARS`).
+  - Salva o resultado em `ClientMeta(key='brand_knowledge')`. Se o cliente remover todos os seus materiais, a chave `brand_knowledge` é apagada do banco.
+- **Aplicação de briefing (`apply_briefing`)**:
+  - Valida o tamanho máximo de cada valor (teto de 5.000 caracteres, `MAX_VALUE_CHARS`).
+  - Grava via upsert em `ClientMeta` apenas as chaves contidas em `BRIEFING_PROPOSAL_KEYS`.
 
 ### `OnboardingStatusView` — lógica do step efetivo (`app/client/views.py:303-473`)
 

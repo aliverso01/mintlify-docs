@@ -22,6 +22,7 @@ erDiagram
     Client ||--o{ Conversation : conversa
     Client ||--o{ PlatformIntegration : conecta
     Client ||--o{ EmailDispatch : recebe
+    Client ||--o{ BrandMaterial : possui
 
     Plan ||--o{ PlanPrice : tem
     PlanPrice ||--o{ Subscription : referencia
@@ -99,7 +100,7 @@ Ver detalhes completos em [Autenticação](/backend/autenticacao).
 
 `is_onboarding_complete` (property): `onboarding_step >= 5`.
 
-### `ClientMeta` — key/value por `Client` (`related_name='meta'`).
+### `ClientMeta` — key/value por `Client` (`related_name='meta'`). Armazena campos de briefing, códigos de ativação e o resumo `brand_knowledge` gerado a partir de materiais da marca.
 
 ### `ClientSignaturePreference` — `app/client/models.py:63`
 | Campo | Tipo |
@@ -111,6 +112,20 @@ Ver detalhes completos em [Autenticação](/backend/autenticacao).
 | `updated_at` | |
 
 `unique_together=('client','format')`.
+
+### `BrandMaterial` — `app/client/models.py:179`
+| Campo | Tipo | Relacionamento / Observação |
+|---|---|---|
+| `client` | FK → `Client` (`related_name='brand_materials'`) | `on_delete=CASCADE` |
+| `kind` | `choices`: `file` (Arquivo), `text` (Texto colado) | Origem do material |
+| `name` | `CharField(255)` | Nome original do arquivo ou "Texto colado" |
+| `file` | `FileField`, opcional | Sempre nulo (arquivo bruto não é mantido no storage) |
+| `extracted_text` | `TextField` | Texto extraído do arquivo ou texto colado (máx. 50.000 chars) |
+| `char_count` | `PositiveIntegerField` | Contagem de caracteres do texto extraído |
+| `created_at` | `DateTimeField` | `auto_now_add=True` |
+
+`ordering = ['-created_at', '-id']`.
+
 
 ## onboarding
 
