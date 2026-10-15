@@ -121,8 +121,10 @@ Fonte: `backend/apps/generations/urls.py`, `backend/apps/generations/views.py`.
 | GET | `/api/generations/context/` | `GenerationContextView` | Prévia do contexto (sem chamar IA). |
 | POST | `/api/generations/gerar-agora/` | `GerarAgoraView` | Gera agora o próximo card `pending` do cliente, fora da rodada diária. Chamado pelo `backend-miggo` (botão **Criar agora**). |
 | POST | `/api/generations/gerar-card/` | `GerarCardView` | Geração completa de UM card já existente (título → imagem → legenda → hashtags). Chamado pelo `backend-miggo`. |
-| GET | `/api/generations/` | `GenerationListView` | Lista generations (filtros). |
-| GET | `/api/generations/<int:pk>/` | `GenerationDetailView` | Detalhe de uma generation. |
+| GET | `/api/generations/linhas/` | `LinhaListView` | Listagem unificada de gerações e execuções com paginação no banco e custos (MIG-468). |
+| GET | `/api/generations/execucoes/<int:pk>/` | `ExecucaoDetailView` | Detalhe de execução com passos aninhados, custo total e por etapa (MIG-468). |
+| GET | `/api/generations/` | `GenerationListView` | Lista generations (filtros legados). |
+| GET | `/api/generations/<int:pk>/` | `GenerationDetailView` | Detalhe de uma generation com custo total e por etapa (MIG-468). |
 | DELETE | `/api/generations/<int:pk>/` | `GenerationDetailView` | Remove uma generation (só ambiente TEST). |
 | POST | `/api/generations/grid/` | `GridView` | Gera o mosaico 3x3 do onboarding (síncrono) e devolve a imagem em base64. Quem chama é o backend-miggo, nunca o navegador. |
 | GET | `/api/generations/grid/by-key/<str:idempotency_key>/` | `GridByKeyView` | Estado de uma geração de grid **pela chave de idempotência**, não pelo pk. |
@@ -210,12 +212,46 @@ Existe porque no caso da MIG-427 o chamador **nunca recebeu o pk**: o POST estou
 <ParamField path="post_id" type="integer" required />
 <ResponseField name="..." type="object">Dict de contexto (ver <a href="/miggoai/workflows">Workflows → context_builder</a>) mesclado com respostas de variável já salvas do cliente. Nunca chama IA — usado para pré-preencher o formulário no frontend.</ResponseField>
 
+**GET `/api/generations/linhas/`**
+
+Listagem principal da tela de Gerações (`frontend/src/pages/Geracoes.tsx`). Consulta unificada de execuções completas (`Execucao`) e gerações avulsas (`Generation`), paginada diretamente no banco de dados via `UNION` com `limit`/`offset` (MIG-468) para suportar o polling de 2 s.
+
+<ParamField path="page" type="integer">Número da página (mínimo 1, default 1).</ParamField>
+<ParamField path="page_size" type="integer">Itens por página (default 50, limitado a 200 via `PAGE_SIZE_MAX`).</ParamField>
+<ParamField path="environment" type="string">Filtra por `TEST` ou `PRODUCTION`.</ParamField>
+<ParamField path="workflow" type="string">Chave do workflow (`title`, `image`, `caption`, `hashtags`).</ParamField>
+<ParamField path="client_id" type="integer">Filtra por id de cliente.</ParamField>
+<ParamField path="post_id" type="integer">Filtra por id do post/card.</ParamField>
+<ParamField path="status" type="string">Filtra por status (`PENDING`, `RUNNING`, `SUCCESS`, `FAILED`).</ParamField>
+
+<ResponseField name="count" type="integer">Total de registros (execuções + avulsas).</ResponseField>
+<ResponseField name="page" type="integer">Página atual.</ResponseField>
+<ResponseField name="total_pages" type="integer">Total de páginas disponíveis.</ResponseField>
+<ResponseField name="results" type="array">Linhas ordenadas por data decrescente (em empate, execução precede geração avulsa). Cada linha traz o tipo (`execucao` ou `geracao`), os campos do serializer correspondente e o bloco `custo`.</ResponseField>
+
+#### Estrutura do bloco `custo`
+Consolida as chamadas (`ChamadaIA`) da geração ou dos passos da execução:
+- `usd`: string decimal com 6 casas (`0.000000`).
+- `brl`: string decimal com 2 casas ou `null` caso não haja cotação. Convertido via `cambio.taxa_vigente()`, lendo a cotação mais recente gravada no banco local sem chamadas HTTP externas durante o polling de 2 s.
+- `estimado`: booleano (`true` se alguma chamada usou precificação estimada).
+- `sem_preco`: booleano (`true` se algum modelo chamado não possuía tabela de preço cadastrada).
+- `chamadas`: número inteiro de chamadas de IA. Quando `chamadas === 0`, indica que não houve consumo medido (a tela exibe "—" para não apresentar um zero falso).
+
+**GET `/api/generations/execucoes/<pk>/`**
+
+Retorna os detalhes de uma execução com seus passos aninhados (`ExecucaoSerializer`), acrescido de:
+- `custo`: bloco consolidado com o custo total da execução (`{usd, brl, estimado, sem_preco, chamadas}`).
+- `custo_por_etapa`: array `[{generation_id, etapa, usd, brl, estimado, sem_preco, chamadas}]` com a discriminação dos custos de cada passo na ordem em que rodaram.
+
 **GET `/api/generations/`**
 <ParamField path="environment" type="string">`TEST` ou `PRODUCTION`.</ParamField>
 <ParamField path="workflow" type="string">Chave do workflow (`title`, `image`, `caption`, `hashtags`).</ParamField>
 <ParamField path="client_id" type="integer" />
 <ParamField path="post_id" type="integer" />
 <ParamField path="status" type="string">`PENDING`, `RUNNING`, `SUCCESS`, `FAILED`.</ParamField>
+
+**GET `/api/generations/<pk>/`**
+Retorna o serializer detalhado da geração (`GenerationDetailSerializer`), acrescido de `custo` (bloco de custo total) e `custo_por_etapa` (lista detalhada por etapa).
 
 **Objeto `Generation` (serializer)** — `backend/apps/generations/serializers.py:6-24`:
 

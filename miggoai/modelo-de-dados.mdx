@@ -246,13 +246,83 @@ Registro de auditoria de cada execução de workflow — criado como `RUNNING` e
 
 **Constantes de classe**: `Generation.ENV_TEST`, `Generation.ENV_PRODUCTION`, `Generation.STATUS_PENDING/RUNNING/SUCCESS/FAILED`.
 
+### `Execucao`
+
+MIG-329: agrupa múltiplos passos executados em conjunto (geração completa dos 4 workflows ou regeração de legenda + hashtags). Gerações avulsas mantêm `execucao=None`.
+
+| Campo | Tipo | Detalhe |
+|---|---|---|
+| `origem` | `CharField(20)`, choices | `painel` (geração completa no painel), `diaria` (rotina diária de conteúdo) ou `regeneracao`. |
+| `client_id` | `PositiveIntegerField` | `null=True, blank=True`. |
+| `client_name` | `CharField(255)` | Snapshot do nome do cliente. |
+| `post_id` | `PositiveIntegerField` | `null=True, blank=True`. |
+| `environment` | `CharField(12)`, choices | `TEST` ("Teste") ou `PRODUCTION` ("Produção"). |
+| `status` | `CharField(10)` | `RUNNING`, `SUCCESS`, `FAILED`. |
+| `post_title` | `CharField(2000)` | Título entregue ao card (MIG-358). |
+| `post_date` | `DateField` | Data programada do post (MIG-358). |
+| `created_by` | `ForeignKey(AUTH_USER_MODEL)` | `null=True, blank=True`, `on_delete=SET_NULL`, `related_name='+'`. |
+| `created_at` | `DateTimeField` | `auto_now_add=True`. |
+| `finished_at` | `DateTimeField` | `null=True, blank=True`. |
+
+**Meta**: `ordering = ['-created_at']`. Relacionamento reverso: `passos` (`related_name` de `Generation.execucao`).
+
+## `apps.custos`
+
+Fonte: `backend/apps/custos/models.py`. Auditoria granular de consumo de tokens e custos de IA (MIG-411, MIG-468).
+
+### `PrecoModelo`
+
+Tabela de preços da OpenAI em dólares por 1 milhão de tokens. Fica no banco de dados para permitir atualização sem alterar retroativamente custos já calculados.
+
+| Campo | Tipo | Detalhe |
+|---|---|---|
+| `modelo` | `CharField(60)` | Nome do modelo (único, ex.: `gpt-4o-mini`, `gpt-image-1`). |
+| `entrada_usd_mtok` | `DecimalField(10, 4)` | US$/Mtok para tokens de entrada de texto. |
+| `entrada_cache_usd_mtok` | `DecimalField(10, 4)` | US$/Mtok para tokens em cache de prompt. |
+| `entrada_imagem_usd_mtok` | `DecimalField(10, 4)` | US$/Mtok para tokens de entrada de imagem. |
+| `saida_usd_mtok` | `DecimalField(10, 4)` | US$/Mtok para tokens de saída/geração. |
+| `observacao` | `CharField(255)` | Texto descritivo opcional. |
+| `atualizado_em` | `DateTimeField` | `auto_now=True`. |
+
+### `CotacaoDolar`
+
+Histórico diário da taxa de câmbio USD→BRL.
+
+| Campo | Tipo | Detalhe |
+|---|---|---|
+| `data` | `DateField` | Data da cotação (`unique=True`). |
+| `taxa` | `DecimalField(10, 4)` | Valor do dólar em reais. |
+| `fonte` | `CharField(20)`, choices | `awesomeapi`, `bcb` ou `manual`. |
+| `criado_em` | `DateTimeField` | `auto_now_add=True`. |
+
+A cotação diária é alimentada pelo cron `atualizar_cotacao` (`apps/custos/management/commands/atualizar_cotacao.py`). Na leitura da API (`linhas/`, detalhe), o sistema utiliza `taxa_vigente()` (última cotação gravada no banco), dispensando chamadas a fontes externas durante o polling.
+
+### `ChamadaIA`
+
+Registro individual congelado de cada chamada efetuada à OpenAI, com tokens e custo calculados na hora da requisição.
+
+| Campo | Tipo | Detalhe |
+|---|---|---|
+| `generation` | `ForeignKey(Generation)` | Vinculada à geração (`on_delete=CASCADE`, `related_name='chamadas'`). |
+| `modelo` | `CharField(60)` | Modelo utilizado. |
+| `etapa` | `CharField(60)` | Etapa da execução (ex.: `titulo`, `refino`, `legenda`). |
+| `tokens_entrada` | `IntegerField` | Tokens de entrada de texto. |
+| `tokens_entrada_cache` | `IntegerField` | Tokens de prompt recuperados do cache. |
+| `tokens_entrada_imagem` | `IntegerField` | Tokens consumidos por imagens de entrada. |
+| `tokens_saida` | `IntegerField` | Tokens gerados na resposta. |
+| `custo_usd` | `DecimalField(10, 6)` | Custo calculado em dólares congelado na criação. |
+| `estimado` | `BooleanField` | `True` se o custo foi estimado por aproximação. |
+| `sem_preco` | `BooleanField` | `True` se o modelo não possuía preço cadastrado. |
+| `criado_em` | `DateTimeField` | `auto_now_add=True`. |
+
 ## Migrations existentes
 
 | App | Migrations |
 |---|---|
 | `clients` | `0001_initial`, `0002_clientposthistory`, `0003_remove_volatile_variable_values` |
 | `prompts` | `0001_initial` |
-| `generations` | `0001_initial`, `0002_generation_stage` |
+| `generations` | `0001_initial` a `0009_generation_idempotency_key` |
+| `custos` | `0001_initial`, `0002_chamadaia_sem_preco` |
 | `posts` | (nenhuma — sem models) |
 
 <Columns cols={2}>
