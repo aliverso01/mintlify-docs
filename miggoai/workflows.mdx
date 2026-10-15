@@ -67,7 +67,7 @@ Passos internos:
 
 **Retorna** (chaves principais): `client_id`, `cliente_nome`, `briefing_texto`, `negocio`, `diferenciais`, `publico_alvo`, `posts_recentes` (texto formatado), `calendario_assunto`, `calendario_objetivo`, `calendario_macro_objetivo`, `calendario_tags`, `calendario_cta`, `cta_required`, `grid_url`, `instagram_handle`, `post_format`, `format_key`, `formato_motivo`, e `_raw` (dict com os objetos brutos — removido antes de expor via API).
 
-**Só os campos do briefing em `_BRIEFING_ALLOWED_KEYS`** (`context_builder.py:63-86`) entram no `briefing_texto` — campos técnicos/de integração do client-meta (EAV) nunca vazam para o prompt.
+**Só os campos do briefing em `_BRIEFING_ALLOWED_KEYS`** (`context_builder.py:63-86`) entram no `briefing_texto` — campos técnicos/de integração do client-meta (EAV) nunca vazam para o prompt. Com o MIG-396, a chave `brand_knowledge` (resumo dos materiais da marca gerado no backend-miggo) foi adicionada à lista permitida com o rótulo legível `- Materiais da marca:` (`_BRIEFING_LABELS`), formatada em linha única para não forjar novos campos na lista do prompt.
 
 ### `output_contract.py` — contrato de saída fixo
 
