@@ -120,12 +120,12 @@ Renderizado só dentro de `/app/*` (inclusive preview mode do admin). Mostra `We
 ### ClientsList — `/admin/clients`
 **Arquivo:** `src/pages/Clients/ClientsList.tsx` (1180 linhas)
 
-Gestão de clientes da carteira: tabela paginada com busca, criação de conta (usuário + client), edição, ativação/desativação, e gestão de assinatura (plano, preço, criação/edição/histórico).
+Gestão de clientes da carteira: tabela paginada com busca, criação de conta (usuário + client), edição, ativação/desativação, e gestão de assinatura (plano, preço, criação/edição/histórico). A lista conta com filtro **Trial** (*Todos* ou *Suspensos por trial* — MIG-399), inicializado automaticamente via `?suspenso_por_trial=1` quando acessado a partir da notificação da equipe, e exibe o selo **"Suspenso: trial"** sob o e-mail de clientes suspensos por fim de teste.
 
 **Endpoints:**
 | Método | Rota | Uso |
 |---|---|---|
-| GET | `/api/v1/client/list/?...` | listagem paginada (filtros de busca) |
+| GET | `/api/v1/client/list/?...` | listagem paginada (filtros de busca, incluindo `?suspenso_por_trial=1`) |
 | GET | `/api/v1/post/social-network/list/` | catálogo de redes |
 | GET | `/api/v1/post/platform-integration/list/` | integrações ativas por cliente |
 | GET | `/api/v1/subscription/plan/list/` | planos disponíveis |
@@ -138,6 +138,8 @@ Gestão de clientes da carteira: tabela paginada com busca, criação de conta (
 | DELETE | `/api/v1/account/delete/:userId/` | excluir conta |
 
 **Predefinições de Criação de Conteúdo** (`src/components/Clients/ContentPresetsModal.tsx`) é o modal aberto a partir desta tela. Desde a MIG-457 ele pergunta **duas coisas ortogonais**, não seis opções: *quando* usar foto real (`usage`: Sempre / Nunca / Alternar) e *de onde* ela vem (`use_stock`: **Só galeria do cliente** / **Galeria + banco Miggo**). Com `usage='never'` o segundo controle é desabilitado com explicação curta — não há foto real para buscar em lugar nenhum —, mas o backend aceita qualquer par. Lê e grava em `GET/PUT /api/v1/client/media-preference/<pk>/`; o modal também monta o switch do workflow do MiggoAI. Cliente que nunca configurou nada continua como estava (`use_stock` nasce `false`).
+
+Quando o cliente está com `suspenso_por_trial: true` (MIG-399), o modal exibe o alerta destacado com o selo **"Suspenso: trial expirado"**, avisando que a geração está parada pelo término do teste grátis e só é retomada com assinatura ativa ou prorrogação do teste (reforçando que ligar o switch do workflow não o reativa).
 
 Usa `runSubscriptionSyncAsync` (`src/services/subscriptionSync.ts`) para sincronizar assinatura, e cache local `getClientsWithMetaCache` (chave `miggo.clients-list.enriched.v1`).
 

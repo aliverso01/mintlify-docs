@@ -47,7 +47,7 @@ Representa o cliente final da plataforma — um `CustomUser` com papel `client` 
 | `onboarding_step` | `IntegerField` | Não | `default=0`, choices `ONBOARDING_STEP_CHOICES` (0–5) | Contador legado de marcos do onboarding — nunca regride |
 | `onboarding_skipped` | `BooleanField` | Não | `default=False` | Se o cliente escolheu pular o onboarding |
 | `niche` | `ForeignKey(Niche)` | Não | `null=True, blank=True`, `on_delete=PROTECT`, `related_name='clients'` | Nicho de mercado (MIG-456). **`NULL` = ainda não reclassificado**, não "sem nicho genérico" — a reclassificação da carteira é uma data migration posterior. `PROTECT`: nicho em uso não se apaga por acidente |
-| `miggoai_workflow_enabled` | `BooleanField` | Não | `default=False` | Workflow do agente MiggoAI ligado — o `generate_daily_contents` do miggoai-2.0 só gera para quem está `True`. Muda só pelo toggle `miggoai-workflow/<pk>/` (migration `0014`) |
+| `miggoai_workflow_enabled` | `BooleanField` | Não | `default=False` | Workflow do agente MiggoAI ligado — o `generate_daily_contents` do miggoai-2.0 só gera para quem está `True`. Muda só pelo toggle `miggoai-workflow/<pk>/` (migration `0014`). Ligar o toggle não reativa cliente suspenso por trial — a esteira diária usa `com_direito_de_publicacao` e só volta com assinatura ativa ou trial estendido |
 | `created_at` | `DateTimeField` | Não (auto) | `auto_now_add=True` | Data de criação |
 
 `ONBOARDING_STEP_CHOICES` (`app/client/models.py:5`): `0=Não iniciado`, `1=Conta verificada`, `2=Plano escolhido`, `3=Redes sociais conectadas`, `4=Brandkit enviado`, `5=Briefing preenchido (Completo)`.
@@ -238,6 +238,7 @@ Escopo: se o usuário autenticado é `role='client'`, o queryset é restrito ao 
 <ParamField path="user" type="int">Filtro exato</ParamField>
 <ParamField path="miggoai_workflow_enabled" type="bool">Filtro exato — usado pela geração diária do MiggoAI para listar só os clientes com o workflow ligado. **Com `true`, a lista passa a ser de elegíveis** (ver abaixo)</ParamField>
 <ParamField path="generation_requested_at__isnull" type="bool">`false` lista os clientes com pedido de geração pendente (MIG-356). **Também devolve só elegíveis**</ParamField>
+<ParamField path="suspenso_por_trial" type="bool">`1` ou `true` (MIG-399) — filtra clientes com geração suspensa por fim de teste grátis (`anotar_suspenso_por_trial`). Restrito a usuários de gestão (`is_management_user`); ignorado para clientes</ParamField>
 <ParamField path="integration" type="string">Filtra por plataforma integrada ativa (`icontains` em `platform_integrations__platform__name`)</ParamField>
 <ParamField path="lifecycle" type="string">Lista separada por vírgula — filtra pelo `lifecycle` anotado (`lead`, `active`, `unconverted`, `churned`, `inactive`)</ParamField>
 <ParamField path="stage" type="string">Lista separada por vírgula — filtra pela etapa real da esteira (`stage` anotado), distinto do `onboarding_step` legado</ParamField>
@@ -399,7 +400,7 @@ GET devolve a predefinição efetiva dos 4 formatos; PUT aplica um `mode` a um o
 
 Erros: `404` cliente não encontrado; `400` `formats` ausente, formato inválido, ou `mode` inválido (quando diferente de `auto`).
 
-O GET também devolve `miggoai_workflow_enabled` (estado do toggle do agente MiggoAI), que o modal **Predefinições de Criação de Conteúdo** (`frontend-miggo/src/components/Clients/ContentPresetsModal.tsx`) usa para montar o switch.
+O GET também devolve `miggoai_workflow_enabled` (estado do toggle do agente MiggoAI) e `suspenso_por_trial` (booleano via `access.esta_suspenso_por_trial(client)`, MIG-399), que o modal **Predefinições de Criação de Conteúdo** (`frontend-miggo/src/components/Clients/ContentPresetsModal.tsx`) usa para montar o switch e exibir o alerta de suspensão por trial expirado.
 </Accordion>
 
 <Accordion title="GET/PUT /media-preference/<pk>/ — ClientMediaPreferenceView">
@@ -425,6 +426,11 @@ Liga/desliga o workflow do agente MiggoAI do cliente — grava `Client.miggoai_w
 
 <ResponseField name="client_id" type="int">Id do cliente</ResponseField>
 <ResponseField name="miggoai_workflow_enabled" type="bool">Estado gravado</ResponseField>
+<ResponseField name="suspenso_por_trial" type="bool">Se o cliente está suspenso por fim de teste grátis (MIG-399)</ResponseField>
+
+<Note>
+**Ligar o toggle não reativa um cliente suspenso por trial:** a esteira diária do MiggoAI filtra a carteira por `com_direito_de_publicacao` (`app.subscription.access`). O cliente suspenso só volta a receber geração automática quando assinar um plano ou tiver o prazo de teste estendido.
+</Note>
 
 Erros: `404` cliente não encontrado; `400` `enabled` ausente ou não booleano.
 </Accordion>
@@ -508,9 +514,9 @@ Erros: `400` `values` ausente/inválido ou valor de campo excedendo o limite de 
 
 ### ClientSerializer (`app/client/serializers.py:4`)
 
-Campos expostos: `id`, `user`, `hash`, `name`, `email`, `phone`, `active`, `company`, `brand_name`, `subscription`, `billing_email`, `onboarding_step`, `onboarding`, `lifecycle`, `created_at`, `miggoai_workflow_enabled`.
+Campos expostos: `id`, `user`, `hash`, `name`, `email`, `phone`, `active`, `company`, `brand_name`, `subscription`, `billing_email`, `onboarding_step`, `onboarding`, `lifecycle`, `created_at`, `miggoai_workflow_enabled`, `generation_requested_at`, `allowed_social_network_ids`, `suspenso_por_trial`.
 
-Somente leitura: `id`, `created_at`, `hash`, `user`, `miggoai_workflow_enabled` (só muda pelo toggle `miggoai-workflow/<pk>/`).
+Somente leitura: `id`, `created_at`, `hash`, `user`, `miggoai_workflow_enabled` (só muda pelo toggle `miggoai-workflow/<pk>/`), `generation_requested_at`, `allowed_social_network_ids`, `suspenso_por_trial`.
 
 Campos calculados (`SerializerMethodField`):
 - **`brand_name`** — itera `obj.meta.all()` (prefetch) procurando `key='brand_name'`; se não achar, cai em `obj.company`. Evita query extra por cliente.
@@ -518,6 +524,7 @@ Campos calculados (`SerializerMethodField`):
 - **`onboarding`** — delega a `lifecycle.stage_payload(obj)` (etapa real da esteira).
 - **`lifecycle`** — lê a anotação `obj.lifecycle` se presente (setada por `annotate_lifecycle` na view); sem ela, resolve na hora consultando `Subscription` diretamente (uso avulso do serializer, fora da listagem anotada).
 - **`billing_email`** — busca `key='billing_email'` em `obj.user.meta.all()` (prefetch `user__meta`).
+- **`suspenso_por_trial`** (MIG-399) — lê a anotação `obj.suspenso_por_trial` setada por `anotar_suspenso_por_trial` na listagem (sem N+1) ou resolve via `access.esta_suspenso_por_trial(obj)`. Exclusivo da equipe de gestão (`is_management_user`): em `to_representation`, o campo é removido se o usuário autenticado for cliente final.
 
 **`update(self, instance, validated_data)`** (`app/client/serializers.py:81-87`): se `email` mudar, também atualiza `instance.user.email` e salva (`update_fields=['email']`) antes de chamar `super().update()` — mantém `Client.email` e `CustomUser.email` sincronizados.
 
@@ -625,6 +632,13 @@ A checagem de assinatura usa `getattr(client, 'current_subscription', None)` (`a
 ### Management command `fix_active_onboarding` (`app/client/management/commands/fix_active_onboarding.py`)
 
 Correção manual (produção) para destravar clientes ativos presos no `OnboardingGuard` do frontend. Roda em **dry-run por padrão**; `--apply` grava de fato. Marca `onboarding_step = 5` e, se existir `OnboardingSession`, fecha (`completed_at = now()`, `current_step = 'done'`). Filtros: `--email`, `--client-id`, `--created-before YYYY-MM-DD`, `--with-subscription` (só `ACTIVE`/`TRIAL`), `--mark-skipped`, `--batch-size` (padrão 200, processado em transações). Um erro em um cliente não derruba o lote (captura exceção por cliente).
+
+### Suspensão por trial (`app.subscription.access`)
+
+MIG-399: a suspensão da geração ao expirar o teste grátis é um filtro de leitura (`com_direito_de_publicacao`) e não altera campos na tabela `Client`. O app `client` consome dois helpers de `app.subscription.access`:
+
+- **`anotar_suspenso_por_trial(queryset)`**: anota `suspenso_por_trial` (booleano) via subquery `Exists`, sem N+1, para uso na listagem `ListClientsView` (suportando o filtro `?suspenso_por_trial=1`) e no serializer `ClientSerializer`.
+- **`esta_suspenso_por_trial(client)`**: versão unitária para um único cliente, usada no detalhe e nos modais administrativos (`ClientSignaturePreferenceView` e `ClientMiggoAIWorkflowView`).
 
 ## Erros comuns / pontos de atenção
 

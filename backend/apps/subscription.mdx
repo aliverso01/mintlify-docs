@@ -24,7 +24,7 @@ O processamento de webhooks da Stripe em tempo real **não vive neste app** — 
 | `app/subscription/apps.py` | `AppConfig` padrão (`app.subscription`). |
 | `app/subscription/stripe_gateway.py` | Camada única de acesso à Stripe: configuração de API key, mapas de status, resolução de Customer/Client/PlanPrice, espelhamento de `Subscription`/`Invoice`, operações de checkout/portal/cancelamento. |
 | `app/subscription/asaas_gateway.py` | Equivalente ao `stripe_gateway` para o Asaas: chamada HTTP, mapas de status, espelhamento de pagamento em `Invoice`. |
-| `app/subscription/access.py` | **Ponto único** de duas perguntas sobre assinatura: `pode_publicar(client)` (direito de entrega, MIG-394), `com_direito_de_publicacao(queryset)` (a mesma pergunta para um conjunto, MIG-399) e `e_pagante_ativo(client)` (direito de pagante, MIG-387). Ver [Direito de entrega x direito de pagante](#direito-de-entrega-x-direito-de-pagante-access-py). |
+| `app/subscription/access.py` | **Ponto único** de duas perguntas sobre assinatura: `pode_publicar(client)` (direito de entrega, MIG-394), `com_direito_de_publicacao(queryset)` (a mesma pergunta para um conjunto, MIG-399) e `e_pagante_ativo(client)` (direito de pagante, MIG-387); mais `anotar_suspenso_por_trial` e `esta_suspenso_por_trial` (suspensão por fim de teste, MIG-399). Ver [Direito de entrega x direito de pagante](#direito-de-entrega-x-direito-de-pagante-access-py). |
 | `app/subscription/fidelity.py` | Regras de permanência mínima (fidelidade): cálculo do fim do compromisso, mensalidades restantes, data de encerramento de cancelamento. |
 | `app/subscription/cron.py` | Rotinas agendadas: aviso de trial acabando, expiração de trial, dunning de faturas, suspensão por inadimplência, reconciliação Stripe/Asaas. |
 | `app/subscription/management/commands/check_invoices.py` | Management command que roda `cron.check_invoices()`. |
@@ -593,6 +593,23 @@ Funções principais:
 
 Fluxo em `CancelSubscriptionView` (`app/subscription/views.py:948-1088`): calcula `fidelity.resumo()`; se não é `immediate`, calcula `encerra_em = fidelity.data_de_encerramento(...)` e, se dentro da fidelidade, `cancel_at = fidelity.timestamp_stripe(fidelity.uma_hora_depois(fim))`, passado a `stripe_gateway.cancel_subscription(..., cancel_at=cancel_at)`. Local: grava `SubscriptionMeta.cancel_at` (chave `fidelity.META_CANCEL_AT`) com a data agendada — o status da `Subscription` só muda para `CANCELLED` quando é imediato ou quando não há `stripe_sub_id`; no cancelamento agendado o status muda depois, pelo webhook/sync quando a Stripe reportar `canceled`.
 
+### Direito de entrega e suspensão (`access.py`)
+
+O módulo `app/subscription/access.py` unifica a verificação de elegibilidade para publicação e entrega de conteúdo (MIG-394, MIG-399). A suspensão de geração de conteúdo para contas com trial vencido opera como um **filtro de leitura** e não altera flags nem grava status na tabela `Client`.
+
+**Regras de elegibilidade:**
+- **`ACTIVE`**: publica livremente sem olhar `expires_at` (a data representa a próxima cobrança, gerida pelo cron).
+- **`TRIAL`**: publica apenas enquanto `expires_at >= agora`.
+- **`UNPAID`**: publica durante a carência (`expires_at > agora - BILLING_GRACE_DAYS`, default 5 dias).
+- **`EXPIRED`**, **`CANCELLED`**, **`PAUSED`**, **`PENDING`** e clientes sem assinatura: não publicam.
+
+**Funções e helpers:**
+- **`pode_publicar(client) -> (bool, motivo)`**: predicado unitário. Quando `False`, `motivo` traz a mensagem de produto amigável para exibição em tela.
+- **`e_pagante_ativo(client) -> bool`**: irmão mais estrito de `pode_publicar` (MIG-387). `TRIAL` nunca é pagante, mesmo em vigor.
+- **`com_direito_de_publicacao(queryset)`**: filtra um queryset de `Client` retornando apenas os clientes que têm ao menos uma assinatura com direito ativo via subquery `_assinaturas_com_direito()`. Usado pela geração diária do MiggoAI para não produzir conteúdo para trials expirados.
+- **`anotar_suspenso_por_trial(queryset)`**: anota `suspenso_por_trial` (booleano) via subquery `Exists` em lote (sem N+1). Considera quem tem assinatura `EXPIRED` marcada por trial vencido (`SubscriptionMeta.key='status_reason'` iniciando com `status_reason.MOTIVO_TRIAL_VENCIDO`), avaliando apenas a assinatura **mais recente** do cliente (quem converteu para paga e cancelou depois não é suspenso por trial) e garantindo ausência de qualquer assinatura ativa em `_assinaturas_com_direito()`.
+- **`esta_suspenso_por_trial(client) -> bool`**: versão unitária de `anotar_suspenso_por_trial`, usada para checar um cliente isolado.
+
 ### Management commands (cron)
 
 Todos chamam funções de `app/subscription/cron.py`, são idempotentes e devolvem um resumo em dict logado. Agendados no Dokploy (comentários nos próprios arquivos):
@@ -607,7 +624,7 @@ Todos chamam funções de `app/subscription/cron.py`, são idempotentes e devolv
 ```
 
 - **`notify_trial_ending`** (`cron.py:95-158`) — avisa clientes em `TRIAL` local com `expires_at` batendo D-3 ou D-1 (`TRIAL_WARNING_DAYS = (3, 1)`); dispara notificação in-app + flow do ManyChat (`flow_ns='content20260818212324_989229'`); marca `SubscriptionMeta.trial_ending_notified_at` para não repetir em 20h. Só cobre trial local — trial com cartão já recebe aviso do evento Stripe `customer.subscription.trial_will_end`.
-- **`expire_trials`** (`cron.py:272-348`) — trials `TRIAL`/`trial=True` com `expires_at` vencido; antes de expirar, se houver `stripe_subscription_id` vinculado, relê na Stripe (a assinatura pode ter virado `active` sem o webhook chegar); só marca `EXPIRED` se não confirmar `ACTIVE`/`TRIAL` remotamente; falha de rede não expira ninguém (fica para o próximo ciclo). Na transição `TRIAL → EXPIRED` dispara também o **aviso de fim de teste no WhatsApp** (`_avisar_fim_do_teste`, abaixo).
+- **`expire_trials`** (`cron.py:272-348`) — trials `TRIAL`/`trial=True` com `expires_at` vencido; antes de expirar, se houver `stripe_subscription_id` vinculado, relê na Stripe (a assinatura pode ter virado `active` sem o webhook chegar); só marca `EXPIRED` se não confirmar `ACTIVE`/`TRIAL` remotamente; falha de rede não expira ninguém (fica para o próximo ciclo). Na transição `TRIAL → EXPIRED` dispara também o **aviso de fim de teste no WhatsApp** (`_avisar_fim_do_teste`, abaixo). Ao expirar, registra o motivo em `SubscriptionMeta` (`MOTIVO_TRIAL_VENCIDO`) e **notifica a equipe de gestão** via `_avisar_equipe_trial_expirado` (`notify_admins`, tipo `trial_expired`) com nome do cliente, data de término e link para `/admin/clients?suspenso_por_trial=1` (deduplicado, uma vez só). Falha nos disparos é logada e não reverte a expiração.
 - **`_avisar_fim_do_teste(subscription)`** (`cron.py:217-269`, MIG-453) — manda o flow do ManyChat de "seu teste terminou". Antes o disparo era um *delay* dentro do próprio flow, contando dias corridos desde o cadastro: trial postergado pelo Admin avisava na data errada. Agora o aviso nasce colado na transição `TRIAL → EXPIRED`, obedecendo o mesmo `expires_at` que corta o acesso — e, por ser transição de status, sai uma vez só.
 
   O `flow_ns` vem da env **`TRIAL_ENDED_FLOW_ID`**, sem default. Todo desfecho fica em `Integration` (`service='sendFlow Trial Ended'`, `method='CRON'`, `path='/cron/billing/expire_trials'`, helper `_log_trial_ended`):
