@@ -37,7 +37,7 @@ Consolida 20 cards de produto entregues na sprint, a partir do código da `main`
 
 ### 🔌 Contratos de API e integrações
 
-- **Grid (MIG-427, 463, 467):** `idempotency_key` no `POST /api/generations/grid/` e `GET /grid/by-key/<chave>/`; geração `PENDING`/`RUNNING` parada há mais de 15 min expira como `FAILED`; recusa do filtro de segurança da OpenAI volta `422 content_policy` e o backend não retenta (MIG-466 leva categoria e Request ID ao aviso da equipe).
+- **Grid (MIG-427, 463, 467):** `idempotency_key` no `POST /api/generations/grid/` e `GET /grid/by-key/<chave>/`; geração `PENDING`/`RUNNING` parada há mais de 15 min expira como `FAILED`; recusa do filtro de segurança da OpenAI volta `422 content_policy` e o backend não retenta; repetir a mesma `idempotency_key` já recusada devolve o mesmo `422` sem chamar a OpenAI, e só chave nova gera de novo (MIG-466 leva categoria e Request ID ao aviso da equipe).
 - **Disparo imediato (MIG-379):** `gerar-agora/` e `gerar-card/` respondem `202` com `status` `aceito` ou `na_fila`; "imediato" só sai com `aceito`.
 - **Publicação (MIG-454):** `POST check-status`, webhook de status do Zernio e o comando `reconcile_zernio_posts`; timeout deixa de marcar falha e vira **Enviando**.
 - **Acervo de imagens (MIG-455, 456, 457, 371):** `/api/v1/media/acervo/` (admin), escopo Global x cliente/nicho, predefinição de foto real em duas dimensões, importação do Pixabay.

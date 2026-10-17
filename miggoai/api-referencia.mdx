@@ -183,7 +183,7 @@ Os dois só tomam o lock na thread da requisição — é a única forma de a re
 
 <ResponseField name="200 OK" type="object">`{image_b64, generation_id, reused}`. `reused: true` quando a peça já existia para aquela chave — **não gerou nem cobrou de novo**.</ResponseField>
 <ResponseField name="409 Conflict" type="object">`{status, generation_id, detail}` — a geração daquela chave está `PENDING`/`RUNNING`. Não inicia outra: é a trava que evita a segunda cobrança.</ResponseField>
-<ResponseField name="422 Unprocessable Entity" type="object">`{error, error_kind: 'content_policy', generation_id}` — a OpenAI recusou o pedido pelo filtro de segurança (MIG-467; código `moderation_blocked` ou "rejected by the safety system"), depois dos fallbacks de anexo e de peça anterior. Repetir o mesmo pedido será recusado de novo: quem chama **não** deve retentar. O tipo fica em `Generation.result = {'error_kind': 'content_policy'}`.</ResponseField>
+<ResponseField name="422 Unprocessable Entity" type="object">`{error, error_kind: 'content_policy', generation_id}` — a OpenAI recusou o pedido pelo filtro de segurança (MIG-467; código `moderation_blocked` ou "rejected by the safety system"), depois dos fallbacks de anexo e de peça anterior. Repetir o mesmo pedido será recusado de novo: quem chama **não** deve retentar. **O MiggoAI também barra por chave** (MIG-467): `idempotency_key` cuja geração anterior está `FAILED` por `content_policy` devolve o mesmo `422`, com o `generation_id` original, **sem chamar a OpenAI nem `run_workflow`** (`_resposta_de_recusa`). Só uma chave nova (pedido alterado: o `backend-miggo` rotaciona a chave ao trocar referência ou feedback) gera de novo. O tipo fica em `Generation.result = {'error_kind': 'content_policy'}`.</ResponseField>
 <ResponseField name="502 Bad Gateway" type="object">`{error, generation_id}` — a peça não saiu (`FAILED` ou geração sem imagem). É "não produziu", não "pedido errado". Recusa de conteúdo não cai aqui: é o `422`.</ResponseField>
 
 O que a chave faz em cada estado:
@@ -194,7 +194,8 @@ O que a chave faz em cada estado:
 | inexistente | gera, cobra e grava a chave na `Generation`; `reused: false` |
 | `SUCCESS` | devolve a peça já gerada, `reused: true`, **sem gerar nem cobrar** |
 | `PENDING`/`RUNNING` | `409`, sem iniciar outra |
-| `FAILED` | re-executa sob a **mesma** `Generation` (a chave é unique); só cobra se concluir |
+| `FAILED` comum (`502`) | re-executa sob a **mesma** `Generation` (a chave é unique); só cobra se concluir |
+| `FAILED` por `content_policy` | `422` com `error_kind: 'content_policy'`, **sem gerar nem chamar a OpenAI**; só chave nova destrava |
 | de outro `client_id` | `400` — a chave é de uma geração de um cliente só |
 
 Corrida entre duas chamadas com a mesma chave: o `unique` do banco é a guarda final; o `IntegrityError` é capturado: `SUCCESS` do vencedor → `200` `reused: true`; outro estado → `409`; vencedor de outro cliente ou inexistente → a exceção sobe (`500`). Nada foi gerado nem cobrado no perdedor.
