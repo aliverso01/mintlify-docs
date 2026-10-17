@@ -28,7 +28,7 @@ Todos são idempotentes e devolvem um resumo em `dict`.
 | Comando | Frequência | Função | O que faz |
 | --- | --- | --- | --- |
 | `notify_trial_ending` | 1x/dia | `notify_trial_ending()` | Avisa o cliente de que o teste está acabando |
-| `expire_trials` | 1x/dia | `expire_trials()` | Encerra os testes vencidos, avisa o cliente (in-app e WhatsApp) e notifica a equipe de gestão com link para a lista filtrada (`/admin/clients?suspenso_por_trial=1`) |
+| `expire_trials` | 1x/dia | `expire_trials()` | Encerra os testes vencidos, avisa o cliente (in-app e WhatsApp) e notifica os admins (`role='admin'`) com link para a lista filtrada (`/admin/clients?suspenso_por_trial=1`) |
 | `check_invoices` | 1x/dia | `check_invoices()` | Reconcilia o estado das faturas |
 | `check_subscriptions` | 1x/dia | `check_subscriptions()` | Reconcilia o estado das assinaturas |
 | `sync_stripe_billing` | a cada 6h | `sync_stripe_billing(limit=None)` | Sincroniza cobrança da Stripe |
@@ -40,7 +40,7 @@ Todos são idempotentes e devolvem um resumo em `dict`.
 | Função | O que faz |
 | --- | --- |
 | `_notify_client(client, notification_type, title, message, link='/billing')` | Cria a notificação para o cliente |
-| `_avisar_equipe_trial_expirado(subscription)` | Notifica a equipe de gestão (`notify_admins`, tipo `trial_expired`) com link para `/admin/clients?suspenso_por_trial=1` |
+| `_avisar_equipe_trial_expirado(subscription)` | Notifica os admins (`notify_admins`, tipo `trial_expired`, sem dedupe) com link para `/admin/clients?suspenso_por_trial=1` |
 | `_already_notified(subscription, key, within_hours=20)` | Evita notificar o mesmo assunto duas vezes na janela |
 | `_mark_notified(subscription, key)` | Marca o aviso como enviado |
 | `_log_cron_integration(client, path, payload, response, status_code=200)` | Registra a execução na tabela `Integration` |
