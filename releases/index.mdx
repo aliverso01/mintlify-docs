@@ -5,8 +5,71 @@ icon: "clock-rotate-left"
 ---
 
 <Note>
-**Versão atual da plataforma:** `v2.1.0` · Deploy de produção realizado na madrugada de 11/10/2026.
+**Versão atual da plataforma:** `v2.2.0` (número proposto pela regra de cadência de [Proposta de versionamento](/releases/proposta-versionamento), ainda sem aprovação; `frontend-miggo/package.json` segue em `2.1.0`) · Release de 17/10/2026.
 </Note>
+
+<Update label="17/10/2026" description="v2.2.0">
+
+## Release v2.2.0 (17/10/2026)
+
+Consolida 20 cards de produto entregues na sprint, a partir do código da `main` dos três repositórios. Fora da release: MIG-293, MIG-458 e MIG-460 (sem código na `main`) e o retorno do MIG-467 (PR do `miggoai_v2` ainda não mergeado).
+
+### 🗄️ Migrações de banco de dados
+
+- **`backend-miggo`**:
+  - `app/client`: `0021_brandmaterial` (MIG-396), `0021_niche_client_niche` e `0022_seed_niche_nao_informado` (MIG-456), `0023_clientmediapreference_use_stock` (MIG-457) e `0024_merge_20261015_2043` (une as duas folhas `0021`).
+  - `app/media`: `0014_stockphoto` (MIG-455), `0015_stockphoto_clientes_permitidos_stockphoto_escopo_and_more` (MIG-456), `0016_stockphotousage` (MIG-457), `0017_stockphoto_fonte_externa` (MIG-371).
+  - `app/post`: `0038_postpublication_permalink_status_sending` (MIG-454) e `0039_post_title_textfield` (MIG-358, `Post.title` de `CharField(2000)` para `TextField`).
+- **`miggoai-2.0/miggoai_v2`** (`apps.generations`): `0009_generation_idempotency_key` (MIG-427), `0010_generation_updated_at` (MIG-463), `0011_post_title_textfield` (MIG-358).
+
+<Warning>
+**Ordem de deploy (MIG-358):** o `backend-miggo` com a migration `0039` precisa estar no ar **antes** do `miggoai_v2`. O MiggoAI deixou de truncar o título em 2000 caracteres; contra o `Post.title` antigo, o `PATCH` de entrega de um carrossel longo volta `400`.
+</Warning>
+
+### ⚙️ Variáveis de ambiente novas
+
+| Variável | Serviço | Para quê |
+| :--- | :--- | :--- |
+| `ZERNIO_WEBHOOK_TOKEN` | `backend-miggo` | Autentica `/webhooks/zernio/status/`. Sem ela o webhook responde `503` e recusa todo evento (MIG-454). |
+| `ZERNIO_PUBLISH_TIMEOUT` | `backend-miggo` | Espera nas chamadas de publicação ao Zernio; default `120` s (MIG-454). |
+| `TRIAL_ENDED_FLOW_ID` | `backend-miggo` | Flow do ManyChat de "seu teste terminou". Vazia, o aviso não sai (MIG-453). |
+| `ACERVO_SERVICE_TOKEN` | `backend-miggo` e `miggoai_v2` | Credencial de serviço do acervo. **A mesma string nos dois `.env`**; ausente, o MiggoAI gera só com a galeria do cliente (MIG-457). |
+
+### 🔌 Contratos de API e integrações
+
+- **Grid (MIG-427, 463, 467):** `idempotency_key` no `POST /api/generations/grid/` e `GET /grid/by-key/<chave>/`; geração `PENDING`/`RUNNING` parada há mais de 15 min expira como `FAILED`; recusa do filtro de segurança da OpenAI volta `422 content_policy` e o backend não retenta (MIG-466 leva categoria e Request ID ao aviso da equipe).
+- **Disparo imediato (MIG-379):** `gerar-agora/` e `gerar-card/` respondem `202` com `status` `aceito` ou `na_fila`; "imediato" só sai com `aceito`.
+- **Publicação (MIG-454):** `POST check-status`, webhook de status do Zernio e o comando `reconcile_zernio_posts`; timeout deixa de marcar falha e vira **Enviando**.
+- **Acervo de imagens (MIG-455, 456, 457, 371):** `/api/v1/media/acervo/` (admin), escopo Global x cliente/nicho, predefinição de foto real em duas dimensões, importação do Pixabay.
+- **Custos (MIG-412, 468):** `GET /api/custos/dashboard/`, comando `estimar_custo_historico`, custo por geração na tela de Gerações, polling de 5 s.
+- **Assinatura (MIG-387, 399, 453):** `app/subscription/access.py` (direito de entrega e de pagante), esteira do MiggoAI só com clientes elegíveis, aviso à equipe de trial expirado e aviso de fim de teste pelo WhatsApp.
+
+### 📋 Cards entregues na release
+
+| Card | Repositórios | Tipo | Resumo técnico |
+| :--- | :--- | :--- | :--- |
+| **MIG-247** | MiggoAI | Feature | Banner sem logo e tipografia com hierarquia; pedido de ajuste que não fala da arte reaproveita a arte. |
+| **MIG-358** | Backend, Frontend, MiggoAI | Bugfix | Título do carrossel guarda o texto de todos os cards (separador `---`), sem teto; `Post.title` e `post_title` viram `TextField`. |
+| **MIG-371** | Backend, Frontend | Feature | Importação de imagens do Pixabay para o acervo; Acervo Miggo vira aba de Referências. |
+| **MIG-379** | Backend, MiggoAI | Bugfix | "Criar agora" só diz imediato quando o MiggoAI aceitou. |
+| **MIG-387** | Backend, Frontend | Feature | Paywall de Meus benefícios: corte no serializer e `403` no submit. |
+| **MIG-396** | Backend, Frontend, MiggoAI | Feature | Reanálise do Instagram com revisão e materiais da marca (`brand_knowledge`). |
+| **MIG-399** | Backend, Frontend, MiggoAI | Feature | Trial expirado sai da esteira diária; aviso à equipe e filtro `suspenso_por_trial`. |
+| **MIG-412** | MiggoAI | Feature | Dashboard financeiro e estimativa retroativa de custo. |
+| **MIG-427** | Backend, MiggoAI | Resiliência | Idempotência da geração do grid; recuperação do grid já pago. |
+| **MIG-453** | Backend | Feature | Aviso de fim de teste no WhatsApp sai do backend, por `expires_at`. |
+| **MIG-454** | Backend, Frontend | Feature | Status da publicação no Zernio; botão "Verificar status". |
+| **MIG-455** | Backend, Frontend | Feature | Acervo interno de imagens da Miggo. |
+| **MIG-456** | Backend, Frontend | Feature | Escopo Global x cliente/nicho no acervo. |
+| **MIG-457** | Backend, Frontend, MiggoAI | Feature | Predefinição de foto real em duas dimensões; Orquestrador enxerga o banco Miggo. |
+| **MIG-459** | Backend | Bugfix | Reconcilia o espelho do grid concluído no cron `generate_pending_grids`. |
+| **MIG-462** | MiggoAI | Bugfix | Rodada diária não gera para cliente sem grid e mantém o pedido. |
+| **MIG-463** | MiggoAI | Bugfix | Expira geração de grid órfã. |
+| **MIG-466** | Backend, Frontend | UX | Aviso de moderação da OpenAI traz categoria e Request ID. |
+| **MIG-467** | Backend, MiggoAI | Resiliência | Recusa do filtro de conteúdo da OpenAI não é retentada no grid. |
+| **MIG-468** | MiggoAI | Feature | Custo por geração, paginação no banco e polling de 5 s. |
+
+</Update>
 
 <Update label="11/10/2026" description="v2.1.0">
 
