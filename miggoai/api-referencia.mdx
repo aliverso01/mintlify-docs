@@ -214,7 +214,7 @@ Existe porque no caso da MIG-427 o chamador **nunca recebeu o pk**: o POST estou
 
 **GET `/api/generations/linhas/`**
 
-Listagem principal da tela de Gerações (`frontend/src/pages/Geracoes.tsx`). Consulta unificada de execuções completas (`Execucao`) e gerações avulsas (`Generation`), paginada diretamente no banco de dados via `UNION` com `limit`/`offset` (MIG-468) para suportar o polling de 2 s.
+Listagem principal da tela de Gerações (`frontend/src/pages/Geracoes.tsx`). Consulta unificada de execuções completas (`Execucao`) e gerações avulsas (`Generation`), paginada diretamente no banco de dados via `UNION` com `limit`/`offset` (MIG-468) para suportar o polling de 5 s.
 
 <ParamField path="page" type="integer">Número da página (mínimo 1, default 1).</ParamField>
 <ParamField path="page_size" type="integer">Itens por página (default 50, limitado a 200 via `PAGE_SIZE_MAX`).</ParamField>
@@ -227,12 +227,12 @@ Listagem principal da tela de Gerações (`frontend/src/pages/Geracoes.tsx`). Co
 <ResponseField name="count" type="integer">Total de registros (execuções + avulsas).</ResponseField>
 <ResponseField name="page" type="integer">Página atual.</ResponseField>
 <ResponseField name="total_pages" type="integer">Total de páginas disponíveis.</ResponseField>
-<ResponseField name="results" type="array">Linhas ordenadas por data decrescente (em empate, execução precede geração avulsa). Cada linha traz o tipo (`execucao` ou `geracao`), os campos do serializer correspondente e o bloco `custo`.</ResponseField>
+<ResponseField name="results" type="array">Linhas ordenadas por data decrescente (em empate, execução precede geração avulsa). Cada linha traz `tipo` (`execucao` ou `geracao`) e o bloco `custo`. Execução: campos do `ExecucaoSerializer` (resumo dos passos). Avulsa: `id`, `workflow_key`, `client_id`, `client_name`, `post_id`, `environment`, `post_title`, `post_date`, `status`, `created_at`, `image_urls`.</ResponseField>
 
 #### Estrutura do bloco `custo`
 Consolida as chamadas (`ChamadaIA`) da geração ou dos passos da execução:
 - `usd`: string decimal com 6 casas (`0.000000`).
-- `brl`: string decimal com 2 casas ou `null` caso não haja cotação. Convertido via `cambio.taxa_vigente()`, lendo a cotação mais recente gravada no banco local sem chamadas HTTP externas durante o polling de 2 s.
+- `brl`: string decimal com 2 casas ou `null` caso não haja cotação. Convertido via `cambio.taxa_vigente()`, lendo a cotação mais recente gravada no banco local sem chamadas HTTP externas durante o polling de 5 s.
 - `estimado`: booleano (`true` se alguma chamada usou precificação estimada).
 - `sem_preco`: booleano (`true` se algum modelo chamado não possuía tabela de preço cadastrada).
 - `chamadas`: número inteiro de chamadas de IA. Quando `chamadas === 0`, indica que não houve consumo medido (a tela exibe "—" para não apresentar um zero falso).

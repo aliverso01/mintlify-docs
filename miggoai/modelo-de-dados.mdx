@@ -258,7 +258,7 @@ MIG-329: agrupa múltiplos passos executados em conjunto (geração completa dos
 | `post_id` | `PositiveIntegerField` | `null=True, blank=True`. |
 | `environment` | `CharField(12)`, choices | `TEST` ("Teste") ou `PRODUCTION` ("Produção"). |
 | `status` | `CharField(10)` | `RUNNING`, `SUCCESS`, `FAILED`. |
-| `post_title` | `CharField(2000)` | Título entregue ao card (MIG-358). |
+| `post_title` | `TextField` | `blank=True, default=''`. Título entregue ao card (MIG-358). |
 | `post_date` | `DateField` | Data programada do post (MIG-358). |
 | `created_by` | `ForeignKey(AUTH_USER_MODEL)` | `null=True, blank=True`, `on_delete=SET_NULL`, `related_name='+'`. |
 | `created_at` | `DateTimeField` | `auto_now_add=True`. |
@@ -295,7 +295,7 @@ Histórico diário da taxa de câmbio USD→BRL.
 | `fonte` | `CharField(20)`, choices | `awesomeapi`, `bcb` ou `manual`. |
 | `criado_em` | `DateTimeField` | `auto_now_add=True`. |
 
-A cotação diária é alimentada pelo cron `atualizar_cotacao` (`apps/custos/management/commands/atualizar_cotacao.py`). Na leitura da API (`linhas/`, detalhe), o sistema utiliza `taxa_vigente()` (última cotação gravada no banco), dispensando chamadas a fontes externas durante o polling.
+A cotação do dia é gravada pelo cron `atualizar_cotacao` (`apps/custos/management/commands/atualizar_cotacao.py`; `--forcar` rebusca mesmo com a linha do dia gravada) ou, sem cron, sob demanda por `cambio.cotacao_do_dia()` no primeiro acesso que precisar dela. A listagem e os detalhes de gerações (`linhas/`, `execucoes/<pk>/`, `<pk>/`) usam `taxa_vigente()`, só leitura do banco: nunca chamam fonte externa.
 
 ### `ChamadaIA`
 
@@ -303,17 +303,23 @@ Registro individual congelado de cada chamada efetuada à OpenAI, com tokens e c
 
 | Campo | Tipo | Detalhe |
 |---|---|---|
-| `generation` | `ForeignKey(Generation)` | Vinculada à geração (`on_delete=CASCADE`, `related_name='chamadas'`). |
+| `generation` | `ForeignKey(Generation)` | `null=True, blank=True`, `on_delete=SET_NULL`, `related_name='chamadas_ia'` — nula no que roda fora de uma geração (grid do onboarding); a linha ainda conta no gasto total. |
+| `client_id` | `PositiveIntegerField` | `null=True, blank=True`, indexado. |
+| `operacao` | `CharField(20)`, choices | `chat`, `imagem_edit` ou `imagem_gen`. |
+| `environment` | `CharField(12)` | `blank=True, default=''`. |
 | `modelo` | `CharField(60)` | Modelo utilizado. |
-| `etapa` | `CharField(60)` | Etapa da execução (ex.: `titulo`, `refino`, `legenda`). |
-| `tokens_entrada` | `IntegerField` | Tokens de entrada de texto. |
-| `tokens_entrada_cache` | `IntegerField` | Tokens de prompt recuperados do cache. |
-| `tokens_entrada_imagem` | `IntegerField` | Tokens consumidos por imagens de entrada. |
-| `tokens_saida` | `IntegerField` | Tokens gerados na resposta. |
-| `custo_usd` | `DecimalField(10, 6)` | Custo calculado em dólares congelado na criação. |
+| `etapa` | `CharField(60)` | Etapa da execução (ex.: `titulo`, `imagem`, `legenda`, `hashtags`, `arte_banner`). |
+| `tokens_entrada` | `PositiveIntegerField` | Tokens de entrada de texto. |
+| `tokens_entrada_cache` | `PositiveIntegerField` | Tokens de prompt recuperados do cache. |
+| `tokens_entrada_imagem` | `PositiveIntegerField` | Tokens consumidos por imagens de entrada. |
+| `tokens_saida` | `PositiveIntegerField` | Tokens gerados na resposta. |
+| `imagens` | `PositiveSmallIntegerField` | `default=0` — imagens cobradas na chamada. |
+| `custo_usd` | `DecimalField(12, 6)` | Custo calculado em dólares congelado na criação. |
 | `estimado` | `BooleanField` | `True` se o custo foi estimado por aproximação. |
 | `sem_preco` | `BooleanField` | `True` se o modelo não possuía preço cadastrado. |
-| `criado_em` | `DateTimeField` | `auto_now_add=True`. |
+| `criado_em` | `DateTimeField` | `default=timezone.now`, indexado (não é `auto_now_add`: a estimativa retroativa grava com a data da geração original). |
+
+**Meta**: `ordering = ['-criado_em']`; índice em `(client_id, criado_em)`.
 
 ## Migrations existentes
 
@@ -321,7 +327,7 @@ Registro individual congelado de cada chamada efetuada à OpenAI, com tokens e c
 |---|---|
 | `clients` | `0001_initial`, `0002_clientposthistory`, `0003_remove_volatile_variable_values` |
 | `prompts` | `0001_initial` |
-| `generations` | `0001_initial` a `0009_generation_idempotency_key` |
+| `generations` | `0001_initial` a `0011_post_title_textfield` |
 | `custos` | `0001_initial`, `0002_chamadaia_sem_preco` |
 | `posts` | (nenhuma — sem models) |
 

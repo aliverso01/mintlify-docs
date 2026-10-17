@@ -103,12 +103,12 @@ miggoai-2.0/miggoai_v2/
 
 ## Polling e custos de geração
 
-A tela de Gerações (`frontend/src/pages/Geracoes.tsx`) monitora execuções e gerações em tempo real através de **polling a cada 2 s**, com otimizações para não onerar o servidor:
+A tela de Gerações (`frontend/src/pages/Geracoes.tsx`) monitora execuções e gerações com **polling a cada 5 s** (só a página 1, mesclada à lista já carregada) e rolagem infinita, com otimizações para não onerar o servidor:
 
-- **Paginação direto no banco**: `GET /api/generations/linhas/` realiza a união de execuções (`Execucao`) e gerações avulsas (`Generation`) via `UNION` ordenada direto no SQL (`chaves = execucoes.union(avulsas).order_by('-created_at', 'tipo', '-id')[start:start+page_size]`), com teto estrito de `page_size <= 200` (`PAGE_SIZE_MAX`). Antes da MIG-468 todos os registros eram carregados e ordenados em Python a cada chamada.
-- **Leitura de câmbio sem rede**: para converter valores em dólares para reais nas linhas da listagem, o endpoint usa `cambio.taxa_vigente()`, que lê apenas a última cotação já gravada na tabela `CotacaoDolar`. A busca de cotações em fontes externas (Banco Central / AwesomeAPI) é isolada no comando de cron `atualizar_cotacao` (rodado com `forcar=True`), impedindo chamadas externas bloqueantes durante os ciclos de 2 s.
-- **Sensibilidade de visibilidade**: o temporizador do frontend é pausado quando a aba do navegador fica oculta (`document.visibilityState !== "visible"`), economizando requisições quando o operador não está visualizando a tela.
-- **Tratamento de páginas dinâmicas**: caso o total de registros diminua enquanto o operador está numa página avançada (ex.: descarte ou limpeza de testes em lote), o frontend detecta `page > totalPages` e recua automaticamente para a última página válida.
+- **Paginação direto no banco**: `GET /api/generations/linhas/` realiza a união de execuções (`Execucao`) e gerações avulsas (`Generation`) via `UNION` ordenada direto no SQL (`values_list('tipo', 'id', 'created_at')` das duas consultas, `union(all=True)`, `order_by('-created_at', 'tipo', '-id')[start:start + page_size]`), com teto estrito de `page_size <= 200` (`PAGE_SIZE_MAX`). Antes da MIG-468 todos os registros eram carregados e ordenados em Python a cada chamada.
+- **Leitura de câmbio sem rede**: para converter valores em dólares para reais nas linhas da listagem, o endpoint usa `cambio.taxa_vigente()`, que lê apenas a última cotação já gravada na tabela `CotacaoDolar`. A busca em fontes externas (AwesomeAPI, com fallback no SGS do Banco Central) fica no cron `atualizar_cotacao --forcar` (`cambio.cotacao_do_dia(forcar=True)`) ou, sem cron, na primeira leitura do dia que precisar dela; a tela de Gerações nunca dispara essa busca durante o polling.
+- **Sensibilidade de visibilidade**: o tick é ignorado com a aba oculta (`document.visibilityState !== "visible"`) e dispara na hora quando ela volta a ficar visível (`visibilitychange`); um tick não empilha sobre outra chamada ainda em voo.
+- **Rolagem infinita**: a tela pede páginas de 30 (`PAGE_SIZE`) e, ao chegar ao fim da lista, busca a seguinte e acrescenta sem duplicar (chave `tipo-id`). O polling mescla a página 1 por `tipo`+`id` sem perder o que a rolagem já trouxe. Troca de filtro zera a lista e volta à página 1.
 
 ## Fluxo de geração (título → imagem → legenda → hashtags)
 
