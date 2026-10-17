@@ -131,7 +131,7 @@ Predefinição de uso de foto real nas gerações de imagem do MiggoAI — **um 
 |---|---|---|---|---|
 | `client` | `OneToOneField(Client)` | Sim | `on_delete=CASCADE`, `related_name='media_preference'` | — |
 | `usage` | `CharField(20)` | Não | choices `MEDIA_USAGE_CHOICES`, default `alternate` | **Dimensão 1 — quando** usar foto real: `always`, `never`, `alternate` |
-| `reuse_days` | `IntegerField` | Não | `DEFAULT_MEDIA_REUSE_DAYS` (30) | Janela anti-repetição. `0` desliga |
+| `reuse_days` | `PositiveSmallIntegerField` | Não | `DEFAULT_MEDIA_REUSE_DAYS` (30) | Janela anti-repetição, 0–365 (o PUT recusa fora disso). `0` desliga |
 | `use_stock` | `BooleanField` | Não | `default=False` | **Dimensão 2 — de onde** vem a foto (MIG-457): `False` = só a galeria do cliente; `True` = galeria **unida** ao banco Miggo elegível |
 
 **Duas dimensões ortogonais, não seis opções.** `usage` responde *quando*, `use_stock` responde *de onde*, e elas se combinam livremente: com `usage='never'` a segunda é inócua (não há foto real para buscar em lugar nenhum) — quem explica isso é a tela, o backend aceita qualquer par. O default `False` é o que mantém a política atual de quem já existe sem ninguém reconfigurar nada.
@@ -404,7 +404,7 @@ O GET também devolve `miggoai_workflow_enabled` (estado do toggle do agente Mig
 </Accordion>
 
 <Accordion title="GET/PUT /media-preference/<pk>/ — ClientMediaPreferenceView">
-Predefinição de foto real do cliente (`app/client/views.py:2009`). `IsManagementUser`. Quem **lê** é o MiggoAI, na geração de imagem.
+Predefinição de foto real do cliente (`app/client/views.py:2174`). `IsManagementUser`. Quem **lê** é o MiggoAI, na geração de imagem.
 
 **GET** devolve a preferência **efetiva** — o padrão quando não há registro — mais o que o formulário precisa:
 
@@ -415,8 +415,10 @@ Predefinição de foto real do cliente (`app/client/views.py:2009`). `IsManageme
 **PUT**
 
 <ParamField body="usage" type="string">`always` | `never` | `alternate`.</ParamField>
-<ParamField body="reuse_days" type="integer">Janela anti-repetição; `0` desliga.</ParamField>
+<ParamField body="reuse_days" type="integer">Janela anti-repetição, 0–365; `0` desliga.</ParamField>
 <ParamField body="use_stock" type="boolean">Dimensão 2 (MIG-457). **Ausente no corpo, não altera o valor gravado** — tratar a ausência como `False` desligaria o banco toda vez que alguém salvasse pela tela antiga.</ParamField>
+
+Erros: `400` com `usage` inválido ou `reuse_days` fora de 0–365; `404` cliente não encontrado. O PUT devolve o mesmo corpo do GET.
 </Accordion>
 
 <Accordion title="PUT /miggoai-workflow/<pk>/ — ClientMiggoAIWorkflowView">

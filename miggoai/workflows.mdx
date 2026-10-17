@@ -95,7 +95,7 @@ Ver detalhes em <a href="/miggoai/prompts">Prompts</a>. Define 4 contratos (`TIT
 1. Resolve tamanho (`IMAGE_FORMAT_SIZES`/`IMAGE_GEN_SIZES` de `openai_service`) pelo `format_key`.
 2. Exige `grid_url` no contexto — `RuntimeError` se ausente.
 3. Exige `texto_imagem` (`str` ou `list[str]`, 1 item por card no carrossel) — `RuntimeError` se ausente.
-4. **Sorteio 50/50** (`usar_midia_cliente = random.choice([True, False])`) decide se a galeria de mídia do cliente é CONSULTADA nesta geração (não qual foto — isso é decidido depois).
+4. **Predefinição `usage` do cliente** (`usar_midia_cliente = bool(media_id_forcado) or _deve_consultar_galeria(usage)`) decide se a galeria é CONSULTADA nesta geração: `always` sim, `never` não, `alternate` sorteio 50/50 (não qual foto — isso é decidido depois).
 5. Se consultada: busca `get_client_media_library`, e por card roda `media_matcher.rankear` (peneira léxica) seguido de `media_classifier.selecionar` (julgamento por IA da descrição). Toda a trilha de decisão (candidatos, score, motivo) é registrada em `midia_cliente` no resultado, para auditoria.
    - **Banco de imagens da Miggo** (MIG-457): se a preferência do cliente tem `use_stock=True`, o pool do banco é **unido ao da galeria** e segue o mesmo funil — `_deve_consultar_banco` é irmã de `_deve_consultar_galeria` e roda depois dela, então o banco só entra quando esta geração já ia usar foto real. Detalhe em [Banco de imagens no funil](#banco-de-imagens-no-funil-mig-457).
 6. `_resolver_marca` decide logo/assinatura: por padrão consulta a preferência salva no backend-miggo (`get_signature_preference`, MIG-266); `variable_overrides` com `marca_modo`/`assinatura_tipo`/`assinatura_texto` sobrescrevem pontualmente sem persistir.

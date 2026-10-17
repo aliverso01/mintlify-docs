@@ -45,7 +45,7 @@ Os únicos dados que o `backend-miggo` expõe e o MiggoAI consome:
 | Predefinição de foto real | `client/media-preference/<id>/` | `apps.clients.services.get_client_media_preference` (`usage`, `reuse_days`, `use_stock`) |
 | Banco de imagens elegível | `media/acervo/elegiveis/?client_id=&fadiga=1` | `apps.clients.services.get_acervo_elegiveis` — header `Acervo-Service-Token`, não a `MIGGO_API_KEY` (MIG-457) |
 
-**Escrita** — só a geração diária escreve no `backend-miggo` (`apps/generations/services/delivery.py`, via `miggo_client.post`/`patch`):
+**Escrita** — a geração diária escreve no `backend-miggo` (`apps/generations/services/delivery.py`, via `miggo_client.post`/`patch`); a exceção é o registro de uso do banco, feito pelo `runner` ao concluir qualquer geração de imagem (`post_acervo`):
 
 | Ação | Endpoint |
 |---|---|

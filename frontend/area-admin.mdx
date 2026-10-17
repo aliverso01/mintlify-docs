@@ -113,7 +113,7 @@ As telas exclusivas da equipe vivem em `src/pages/Admin/`. As demais rotas de `/
 
   **O que a MIG-456 acrescentou na tela**, todo item amarrado a um critério do card:
 
-  - **Badge de alocação no card da foto** — `Restrita · 2 clientes · 1 nicho` (âmbar), montado por `descreverAlocacao` em `acervoTypes.ts`. Global fica **neutra, sem badge**: marcar as duas poluiria o grid inteiro. Dá para ver de quem é a foto sem abrir.
+  - **Badge de alocação no card da foto** — `Restrita · 2 clientes · 1 nicho` (âmbar), montado por `resumoAlocacao` em `acervoTypes.ts`. Global fica **neutra, sem badge**: marcar as duas poluiria o grid inteiro. Dá para ver de quem é a foto sem abrir.
   - **Alerta `Sem vínculo — ninguém vê`** (vermelho, ao lado do badge) quando a API devolve `visivel_para_ninguem: true` — foto restrita e sem destinatário é válida, existe e não aparece para ninguém; a tela avisa em vez de deixar o silêncio.
   - **Filtro por escopo** — *Global e restritas* (default), *Somente globais*, *Somente restritas*; vira `?escopo=` na listagem.
   - **"Conferir como um cliente vê"** — seletor que troca a listagem para `GET /acervo/elegiveis/?client_id=`. Nessa visão os filtros de tag ficam desabilitados: o que se está conferindo é o pool do cliente, não uma busca. É a materialização do critério 4 e usa o mesmo `elegiveis_para` da seleção automática de imagem — se a tela e a geração divergissem, a conferência não valeria nada.
@@ -136,7 +136,7 @@ As telas administrativas consomem os mesmos apps do backend, em rotas ou filtros
 | E-mail marketing | [E-mail marketing](/backend/apps/emailmarketing) |
 | Notificações | [Notification](/backend/apps/notification) |
 | Cards parados | [Post](/backend/apps/post) |
-| Acervo Miggo | [Media](/backend/apps/media) — `/api/v1/media/acervo/{,<pk>/,nichos/,elegiveis/,uso/}` e `/api/v1/media/acervo/fontes/*`, `IsManagementUserOnly` |
+| Acervo Miggo | [Media](/backend/apps/media) — `/api/v1/media/acervo/{,<pk>/,nichos/,elegiveis/,uso/}` e `/api/v1/media/acervo/fontes/*`, `IsManagementUserOnly` (`elegiveis/` e `uso/` aceitam também o `Acervo-Service-Token`) |
 | Benefícios | `/api/v1/benefits/admin/*` — ver [Referência de API](/backend/api-referencia#benefits-api-v1-benefits) |
 
 ## Regra ao criar tela nova

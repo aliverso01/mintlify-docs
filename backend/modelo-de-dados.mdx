@@ -233,20 +233,20 @@ Métodos de validação (`validate_catalog_selection`) e sincronização de espe
 
 ## media
 
-### `Media` — `app/media/models.py:45`
+### `Media` — `app/media/models.py:74`
 `user` FK → `CustomUser`, `client_hash`, `media_path`, `media` (`FileField`), `thumbnail` (`ImageField`, gerado automaticamente no `save()` para imagens), `description`, `ai_description`, `ai_keywords` (JSON list), `ai_raw_analysis` (JSON), `analyzed`, `analyzed_at`, `generated_url`, `from_media_library` (bool — diferencia mídia da biblioteca vs. gerada para um post específico).
 
 ### `Niche` — `app/client/models.py:14` (MIG-456)
 Taxonomia de nicho de mercado: `nome` (único), `slug` (único), `ativo`. `ordering = ['nome']`. É a tabela que o acervo usa para restringir foto por segmento (`StockPhoto.nichos_permitidos`) — o `CharField` `nicho` do `StockPhoto` é outra coisa, eixo de busca. Migrations `0021_niche_client_niche` (modelo + FK em `Client`) e `0022_seed_niche_nao_informado` (semeia só "Não informado"; a taxonomia validada é uma data migration posterior).
 
-### `StockPhoto` — `app/media/models.py:157` (MIG-455)
+### `StockPhoto` — `app/media/models.py:213` (MIG-455)
 Acervo interno da Miggo, **tabela própria** (migration `0014_stockphoto`): `image` (`FileField`, `acervo/<hash32><ext>` com a extensão vinda dos magic bytes), `thumbnail` (300x300, gerada no `save()`), `titulo`, `descricao`, `nicho`/`tema`/`sentimento` (`CharField(120)`, indexados — são os filtros da listagem), `palavras_chave` (JSON list), `origem` (texto livre, origem/licença), `fonte` (`CharField(20)`, choices `upload`/`pixabay`, default `'upload'`, indexado — de onde a foto veio, MIG-371), `fonte_id` (`CharField(64)`, default `''`), `autor` (`CharField(255)`, default `''`), `fonte_url` (`URLField(500)`, default `''`), `ativo` (bool, `default=True`, indexado — é a curadoria: desliga sem apagar o arquivo), `enviado_por` FK → `CustomUser` (`SET_NULL`, `related_name='stock_photos'`), `created_at`, `updated_at`. `ordering = ['-created_at', '-id']`.
 
-A **alocação** (MIG-456) entrou em `escopo` (`global`/`restrita`, default `global`, indexado) + M2M `clientes_permitidos` → `Client` e `nichos_permitidos` → `Niche`. A regra de quem vê o quê tem uma redação só, o manager `StockPhoto.objects.elegiveis_para(client)`. Tabela separada em vez de flag na `Media` para o isolamento ser por construção: a galeria do cliente consulta `Media` e foto do acervo nunca está lá. As rotas são `IsManagementUserOnly` — nem API key entra (ver [media](/backend/apps/media)).
+A **alocação** (MIG-456) entrou em `escopo` (`global`/`restrita`, default `global`, indexado) + M2M `clientes_permitidos` → `Client` e `nichos_permitidos` → `Niche`. A regra de quem vê o quê tem uma redação só, o manager `StockPhoto.objects.elegiveis_para(client)`. Tabela separada em vez de flag na `Media` para o isolamento ser por construção: a galeria do cliente consulta `Media` e foto do acervo nunca está lá. As rotas são `IsManagementUserOnly` — nem API key entra; só `elegiveis/` e `uso/` aceitam também o `Acervo-Service-Token` (MIG-457). Migration da alocação: `0015_stockphoto_clientes_permitidos_stockphoto_escopo_and_more` (ver [media](/backend/apps/media)).
 
 Constraint de unicidade parcial: `stockphoto_fonte_id_unica` — `UniqueConstraint(fields=['fonte', 'fonte_id'], condition=~Q(fonte_id=''))` (migration `0017_stockphoto_fonte_externa`), impedindo reimportação duplicada da mesma foto externa.
 
-### `StockPhotoUsage` — `app/media/models.py` (MIG-457)
+### `StockPhotoUsage` — `app/media/models.py:306` (MIG-457)
 Log de uso de foto do acervo por cliente: `stock_photo` FK **`PROTECT`** (`related_name='usos'`), `client` FK (`CASCADE`), `generation_id` (char 64), `used_at`. `unique_together = ('stock_photo', 'client', 'generation_id')` — é o que torna o `POST /acervo/uso/` idempotente —, índice `(client, used_at)`, `ordering = ['-used_at', '-id']`. Alimenta o anti-fadiga do banco (`?fadiga=1`), com janela igual ao `reuse_days` da `ClientMediaPreference` do cliente. Migration `0016_stockphotousage`.
 
 ## agenda
