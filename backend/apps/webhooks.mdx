@@ -19,7 +19,7 @@ O app não tem `models.py`, `admin.py` nem `urls.py` próprios — são todos st
 
 | Arquivo | Conteúdo |
 |---|---|
-| `app/webhooks/views.py` | As três views reais do app: `webhook_stripe` (`app/webhooks/views.py:62`), `webhook_zernio_account` (`app/webhooks/views.py:698`) e `webhook_zernio_status` (`app/webhooks/views.py:807`) |
+| `app/webhooks/views.py` | As quatro views reais do app: `webhook_stripe` (`app/webhooks/views.py:81`), `webhook_asaas` (`app/webhooks/views.py:507`), `webhook_zernio_account` (`app/webhooks/views.py:698`) e `webhook_zernio_status` (`app/webhooks/views.py:807`) |
 | `app/webhooks/models.py` | Vazio — stub do `startapp`, sem models próprios (`app/webhooks/models.py:1-3`) |
 | `app/webhooks/admin.py` | Vazio — stub do `startapp`, nada registrado no Django admin (`app/webhooks/admin.py:1-3`) |
 | `app/webhooks/apps.py` | `WebhooksConfig`, `name = 'app.webhooks'` (`app/webhooks/apps.py:4-6`) |
@@ -62,7 +62,7 @@ Log genérico de chamadas a/de serviços externos, reaproveitado pelos dois webh
 | Campo | Tipo | Obrigatório | Default/choices | Descrição |
 |---|---|---|---|---|
 | `client` | `ForeignKey(Client)` | Não | `null=True, blank=True, on_delete=CASCADE` | Cliente associado à chamada, quando resolvido |
-| `service` | `CharField(max_length=255)` | Sim | — | Nome do provedor: `'Stripe'` ou `'Zernio'` neste app |
+| `service` | `CharField(max_length=255)` | Sim | — | Nome do provedor: `'Stripe'`, `'Asaas'`, `'Zernio'` (conta) ou `'Zernio Status'` (desfecho da publicação; o registro também é a trava de idempotência) |
 | `path` | `TextField` | Sim | — | Rota chamada (ex. `/webhooks/`, `/webhooks/zernio/account/`) |
 | `method` | `CharField(max_length=50)` | Sim | — | Sempre `'POST'` nos dois webhooks |
 | `payload` | `JSONField` | Não | `null=True, blank=True` | Corpo recebido |
@@ -70,7 +70,7 @@ Log genérico de chamadas a/de serviços externos, reaproveitado pelos dois webh
 | `status_code` | `IntegerField` | Não | `null=True, blank=True` | Status HTTP da resposta |
 | `created_at` / `updated_at` | `DateTimeField` | — | `auto_now_add` / `auto_now` | Timestamps |
 
-Usado em `webhook_stripe._log` (`app/webhooks/views.py:400-413`) e em cada branch de `webhook_zernio_account` (`app/webhooks/views.py:432, 450, 472, 512`).
+Usado em `webhook_stripe._log` (`app/webhooks/views.py:490`), `webhook_asaas._log` (`:678`), em cada branch de `webhook_zernio_account` (`:713, 731, 753, 793`) e em `webhook_zernio_status._log` (`:931`).
 
 ## Endpoints
 
@@ -207,7 +207,7 @@ Para `account.connected` processado: `{"detail": "integration_activated", "integ
 
 **Eventos**: `post.published`/`post.failed` e as grafias equivalentes (`EVENTOS_PUBLICADO`/`EVENTOS_FALHA` em `app/webhooks/views.py`). Evento fora das listas vira log + `200 {"detail": "ignored_event"}` — nunca descartado calado, nunca `500` (que faria o Zernio reenviar para sempre).
 
-**Idempotência**: a chave do evento (`id`/`eventId` do payload, ou `evento:postId:status`) é gravada em `Integration` (`service='Zernio Status'`) e consultada em `response__event_key`. Reentrega responde `200 {"detail": "already_processed"}` sem reescrever `published_at` nem gerar `PostStatusEvent` de novo. Não há tabela própria de eventos.
+**Idempotência**: a chave do evento (`id`/`eventId` do payload, ou `evento:postId:status`) é gravada em `Integration` (`service='Zernio Status'`) e consultada em `response__event_key`. Reentrega de qualquer evento já registrado, inclusive os ignorados, responde `200 {"detail": "already_processed"}` sem reescrever `published_at` nem gerar `PostStatusEvent` de novo. Não há tabela própria de eventos.
 
 **Casamento**: só atualiza `PostPublication` cujo `external_post_id` já exista no banco. Id desconhecido (outro ambiente, post criado fora da Miggo) vira log + `200 {"detail": "publication_not_found"}`. Payload sem id de post: `200 {"detail": "event without post id"}`.
 

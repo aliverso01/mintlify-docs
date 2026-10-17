@@ -27,11 +27,11 @@ Definidos em `core/urls.py:28-56`. Todos os apps de negócio (exceto `webhooks`)
 | `/api/v1/email-marketing/` | `emailmarketing` |
 | `/api/v1/benefits/` | `benefits` |
 | `/api/schema/`, `/api/schema/swagger-ui/`, `/api/schema/redoc/` | drf-spectacular |
-| `/webhooks/`, `/webhooks/zernio/account/`, `/webhooks/zernio/status/`, `/webhooks/manychat/`, `/webhooks/manychat/dynamic-block/continue/` | `webhooks` + `conversation.webhooks` |
+| `/webhooks/`, `/webhooks/asas/`, `/webhooks/asaas/`, `/webhooks/zernio/account/`, `/webhooks/zernio/status/`, `/webhooks/manychat/`, `/webhooks/manychat/dynamic-block/continue/` | `webhooks` + `conversation.webhooks` |
 | `/media/<path>` | serve de arquivos de mídia (fallback sem Nginx) |
 
 <Note>
-  `webhooks` não tem `urls.py` próprio: suas views (`webhook_stripe`, `webhook_zernio_account`, `webhook_zernio_status`) são importadas direto em `core/urls.py:23`, junto com as views de webhook do app `conversation` (`webhook_manychat`, `manychat_dynamic_block_continue`, `core/urls.py:24`).
+  `webhooks` não tem `urls.py` próprio: suas views (`webhook_stripe`, `webhook_asaas`, `webhook_zernio_account`, `webhook_zernio_status`) são importadas direto em `core/urls.py:23-25`, junto com as views de webhook do app `conversation` (`webhook_manychat`, `manychat_dynamic_block_continue`, `core/urls.py:26`).
 </Note>
 
 ## Schema OpenAPI (drf-spectacular)

@@ -371,7 +371,7 @@ Validações antes de disparar:
 
 **Cancelamento** (`publish='cancel'`) é síncrono: busca `PostMetadata` `late_post_id`, chama `DELETE /v1/posts/<id>` no Zernio e marca o post como `canceled`.
 
-**Publicação/agendamento** roda em **thread de background** (`_publish_in_background`, `app/post/views.py:1470-1650`) e a view responde `202 Accepted` imediatamente. O fluxo em background: presign + upload de cada mídia ao Zernio, montagem de `mediaItems` (com tratamento especial para Reels: usa a primeira imagem como thumbnail), busca do `accountId` no Zernio, montagem do `platformSpecificData` (Story/Reels), chamada `POST /v1/posts` e, em caso de sucesso, grava `PostMetadata` `late_post_id` e atualiza o status do post (`scheduled` ou `holding`, conforme o caso — `published` só é setado pelo webhook).
+**Publicação/agendamento** roda em **thread de background** (`_publish_in_background`, `app/post/views.py:1470-1650`) e a view responde `202 Accepted` imediatamente. O fluxo em background: presign + upload de cada mídia ao Zernio, montagem de `mediaItems` (com tratamento especial para Reels: usa a primeira imagem como thumbnail), busca do `accountId` no Zernio, montagem do `platformSpecificData` (Story/Reels), chamada `POST /v1/posts` e, em caso de sucesso, grava `PostMetadata` `late_post_id` e atualiza o status do post (`scheduled` ou `holding`, conforme o caso — `published` vem do webhook de status, do `reconcile_zernio_posts` ou do botão "Verificar status").
 
 <ResponseField name="message" type="string">Mensagem de confirmação (assíncrona) ou de post aprovado via WhatsApp.</ResponseField>
 
@@ -381,7 +381,7 @@ Validações antes de disparar:
 </Accordion>
 
 <Accordion title="POST /api/v1/post/publication/<int:pk>/check-status/ — PostPublicationCheckStatusView">
-`app/post/views.py:1904`. Checagem **manual** do desfecho de uma `PostPublication` no Zernio — é o botão "Verificar status" do modal do post no frontend. Roda, de forma síncrona e para aquela publicação, a mesma `status_sync.conferir_publicacao` usada pelo cron de reconciliação.
+`app/post/views.py:1904`. Checagem **manual** do desfecho de uma `PostPublication` no Zernio — é o botão "Verificar status" do modal do post (`RedesDoPost.tsx`), exibido por publicação em `pending`/`scheduled`/`sending`/`failed`. Roda, de forma síncrona e para aquela publicação, a mesma `status_sync.conferir_publicacao` usada pelo cron de reconciliação.
 
 Não aceita API key de serviço: sem usuário não há cliente a quem limitar a consulta. Usuário que não é gestão só consulta publicação do próprio `Client` — sem isso, qualquer autenticado enumeraria `pk`.
 

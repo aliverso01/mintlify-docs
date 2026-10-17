@@ -125,9 +125,9 @@ Modelo de IA usado: `MEDIA_ANALYSIS_MODEL`.
 
 `app/post/status_sync.py` — comando `reconcile_zernio_posts`, agendado no Dokploy (sugestão: `*/10 * * * *`), **não** em `CRONJOBS`.
 
-Procura `PostPublication` presa em `sending`/`pending` há pelo menos `--minutos` (default `15`), pergunta o desfecho ao Zernio e aplica: *Publicado* com `permalink` e `published_at`, ou *Falhou* quando a rede recusou de verdade. É a rede de segurança do webhook `/webhooks/zernio/status/` — enquanto ele não estiver configurado no painel do Zernio, ou quando a entrega se perder, é este comando que tira o post de "Enviando" (MIG-454).
+Procura até 200 `PostPublication` em `sending`/`pending` sem atualização há pelo menos `--minutos` (default `15`), pergunta o desfecho ao Zernio e aplica: *Publicado* (publicação e post) com `permalink` e `published_at`, ou `failed` só na publicação quando a rede recusou de verdade. É a rede de segurança do webhook `/webhooks/zernio/status/` — enquanto ele não estiver configurado no painel do Zernio, ou quando a entrega se perder, é este comando que tira o post de "Enviando" (MIG-454).
 
-Idempotente: não toca em publicação já `published`/`canceled`, nem em `scheduled` cuja data ainda não chegou, e não marca falha no que não conseguiu confirmar.
+Idempotente: não toca em publicação já `published`/`canceled`, nem em `scheduled` (fora do filtro), e não marca falha no que não conseguiu confirmar.
 
 ## Revisões de post agendadas
 
