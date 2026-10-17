@@ -140,7 +140,7 @@ O `reuse_days` é a **mesma janela** para a galeria e para o banco: a fadiga do 
 
 ### BrandMaterial
 
-Material de referência da marca (PDF, DOCX, PPTX, TXT ou texto colado) enviado pelo cliente para enriquecer o contexto de IA e propor atualizações no briefing (MIG-396). `app/client/models.py:179`.
+Material de referência da marca (PDF, DOCX, PPTX, TXT ou texto colado) enviado pelo cliente para enriquecer o contexto de IA e propor atualizações no briefing (MIG-396). `app/client/models.py:235`, migration `0021_brandmaterial` (merge com `0021_niche_client_niche` em `0024_merge_20261015_2043`).
 
 | Campo | Tipo | Obrigatório | Default/Choices | Descrição |
 |---|---|---|---|---|
@@ -324,19 +324,20 @@ Erros: `400` se ausente ou fora do intervalo `[0,5]`.
 </Accordion>
 
 <Accordion title="POST /instagram-scrape/ — InstagramScrapeAndFillView">
-Fluxo de raspagem do perfil público do Instagram via Apify e proposta/preenchimento automático de briefing via IA (MIG-396 adicionou o modo `preview`). `app/client/views.py:530-1340`. Detalhado em [Regras de negócio e funções](#instagramscrapeandfillview). Throttle de 20 requisições/hora por cliente (`_PostThrottle`, `throttle_scope = 'instagram_scrape'`).
+Fluxo de raspagem do perfil público do Instagram via Apify e proposta/preenchimento automático de briefing via IA (MIG-396 adicionou o modo `preview`). `app/client/views.py:664-1397` (o `post` autoriza via `_cliente_visivel` e delega ao miolo `_scrape_and_fill(client, username, force, preview)`). Detalhado em [Regras de negócio e funções](#instagramscrapeandfillview). Throttle de 20 POST/hora por usuário cliente; equipe e API key ficam isentas (`_PostThrottle`, `throttle_scope = 'instagram_scrape'`).
 
 <ParamField path="client_id" type="int" required>ID do cliente</ParamField>
 <ParamField path="instagram_username" type="string" required>Handle do Instagram (com ou sem `@`)</ParamField>
 <ParamField path="force" type="bool">Ignora o cache do Apify e força nova raspagem</ParamField>
-<ParamField path="preview" type="bool">Quando `true`, **não grava** nenhuma alteração no banco e retorna a proposta de briefing para conferência (`{proposed, current}`)</ParamField>
+<ParamField path="preview" type="bool">`true`/`1`/`sim`: não grava briefing, bio nem logo e retorna a proposta para conferência (`{proposed, current}`). O JSON bruto (`ClientMeta scrapping_instagram`) e o log `Integration` são gravados mesmo assim</ParamField>
 
 <ResponseField name="instagram_username" type="string">Handle analisado</ResponseField>
 <ResponseField name="preview" type="bool">Presente e `true` quando chamado em modo preview</ResponseField>
 <ResponseField name="proposed" type="object">Mapa `{chave: valor_proposto}` com sugestões de alteração (apenas em modo preview)</ResponseField>
 <ResponseField name="current" type="object">Mapa `{chave: valor_atual}` dos campos do briefing (apenas em modo preview)</ResponseField>
 <ResponseField name="briefing_keys_filled" type="array">Chaves de briefing preenchidas ou propostas</ResponseField>
-<ResponseField name="warning" type="string">Aviso opcional quando a análise por IA falhou e usou fallback</ResponseField>
+<ResponseField name="warning" type="string">Só em preview: aviso quando a IA falhou e a proposta veio do fallback</ResponseField>
+<ResponseField name="message" type="string">Só quando `preview=false`</ResponseField>
 <ResponseField name="bio_saved" type="bool">Se a bio atual foi salva em `PlatformProfileConfig` (apenas quando `preview=false`)</ResponseField>
 <ResponseField name="raw_scrape_saved" type="bool">Sempre `true` quando a raspagem é salva (apenas quando `preview=false`)</ResponseField>
 <ResponseField name="logo_from_profile" type="bool">Se a foto de perfil virou `BrandLogo` (apenas quando `preview=false`)</ResponseField>
@@ -457,7 +458,7 @@ Repetir o POST não reinicia a espera: o primeiro pedido pendente é mantido. Er
 </Accordion>
 
 <Accordion title="GET/POST /brand-materials/ — BrandMaterialListCreateView">
-Listagem e envio de materiais institucionais da marca (PDF, DOCX, PPTX, TXT ou texto colado). `app/client/views.py:2267-2360`. O POST salva o material, extrai o texto, solicita à IA a proposta de briefing (`{proposed, current}`) e dispara a regeneração assíncrona de `ClientMeta brand_knowledge`. Throttle de 20 requisições/hora por cliente (`_PostThrottle`, `throttle_scope = 'brand_materials'`).
+Listagem e envio de materiais institucionais da marca (PDF, DOCX, PPTX, TXT ou texto colado). `app/client/views.py:2297-2386`. O POST salva o material, extrai o texto, solicita à IA a proposta de briefing (`{proposed, current}`) e dispara a regeneração assíncrona de `ClientMeta brand_knowledge`. Throttle de 20 requisições/hora por cliente (`_PostThrottle`, `throttle_scope = 'brand_materials'`).
 
 #### GET `/api/v1/client/brand-materials/?client_id=<id>`
 Lista os materiais cadastrados do cliente. Usuário com papel `client` só pode listar materiais do seu próprio `Client` (outro cliente retorna `404`).
@@ -489,16 +490,16 @@ Erros: `400` sem arquivo e sem texto, arquivo e texto enviados juntos, formato n
 </Accordion>
 
 <Accordion title="DELETE /brand-materials/<pk>/ — BrandMaterialDetailView">
-Remove um material da marca (`app/client/views.py:2363-2374`). Restrito ao dono do material (cliente só remove o próprio; caso contrário retorna `404`).
+Remove um material da marca (`app/client/views.py:2390-2400`). Cliente só remove o próprio (material alheio retorna `404`); equipe e API key removem qualquer um.
 
-Após a exclusão, dispara a atualização assíncrona do resumo `ClientMeta brand_knowledge` (`refresh_brand_knowledge_async(after_delete=True)`). Se não restarem materiais, a chave `brand_knowledge` é excluída do banco.
+Após a exclusão, dispara a atualização assíncrona do resumo `ClientMeta brand_knowledge` (`refresh_brand_knowledge_async(after_delete=True)`). Se não restarem materiais — ou se a LLM falhar depois de uma remoção (o resumo antigo ainda descreveria o material removido) —, a chave `brand_knowledge` é apagada.
 
 Status: `204 No Content`.
 Erros: `404` material não encontrado ou pertencente a outro cliente.
 </Accordion>
 
 <Accordion title="POST /briefing/apply/ — BriefingApplyView">
-Aplica as alterações confirmadas pelo cliente no modal de revisão (`BriefingReviewModal`) diretamente em `ClientMeta` via upsert (`app/client/views.py:2377-2401`).
+Aplica as alterações confirmadas pelo cliente no modal de revisão (`BriefingReviewModal`) diretamente em `ClientMeta` via upsert (`app/client/views.py:2404-2427`).
 
 Aceita apenas as 16 chaves permitidas em `BRIEFING_PROPOSAL_KEYS` (`company`, `business`, `sub_business`, `region`, `target`, `ticket`, `summary`, `audience_profile`, `audience_pain`, `audience_goals`, `tone_of_voice`, `services`, `differential`, `goals`, `ctas`, `extra`). Quaisquer chaves adicionais enviadas no corpo são descartadas.
 
@@ -580,18 +581,18 @@ Raspagem de perfil do Instagram via Apify (actor `aliverso~instagram-profile-scr
 - **`is_private(profile) -> bool`** (`app/client/instagram.py:145`) — lê `private`/`isPrivate` do item.
 - **`ApifyUnavailable`** (`app/client/instagram.py:42`) — exceção para falha de transporte/config, distinta de "dataset vazio" (que é resposta legítima do Apify).
 
-### `InstagramScrapeAndFillView` — fluxo completo (`app/client/views.py:530-1193`)
+### `InstagramScrapeAndFillView` — fluxo completo (`app/client/views.py:664-1397`)
 
 1. Chama `instagram_lib.fetch_profile_items` (Apify) para o `instagram_username`.
 2. Salva o JSON bruto em `ClientMeta(key='scrapping_instagram')`.
-3. Monta um prompt (`_build_prompt`) com todo o contexto do perfil (`_build_ai_context`) e chama a OpenAI (`gpt-3.5-turbo`) pedindo o preenchimento de ~26 chaves de briefing (`BRIEFING_KEYS`). Sem `OPENAI_API_KEY` configurada, ou em caso de erro/exceção, usa `_build_fallback_data` (heurísticas locais: inferência de público B2B/B2C por palavras-chave, tom de voz por template, metas por sinais no perfil).
+3. Monta um prompt (`_build_prompt`) com todo o contexto do perfil (`_build_ai_context`) e chama a OpenAI (`gpt-4o-mini`, `BRIEFING_MODEL`) pedindo o preenchimento de ~26 chaves de briefing (`BRIEFING_KEYS`). Sem `OPENAI_API_KEY` configurada, ou em caso de erro/exceção, usa `_build_fallback_data` (heurísticas locais: inferência de público B2B/B2C por palavras-chave, tom de voz por template, metas por sinais no perfil).
 4. Normaliza os dados (`_normalize_briefing_data`) — `target` vira exatamente `Pessoas`/`Empresas`/`Pessoas e Empresas` (heurística por palavras-chave em `_target_flags`), `goals`/`referer` viram listas JSON restritas às opções válidas, `region`/`ticket` caem em textos-padrão se vazios.
 5. Salva cada campo do briefing como `ClientMeta` via `update_or_create` (upsert).
 6. Atualiza `PlatformProfileConfig(config_type='bio')` do Instagram com `old_text` = bio atual do perfil raspado.
 7. **Foto de perfil → logo**: `_maybe_set_logo_from_profile` só age se o cliente ainda não tem nenhuma `BrandLogo`; baixa a foto de perfil, classifica via GPT-4o-mini (`_is_logo_image`, com a imagem enviada em base64 porque o CDN do Instagram recusa fetch direto da OpenAI) se é logotipo ou fotografia; se for logo, cria `Brandkit`/`BrandLogo` e roda a mesma análise de cores do upload manual (`_analyze_logo_with_gpt`/`_apply_analysis_to_logo`, de `app.brandkit.views`).
 8. Registra a chamada à OpenAI em `Integration(service='openai_briefing')`.
 
-Com o MIG-396, a view passa a aceitar `preview=True`: nesse modo, nenhuma alteração é persistida em `ClientMeta`, bio ou logo. O backend gera o mapa de propostas `{proposed, current}` comparando com os valores atuais via `brand_materials.build_proposal` e responde `200` com o preview para conferência do cliente.
+Com o MIG-396, a view passa a aceitar `preview=True`: nesse modo os passos 1–3 e 8 rodam (o JSON bruto e o log `Integration` são gravados), mas briefing, bio e logo não são persistidos; o `ticket` padrão nunca substitui um ticket já preenchido, e fallback da IA devolve `warning`. Quem aplica é o cliente, via `briefing/apply/`. O onboarding (`_run_instagram_analysis`) chama `_scrape_and_fill` direto, sem request. O backend gera o mapa de propostas `{proposed, current}` comparando com os valores atuais via `brand_materials.build_proposal` e responde `200` com o preview para conferência do cliente.
 
 Toda a leitura de `OPENAI_API_KEY`/`OPENAI_API_URL`/`APIFY_TOKEN` é feita via `dotenv_values` lida a cada request (não usa cache do `decouple`), com fallback em `os.environ`.
 
@@ -612,7 +613,7 @@ Centraliza a ingestão de materiais da marca, extração de texto, geração de 
 - **Resumo assíncrono de conhecimento (`refresh_brand_knowledge_async`)**:
   - Disparado em background (thread separada) após a criação ou exclusão de um material.
   - Sintetiza todo o conjunto de materiais ativos do cliente em um resumo executivo de até 1.500 caracteres (`BRAND_KNOWLEDGE_MAX_CHARS`).
-  - Salva o resultado em `ClientMeta(key='brand_knowledge')`. Se o cliente remover todos os seus materiais, a chave `brand_knowledge` é apagada do banco.
+  - Salva o resultado em `ClientMeta(key='brand_knowledge')`. Se não restarem materiais — ou se a LLM falhar depois de uma remoção —, a chave `brand_knowledge` é apagada.
 - **Aplicação de briefing (`apply_briefing`)**:
   - Valida o tamanho máximo de cada valor (teto de 5.000 caracteres, `MAX_VALUE_CHARS`).
   - Grava via upsert em `ClientMeta` apenas as chaves contidas em `BRIEFING_PROPOSAL_KEYS`.

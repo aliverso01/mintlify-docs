@@ -807,8 +807,8 @@ Validações e normalizações que, em outros apps, viveriam em `validate_*`, aq
 </Accordion>
 <Accordion title="Análise de Instagram e de site">
 
-- `_run_instagram_analysis(session)` (`services.py:2050`): reusa `app.client.views.InstagramScrapeAndFillView` (Apify + preenchimento do briefing por OpenAI) chamando-a com um `SimpleNamespace` no lugar do request. Levanta `RuntimeError` se a resposta vier com status ≥ 400.
-- `_run_website_analysis(session, fill_only_empty=False)` (`services.py:2071`): GET do HTML (`app.brandkit.website.scrape_website`) → importa assets e logo para o Brandkit → monta o briefing com OpenAI sobre as chaves de `WEBSITE_BRIEFING_KEYS`. Falha no download de assets **não** derruba a análise (briefing vale mais que asset). O orçamento de tempo das fases seguintes (`WEBSITE_PHASE_BUDGET`, env `ONBOARDING_WEBSITE_BUDGET`, default 180s) começa **depois** da leitura da página.
+- `_run_instagram_analysis(session)` (`services.py:2075`): chama direto o miolo `InstagramScrapeAndFillView()._scrape_and_fill(client, handle)` (MIG-396; Apify + preenchimento do briefing por OpenAI) — sem request falso, que quebrava em `HasAPIKey` e zerava o briefing. Levanta `RuntimeError` se faltar cliente/@ na sessão ou se a resposta vier com status ≥ 400.
+- `_run_website_analysis(session, fill_only_empty=False)` (`services.py:2098`): GET do HTML (`app.brandkit.website.scrape_website`) → importa assets e logo para o Brandkit → monta o briefing com OpenAI sobre as chaves de `WEBSITE_BRIEFING_KEYS`. Falha no download de assets **não** derruba a análise (briefing vale mais que asset). O orçamento de tempo das fases seguintes (`WEBSITE_PHASE_BUDGET`, env `ONBOARDING_WEBSITE_BUDGET`, default 180s) começa **depois** da leitura da página.
 - `_mark_browser_render(session, url)` (`services.py:2187`): quando o site recusa o GET e a leitura cai no navegador, marca `analysis.browser_render = True` — é o que permite a tela exibir `BROWSER_RENDER_NOTICE` ("pode levar alguns minutos") em vez de deixar a pessoa achando que travou.
 
 </Accordion>
