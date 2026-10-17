@@ -332,7 +332,7 @@ Polling de geração do grid (`fetchGridStatus`, a cada 5s) enquanto `generation
 ### BrandkitAdmin — visão da equipe
 **Arquivo:** `src/pages/Brandkit/BrandkitAdmin.tsx`
 
-Filtro de cliente (`ClientSearchSelect`, com opção "Todos") + grade de cards de todos os brand kits da carteira + editor (`BrandkitEditor`) do kit selecionado. Só em `/admin/*`.
+Filtro de cliente (`ClientSearchSelect`, com opção "Todos") + grade de cards de todos os brand kits da carteira + editor (`BrandkitEditor`) do kit selecionado. Só em `/admin/*`. Quando a geração do grid foi recusada pela moderação da OpenAI (`gridState.error_kind === 'content_policy'`, MIG-466), o editor mostra o motivo (categoria e Request ID) e orienta **Trocar referência**.
 
 ### BrandkitClient — visão do cliente
 **Arquivo:** `src/pages/Brandkit/BrandkitClient.tsx`

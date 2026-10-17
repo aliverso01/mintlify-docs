@@ -919,6 +919,18 @@ Base URL por `MIGGOAI_API_URL` (default `http://localhost:10000`); credenciais p
 
 Todas as chamadas passam por `_audit(...)` (`miggoai.py:29`), que grava em `Integration` de forma blindada. `MiggoAIError` (`miggoai.py:53`) sinaliza falha de comunicação; `MiggoAIIndisponivel` (`miggoai.py:318`) é "não respondeu", e `MiggoAIGeracaoEmAndamento` (`miggoai.py:327`) é o `409` do contrato do grid — herda de `MiggoAIIndisponivel` porque a decisão de quem chama é a mesma ("volte depois", sem consumir tentativa), mas aqui **não se regera e não se rotaciona a chave**.
 
+<Accordion title="Recusa do filtro de conteúdo da OpenAI (MIG-467, MIG-466)">
+
+A OpenAI recusa algumas referências pelo filtro de segurança. Repetir o pedido só gasta cota, então esse desfecho **não é retentado**.
+
+- **Detecção:** o MiggoAI responde `422` com `error_kind: 'content_policy'` (ver [Referência de API do MiggoAI](/miggoai/api-referencia)). `gerar_grid_v2` levanta `MiggoAIConteudoRecusado`, que **não herda** de `MiggoAIIndisponivel` de propósito. A recuperação por chave (`_recuperar_grid_por_chave`) também a levanta quando o `by-key` volta `FAILED` com `error_kind: 'content_policy'`.
+- **Estado do grid:** `_mark_grid_generation_failed` grava `generation_status='failed'` e `error_kind='content_policy'` na hora, **fora** dos orçamentos (`rate_limit_attempts`, `generation_attempts`) e sem `next_attempt_at`. `_grids_para_retomar` pula esse grid: só a troca de referência (ação humana) destrava.
+- **Motivo (MIG-466):** `extrair_moderacao` lê do texto do erro as `categorias` (`safety_violations=[...]`) e o `request_id` (`req_...`), e grava `grid['moderation'] = {categories, request_id}`. Só rótulo simples passa (`[\w\-/ ]{1,40}`), porque o texto vem de terceiro e vira aviso. Texto fora do padrão dá `([], None)`: o aviso sai sem o detalhe. O `moderation` é limpo em sucesso e no reset do orçamento.
+- **Aviso à equipe:** `_avisar_admins_grid_conteudo_recusado` chama `notify_admins('grid_generation_failed', ...)` com categoria e Request ID, link para `/admin/clients/<id>` e dedupe de 6 h por nome do cliente.
+- **Front:** na tela admin do grid (`BrandkitEditor`), `error_kind === 'content_policy'` mostra o alerta "A moderação da OpenAI recusou esta referência", com categoria e Request ID, e manda usar **Trocar referência** em vez de regerar.
+
+</Accordion>
+
 <Accordion title="Idempotência da geração do grid (MIG-427)">
 
 Um read timeout estourava **depois** de o MiggoAI ter concluído e cobrado: cada retomada virava imagem nova, paga, que nunca chegava ao cliente — 21 grids cobrados em 20h no caso que originou o card.
@@ -940,6 +952,8 @@ python manage.py generate_pending_grids --limit 20
 ```
 
 `app/onboarding/management/commands/generate_pending_grids.py:20`. Argumento `--limit` (int, default 20). Chama `services.generate_pending_grids(limit=limit)` e imprime `{processed, generated, failed}`, em verde quando não há falhas e em amarelo quando há. Agendado no Dokploy.
+
+**Reconciliação do espelho (MIG-459).** Antes de gerar, `generate_pending_grids` chama `_reconciliar_espelhos_do_grid()`: para cada cliente com sessão `grid.generation_status == 'done'`, garante que o `SocialNetworkGrid(generated=True)` aponte para `data.grid.image_url` (a sessão mais recente vence). O espelho feito em `_run_grid_generation` é *best-effort* (falha só loga), então um grid concluído podia nunca chegar à aba Grid do brandkit. A rotina só lê o banco (sem MiggoAI nem OpenAI), só grava onde há divergência — idempotente e barata — e nunca toca espelho enviado à mão (`generated=False`). Falha em um cliente é logada e não interrompe os demais; o log final diz quantos espelhos corrigiu.
 
 </Accordion>
 <Accordion title="send_grid_approval_reminders — cobrança da aprovação via ManyChat">
