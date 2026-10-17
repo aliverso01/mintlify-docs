@@ -119,7 +119,7 @@ Fonte: `backend/apps/generations/urls.py`, `backend/apps/generations/views.py`.
 | POST | `/api/generations/test/complete/` | `GenerationCompleteTestView` | Roda os 4 workflows encadeados em TEST. |
 | POST | `/api/generations/production/complete/` | `GenerationCompleteProductionView` | Roda os 4 workflows encadeados em PRODUCTION. |
 | GET | `/api/generations/context/` | `GenerationContextView` | Prévia do contexto (sem chamar IA). |
-| POST | `/api/generations/gerar-agora/` | `GerarAgoraView` | Gera agora o próximo card `pending` do cliente, fora da rodada diária. Chamado pelo `backend-miggo` (botão **Criar agora**). |
+| POST | `/api/generations/gerar-agora/` | `GerarAgoraView` | Gera agora os cards `pending` da janela do cliente (teto opcional `limit`), fora da rodada diária. Chamado pelo `backend-miggo` (botão **Criar agora**). |
 | POST | `/api/generations/gerar-card/` | `GerarCardView` | Geração completa de UM card já existente (título → imagem → legenda → hashtags). Chamado pelo `backend-miggo`. |
 | GET | `/api/generations/linhas/` | `LinhaListView` | Listagem unificada de gerações e execuções com paginação no banco e custos (MIG-468). |
 | GET | `/api/generations/execucoes/<int:pk>/` | `ExecucaoDetailView` | Detalhe de execução com passos aninhados, custo total e por etapa (MIG-468). |
@@ -168,7 +168,7 @@ Rodam a mesma rotina do cron (`services.rodada`), então a execução manual pro
   **Decida pelo `status` do corpo, nunca pelo código HTTP.** Os dois desfechos são `202` de propósito: adiar é desfecho normal, não falha de disparo, e um não-2xx seria auditado e logado como erro no `backend-miggo` — mentira. Quem consome trata `aceito` como "começou agora" e **qualquer outra coisa** (`na_fila`, campo ausente, corpo que não é dict, valor desconhecido) como "ficou para o cron"; é o que o `backend-miggo` faz ao traduzir em `disparo` (ver <a href="/backend/apps/client">app client</a>).
 </Warning>
 
-Os dois só tomam o lock na thread da requisição — é a única forma de a resposta saber o desfecho. `400` quando falta `client_id` (ou `post_id`), ou quando não são números.
+Os dois só tomam o lock na thread da requisição — é a única forma de a resposta saber o desfecho. `400` quando falta `client_id` (ou `post_id`), ou quando não são números. `gerar-card/` devolve ainda `502` quando não consegue resolver os ids de status dos cards (`rodada.status_ids()`).
 
 **POST `/api/generations/grid/`**
 <ParamField path="client_id" type="integer" required>Id do cliente no backend-miggo — é a quem o registro `Generation` fica pendurado.</ParamField>
