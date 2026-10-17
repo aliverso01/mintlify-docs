@@ -196,7 +196,7 @@ O que a chave faz em cada estado:
 | `FAILED` | re-executa sob a **mesma** `Generation` (a chave é unique); só cobra se concluir |
 | de outro `client_id` | `400` — a chave é de uma geração de um cliente só |
 
-Corrida entre duas chamadas com a mesma chave: o `unique` do banco é a guarda final; o `IntegrityError` é capturado e devolve o estado do registro que ganhou (nada foi gerado nem cobrado no perdedor).
+Corrida entre duas chamadas com a mesma chave: o `unique` do banco é a guarda final; o `IntegrityError` é capturado: `SUCCESS` do vencedor → `200` `reused: true`; outro estado → `409`; vencedor de outro cliente ou inexistente → a exceção sobe (`500`). Nada foi gerado nem cobrado no perdedor.
 
 **GET `/api/generations/grid/by-key/<idempotency_key>/`**
 
