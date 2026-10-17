@@ -84,7 +84,7 @@ O conteúdo em si: uma peça a ser publicada para um cliente em uma data/hora, c
 | `client` | FK → `Client` | sim | `on_delete=CASCADE`, `related_name='posts'` | Cliente dono do post. |
 | `calendar_id` | FK → `editorial_calendar.EditorialCalendar` | não (null) | `on_delete=CASCADE`, `related_name='posts'` | Regra do calendário editorial que originou o post (quando gerado automaticamente). |
 | `subject` | CharField(2000) | sim | — | Assunto/pauta. |
-| `title` | CharField(2000) | não | null/blank | Título (editável em lista no admin). |
+| `title` | TextField | não | null/blank | Título (editável em lista no admin). Sem teto de tamanho desde a MIG-358 (migration `0039_post_title_textfield`, era `CharField(2000)`). O carrossel do MiggoAI grava aqui o texto de **todos** os cards, multilinha. |
 | `post_format` | FK → `PostFormat` | não | `on_delete=SET_NULL`, `related_name='posts'` | Formato escolhido para publicação. |
 | `suggested_formats` | M2M → `PostFormat` | não | `related_name='suggested_posts'` | Formatos sugeridos pela regra do calendário. |
 | `tags` | JSONField | não | `default=list` | Palavras-chave herdadas de `EditorialCalendar.tags`. |
