@@ -183,7 +183,8 @@ Os dois só tomam o lock na thread da requisição — é a única forma de a re
 
 <ResponseField name="200 OK" type="object">`{image_b64, generation_id, reused}`. `reused: true` quando a peça já existia para aquela chave — **não gerou nem cobrou de novo**.</ResponseField>
 <ResponseField name="409 Conflict" type="object">`{status, generation_id, detail}` — a geração daquela chave está `PENDING`/`RUNNING`. Não inicia outra: é a trava que evita a segunda cobrança.</ResponseField>
-<ResponseField name="502 Bad Gateway" type="object">`{error, generation_id}` — a peça não saiu (`FAILED` ou geração sem imagem). É "não produziu", não "pedido errado".</ResponseField>
+<ResponseField name="422 Unprocessable Entity" type="object">`{error, error_kind: 'content_policy', generation_id}` — a OpenAI recusou o pedido pelo filtro de segurança (MIG-467; código `moderation_blocked` ou "rejected by the safety system"), depois dos fallbacks de anexo e de peça anterior. Repetir o mesmo pedido será recusado de novo: quem chama **não** deve retentar. O tipo fica em `Generation.result = {'error_kind': 'content_policy'}`.</ResponseField>
+<ResponseField name="502 Bad Gateway" type="object">`{error, generation_id}` — a peça não saiu (`FAILED` ou geração sem imagem). É "não produziu", não "pedido errado". Recusa de conteúdo não cai aqui: é o `422`.</ResponseField>
 
 O que a chave faz em cada estado:
 
@@ -204,8 +205,10 @@ Existe porque no caso da MIG-427 o chamador **nunca recebeu o pk**: o POST estou
 
 <ParamField query="client_id" type="integer">Opcional. Presente e a chave sendo de outro cliente → **404**, o mesmo de chave desconhecida (a diferença entre os dois contaria que aquela chave existe). `client_id` ilegível vale como filtro que não casa. O backend-miggo envia sempre.</ParamField>
 
-<ResponseField name="200 OK" type="object">`{status, generation_id}` + `image_b64` quando `SUCCESS`, ou + `error` quando `FAILED`. `SUCCESS` sem imagem é registro inconsistente e responde como `FAILED` — devolver `SUCCESS` sem imagem faria a plataforma gravar vazio.</ResponseField>
+<ResponseField name="200 OK" type="object">`{status, generation_id}` + `image_b64` quando `SUCCESS`, ou + `error` quando `FAILED` (com `error_kind: 'content_policy'` quando foi recusa do filtro de segurança, MIG-467). `SUCCESS` sem imagem é registro inconsistente e responde como `FAILED` — devolver `SUCCESS` sem imagem faria a plataforma gravar vazio.</ResponseField>
 <ResponseField name="404 Not Found" type="object">`{error: 'chave desconhecida.'}`.</ResponseField>
+
+**Geração órfã (MIG-463).** `Generation.updated_at` é o heartbeat: `PENDING`/`RUNNING` sem atividade há mais de 15 min (`GRID_ORFA_APOS`) é órfã — o processo caiu no meio. O `POST /grid/` com chave repetida e o `GET by-key/` chamam `_expirar_se_orfa`, que marca `FAILED` com `error='expirada: sem atividade há mais de 15 min'`. A expiração é **preguiçosa** (na consulta, sem cron). Sem ela, a chave ficaria presa em `409` para sempre. Todo `save(update_fields=...)` de uma geração em andamento precisa incluir `updated_at`, senão o `auto_now` não dispara.
 
 **GET `/api/generations/context/`**
 <ParamField path="client_id" type="integer" required />
@@ -242,6 +245,16 @@ Consolida as chamadas (`ChamadaIA`) da geração ou dos passos da execução:
 Retorna os detalhes de uma execução com seus passos aninhados (`ExecucaoSerializer`), acrescido de:
 - `custo`: bloco consolidado com o custo total da execução (`{usd, brl, estimado, sem_preco, chamadas}`).
 - `custo_por_etapa`: array `[{generation_id, etapa, usd, brl, estimado, sem_preco, chamadas}]` com a discriminação dos custos de cada passo na ordem em que rodaram.
+
+**GET `/api/custos/dashboard/`** (MIG-412)
+
+Dashboard financeiro, só leitura (`DashboardFinanceiroView`, `IsAuthenticated` como o resto do painel). Alimenta a aba **Financeiro** do frontend.
+
+<ParamField query="periodo" type="string">`mes` (padrão: mês corrente até hoje), `30d` (últimos 30 dias, hoje incluído) ou `intervalo`.</ParamField>
+<ParamField query="desde" type="string">`AAAA-MM-DD`, só com `periodo=intervalo`.</ParamField>
+<ParamField query="ate" type="string">`AAAA-MM-DD`, só com `periodo=intervalo`.</ParamField>
+
+Resposta: totais, série por dia e recortes por cliente, modelo e etapa (`services/agregados.py::dashboard`). **Medido e estimado vêm sempre separados**: a estimativa nunca é somada como se fosse medida. `400` para período inválido, datas fora de 2020–2100, `desde` depois de `ate`, ou intervalo de 366 dias ou mais (a série por dia vai inteira na resposta). A lista de clientes (`/api/clients/`) também traz `consumo_mes_medido`, `consumo_mes_estimado`, `consumo_total_medido` e `consumo_total_estimado`.
 
 **GET `/api/generations/`**
 <ParamField path="environment" type="string">`TEST` ou `PRODUCTION`.</ParamField>
