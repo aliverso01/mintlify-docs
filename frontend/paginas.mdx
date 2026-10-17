@@ -522,10 +522,10 @@ Só em `/app/*` (a equipe tem `AdminSupportPage`, em `area-admin.mdx`).
 | POST | `/api/v1/benefits/submit/` | propor um benefício (`FormData`) |
 
 <Warning>
-  **O paywall é lido pela ausência de chave, nunca por status de assinatura no cliente** (MIG-387). `resgateBloqueado(b)` (`benefitsApi.ts:58`) devolve `true` quando **qualquer uma** de `redemption_instructions`, `link` ou `coupon_code` vem `undefined` — as três somem juntas, e num paywall travar demais é melhor que vazar de menos. Nenhum card some e nenhuma lista é filtrada: o cadeado está no modal de resgate, com o CTA **Assinar um Plano** apontando para `/app/plans` (a mesma rota do `SubscriptionGuard`). Não reintroduza leitura de `subscription.status` aqui — o servidor é quem corta, e o front só reage ao que não veio.
+  **O paywall é lido pela ausência de chave, nunca por status de assinatura no cliente** (MIG-387). `resgateBloqueado(b)` (`benefitsApi.ts:58`) devolve `true` quando **qualquer uma** de `redemption_instructions`, `link` ou `coupon_code` vem `undefined` — as três somem juntas, e num paywall travar demais é melhor que vazar de menos. Nenhum card some e nenhuma lista é filtrada: o cadeado aparece no botão do card (**Exclusivo para assinantes**) e no modal de resgate, com o CTA **Assinar um Plano** apontando para `/app/plans` (a mesma rota do `SubscriptionGuard`). Não reintroduza leitura de `subscription.status` aqui — o servidor é quem corta, e o front só reage ao que não veio.
 </Warning>
 
-- **Propor benefício:** o botão fica bloqueado quando `can_submit` é `false` — para não-pagante, porque o `POST` responderia `403`; para quem já enviou e está em análise ou aprovado. Falha ao carregar `mine/` não bloqueia o catálogo.
+- **Propor benefício:** o cadeado do botão também sai da vitrine, não de `can_submit`: se algum card veio sem as chaves de resgate (`benefits.some(resgateBloqueado)`), o botão vira **Oferecer um benefício (Assinantes)** e abre o aviso de exclusividade com **Assinar um Plano** (`/app/plans`). Sem cadeado, **Criar Benefício** abre o `CreateBenefitModal`, onde `can_submit` decide entre o formulário e a situação do benefício já enviado (em análise ou aprovado). Vitrine vazia não trava o botão — quem recusa é o `403` do `POST`. Falha ao carregar `mine/` não bloqueia o catálogo.
 </Accordion>
 
 <Accordion title="UserProfiles — perfil do usuário logado">

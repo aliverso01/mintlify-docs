@@ -521,7 +521,7 @@ Detalhes que valem para as duas:
 
 #### Primeiro consumidor: o paywall de benefícios (MIG-387)
 
-`app.benefits` chama `e_pagante_ativo` em dois pontos, e é o exemplo de como usar a função:
+`app.benefits` chama `e_pagante_ativo` em três pontos (vitrine, submit e mine), e é o exemplo de como usar a função:
 
 - **`GET /api/v1/benefits/` (vitrine)** — para quem **não** é pagante ativo, o `BenefitSerializer` **omite** três chaves do JSON: `redemption_instructions`, `link` e `coupon_code` (`CAMPOS_DE_RESGATE`). Omitidas, **não vazias**: o front decide o cadeado pela **ausência** da chave, e campo vazio é indistinguível de parceiro que não tem cupom. O corte é no serializer e não na tela porque o critério fala em "retornado via API" — esconder no front deixaria o cupom visível na aba Network. O "é pagante?" é resolvido **uma vez por requisição**, no contexto da view (`pagante_ativo`), não por card. **Contexto ausente = não pagante** (falha fechada): serializer usado em caminho novo sem passar o contexto não vaza cupom por esquecimento.
 - **`POST /api/v1/benefits/submit/`** — não-pagante recebe `403` com `{"error": "Apenas clientes com plano ativo podem divulgar ofertas e serviços na nossa rede de membros. ..."}`. A checagem vem **antes** da de duplicidade; as recusas que já existiam (não é cliente, já enviou uma) seguem iguais.
