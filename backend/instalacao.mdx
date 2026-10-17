@@ -105,6 +105,7 @@ O `backend-miggo` é a API principal da plataforma Miggo, escrita em Django. Est
     | `OPENAI_MODEL` | `gpt-4o-mini` | `app/onboarding/services.py:909` |
     | `OPENAI_IMAGE_MODEL` | `gpt-image-2` | `app/onboarding/services.py:3950` |
     | `MEDIA_ANALYSIS_MODEL` | `gpt-4o-mini` | `app/media/analysis.py:114` |
+    | `PIXABAY_API_KEY` | `''` | `core/settings.py:510` — chave de API do Pixabay (acervo). Vazia deixa a fonte indisponível sem travar o boot |
     | `APIFY_TOKEN` | `''` | `app/client/instagram.py:64` — raspagem de Instagram |
     | `FRONTEND_URL` | `https://app.miggomkt.com.br` | `core/settings.py:331` — base para links de e-mail/redirects |
     | `BACKEND_URL` | `''` | `core/settings.py:341` — base para links de mídia via WhatsApp |
@@ -127,6 +128,7 @@ O `backend-miggo` é a API principal da plataforma Miggo, escrita em Django. Est
     | `GRID_APPROVAL_REMINDER_INTERVAL_HOURS` | `24` | `app/onboarding/cron.py:49-51` |
     | `GRID_APPROVAL_MAX_REMINDERS` | `3` | `app/onboarding/cron.py:53` |
     | `DYNAMIC_FLOW_STARTER_FLOW_ID` | `''` | `app/conversation/engine.py:58` — flow casca do Dynamic Block |
+    | `ACERVO_SERVICE_TOKEN` | — (sem default) | `app/account/permissions.py` — credencial de serviço do acervo, só em `media/acervo/elegiveis/` e `media/acervo/uso/`. **Mesma string no `.env` do miggoai-2.0.** Ausente: o caminho de serviço é recusado e o MiggoAI gera só com a galeria do cliente |
     | `LATE_API_KEY` | — | `app/post/zernio.py:27`, `app/post/views.py` — integração GetLate/Zernio (publicação em redes) |
     | `WHATSAPP_SEND_FLOW_DELAY` | `2.0` | `app/onboarding/services.py:1451` |
     | `WHATSAPP_FLOW_RETRY_ATTEMPTS` | `8` | `app/onboarding/services.py:1502` |

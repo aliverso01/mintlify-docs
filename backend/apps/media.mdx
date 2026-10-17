@@ -12,6 +12,8 @@ Ele é consumido em dois cenários:
 - **Galeria do cliente** (`from_media_library=True`): mídia enviada pelo cliente para reuso em posts futuros. O frontend lista via `MediaListView` e o mesmo registro pode depois ser vinculado a um post (`app.post.MediaPost`), o que o tira da listagem da galeria (`media_posts__isnull=True`).
 - **Upload de mídia de post**: usa o mesmo endpoint de criação (`MediaCreateView`); o vínculo `MediaPost` é criado logo em seguida e o `from_media_library` correspondente vira `False`.
 
+Desde a MIG-455 o app guarda também o **acervo interno da Miggo** (`StockPhoto`): fotos da equipe, sem dono, **em tabela própria**. A separação é deliberada — em vez de uma flag na `Media`, o isolamento é por construção: a galeria do cliente consulta `Media` e foto do acervo nunca está lá. As rotas do acervo são restritas à equipe (`IsManagementUser`); cliente autenticado recebe `403`.
+
 A mídia da galeria é também insumo para o serviço de IA (MiggoAI): a análise por IA implementada em `analysis.py` e agendada via `cron.py`/management command grava `ai_description`/`ai_keywords`, usados pelo `media_matcher` do MiggoAI para escolher uma foto do cliente como referência ao compor a imagem de um post (`app/media/analysis.py:1-17`).
 
 ## Arquivos
@@ -21,8 +23,9 @@ A mídia da galeria é também insumo para o serviço de IA (MiggoAI): a anális
 | `app/media/models.py` | Model `Media`, funções de resolução de caminho de upload (`get_upload_path`, `get_thumbnail_path`) e geração de thumbnail no `save()`. |
 | `app/media/serializers.py` | `MediaSerializer` — campos expostos, download de mídia por URL, resolução de `client`/`client_hash`/`media_path` na criação. |
 | `app/media/views.py` | Views de criação, listagem, atualização e exclusão; notificação de admins sobre novo upload na galeria. |
-| `app/media/urls.py` | Rotas do app (`create/`, `list/`, `update/<pk>/`, `delete/<pk>/`, `<pk>/`). |
+| `app/media/urls.py` | Rotas do app (`create/`, `list/`, `update/<pk>/`, `delete/<pk>/`, `<pk>/`, `acervo/`, `acervo/<pk>/`). `acervo/` vem **antes** de `<int:pk>/` para não ser lido como pk. |
 | `app/media/admin.py` | Registro simples do model `Media` no Django Admin. |
+| `app/media/fontes_externas.py` | Registro de fontes externas de imagem (`FONTES` + interface `FonteExterna`), cliente da API do Pixabay com cache de 24h, rate limit e download seguro (MIG-371). |
 | `app/media/apps.py` | `AppConfig` padrão do app. |
 | `app/media/analysis.py` | Chamada à Vision (OpenAI) para descrever a imagem, normalização de keywords e montagem do texto de busca (MIG-138). |
 | `app/media/cron.py` | Job em lote `analyze_media_library` que varre a galeria não analisada e grava a análise de IA; `relatorio_galeria` para diagnóstico. |
@@ -68,6 +71,79 @@ Representa um arquivo de mídia (imagem ou vídeo) pertencente a um usuário/cli
 - `_sniffed_extension(file_field)`: quando o upload não tem extensão reconhecível, lê os 16 primeiros bytes do arquivo e usa `utils.toolkit.extension_from_magic_bytes` para inferir o formato pelo conteúdo.
 - `_resolved_upload_name(instance, filename)`: gera o nome final via `utils.toolkit.generate_hashed_filename`, complementando com `_sniffed_extension` quando o hash não veio com extensão.
 
+### StockPhoto
+
+Foto do **acervo interno da Miggo** — não pertence a nenhum cliente. Definido em `app/media/models.py:157`, tabela própria criada pela migration `app/media/migrations/0014_stockphoto.py` (só `CreateModel`, sem operação destrutiva). MIG-455.
+
+| Campo | Tipo | Obrigatório | Default/Choices | Descrição |
+|---|---|---|---|---|
+| `image` | `FileField` | Sim | `upload_to=get_stock_upload_path` | Arquivo em `acervo/<hash32><ext>`. A extensão vem dos **magic bytes**, não do nome enviado. |
+| `thumbnail` | `ImageField` | Não | `null=True, blank=True` | 300x300, gerada no `save()` quando ainda não existe. Somente leitura na API. |
+| `titulo` | `CharField(255)` | Não | `blank=True, default=''` | — |
+| `descricao` | `TextField` | Não | `blank=True, default=''` | — |
+| `nicho` | `CharField(120)` | Não | `default=''`, `db_index=True` | Eixo de categorização; filtro da listagem. |
+| `tema` | `CharField(120)` | Não | `default=''`, `db_index=True` | Idem. |
+| `sentimento` | `CharField(120)` | Não | `default=''`, `db_index=True` | Idem. |
+| `palavras_chave` | `JSONField` | Não | `default=list, blank=True` | Lista de strings, no mesmo padrão do `Media.ai_keywords`. |
+| `origem` | `CharField(255)` | Não | `blank=True, default=''` | Origem/licença, texto livre — sem validação e sem auditoria. |
+| `fonte` | `CharField(20)` | Não | `default='upload'`, `db_index=True` | De onde a foto veio (`upload` ou `pixabay`, choices `STOCK_PHOTO_FONTES`). MIG-371. |
+| `fonte_id` | `CharField(64)` | Não | `blank=True, default=''` | Identificador da foto na fonte externa. |
+| `autor` | `CharField(255)` | Não | `blank=True, default=''` | Nome do fotógrafo/autor na fonte externa. |
+| `fonte_url` | `URLField(500)` | Não | `blank=True, default=''` | URL da página da foto na fonte externa para crédito/atribuição. |
+| `ativo` | `BooleanField` | Não | `default=True`, `db_index=True` | **É a curadoria**: desligar tira a foto do acervo sem apagar o arquivo. |
+| `escopo` | `CharField(20)`, choices | Não | `global` / `restrita`, **default `global`**, `db_index=True` | De quem é a foto (MIG-456). O default é `global` porque é o que a 455 entregou: as fotos que já estão lá continuam sendo de todos. |
+| `clientes_permitidos` | `ManyToManyField(client.Client)` | Não | `blank=True`, `related_name='stock_photos_permitidas'` | Vínculo nominal da foto restrita. |
+| `nichos_permitidos` | `ManyToManyField(client.Niche)` | Não | `blank=True`, `related_name='stock_photos_permitidas'` | Vínculo por nicho da foto restrita. |
+| `enviado_por` | `ForeignKey(CustomUser)` | Não | `null=True, blank=True`, `on_delete=SET_NULL`, `related_name='stock_photos'` | Preenchido pelo servidor; somente leitura na API. |
+| `created_at` / `updated_at` | `DateTimeField` | Não | `auto_now_add` / `auto_now` | — |
+
+`Meta.ordering = ['-created_at', '-id']`.
+
+**Constraints**:
+- `stockphoto_fonte_id_unica`: `UniqueConstraint(fields=['fonte', 'fonte_id'], condition=~Q(fonte_id=''))` — unicidade parcial que impede a reimportação duplicada da mesma imagem de um banco externo (migration `0017_stockphoto_fonte_externa`). Permite múltiplos registros com `fonte_id=''` (caso de fotos manuais via upload).
+
+<Note>
+  **`nicho` (texto) e `nichos_permitidos` (M2M) são coisas diferentes, e misturá-las é o erro fácil aqui.** O `CharField` `nicho` segue sendo **eixo de busca e categorização** — é o que o filtro da listagem usa. Quem **restringe** quem vê a foto é `escopo` + os dois M2M (MIG-456). Tema e sentimento continuam `CharField` porque taxonomia livre não estava pedida.
+</Note>
+
+#### Elegibilidade: `StockPhoto.objects.elegiveis_para(client)`
+
+**Fonte única da regra de escopo** (`StockPhotoQuerySet`, MIG-456). Uma foto entra quando está `ativo=True` **e** (é `global`, **ou** o cliente está em `clientes_permitidos`, **ou** o nicho do cliente está em `nichos_permitidos`).
+
+Duas consequências são o coração do card, nenhuma acidental:
+
+- **Cliente sem nicho** (`Client.niche` nulo) nunca casa restrição por nicho: vê o pool global e o que for restrito nominalmente a ele.
+- **Restrita sem nenhum vínculo não aparece para ninguém.** O default é fechado — foto marcada como restrita e esquecida sem destinatário fica invisível, em vez de vazar para a carteira inteira por omissão. É o que o campo de resposta `visivel_para_ninguem` sinaliza para a tela.
+
+`client=None` devolve só as globais. O `distinct()` não é enfeite: os dois M2M viram JOIN, e sem ele a foto restrita ao cliente **e** ao nicho dele volta duplicada.
+
+<Warning>
+  Toda consulta de pool passa por aqui, inclusive a seleção automática de imagem (MIG-371c). **Uma segunda redação desta regra é uma segunda chance de vazar foto de um cliente para outro** — não refaça o filtro à mão numa view nova.
+</Warning>
+
+### `StockPhotoUsage`
+
+Registro de que uma foto do acervo foi usada por um cliente. `app/media/models.py`, migration `0016_stockphotousage` (MIG-457).
+
+| Campo | Tipo | Detalhe |
+|---|---|---|
+| `stock_photo` | `ForeignKey(StockPhoto)` | **`on_delete=PROTECT`**, `related_name='usos'` |
+| `client` | `ForeignKey(client.Client)` | `on_delete=CASCADE`, `related_name='stock_photo_usos'` |
+| `generation_id` | `CharField(64)` | Id da geração que consumiu a foto |
+| `used_at` | `DateTimeField` | `auto_now_add=True` |
+
+`Meta`: `unique_together = ('stock_photo', 'client', 'generation_id')`, índice `(client, used_at)`, `ordering = ['-used_at', '-id']`.
+
+Existe para o **anti-fadiga**: sem log, a mesma foto do banco voltaria na geração seguinte e o cliente veria a própria marca repetindo a imagem. A janela é o `reuse_days` da preferência **dele** (`ClientMediaPreference`, ver [client](/backend/apps/client)) — a mesma régua que já governa a galeria; `0` desliga a janela, como lá.
+
+- **Repetição entre clientes é permitida** (suposição reversível da MIG-371): o log e a exclusão são por cliente, então a mesma foto global pode servir a marcas diferentes.
+- A unicidade da tripla deixa o `POST /acervo/uso/` **idempotente**: retry da mesma geração não vira uso novo e não reabre a janela de fadiga.
+- **`PROTECT` na foto** — apagar do acervo uma foto já usada apagaria a prova de que ela foi usada, e a exclusão de fadiga passaria a mentir. Na prática: `DELETE /acervo/<pk>/` de foto já usada responde `409`, não `500`.
+
+**Funções auxiliares do módulo**
+- `get_stock_upload_path(instance, filename)` — `acervo/<hash32>` mais a extensão inferida por `_sniffed_extension`. O **conteúdo** decide a extensão: nome enviado não entra no caminho, para um `.html` não ser servido como HTML no domínio da mídia.
+- `get_stock_thumbnail_path(instance, filename)` — mesmo padrão, para a miniatura.
+
 ## Endpoints
 
 Prefixo do app: `/api/v1/media/` (`core/urls.py:35`).
@@ -79,8 +155,34 @@ Prefixo do app: `/api/v1/media/` (`core/urls.py:35`).
 | PATCH/PUT | `/api/v1/media/update/<int:pk>/` | `MediaUpdateView` | `HasAPIKeyOrIsAuthenticated` + escopo por cliente (ver abaixo) |
 | DELETE | `/api/v1/media/delete/<int:pk>/` | `MediaDeleteView` | `HasAPIKeyOrIsAuthenticated` (default global) |
 | DELETE | `/api/v1/media/<int:pk>/` | `MediaDeleteView` | `HasAPIKeyOrIsAuthenticated` (default global) |
+| GET | `/api/v1/media/acervo/` | `StockPhotoListCreateView` | `IsManagementUserOnly` — MIG-455, endurecida na MIG-456 |
+| POST | `/api/v1/media/acervo/` | `StockPhotoListCreateView` | `IsManagementUserOnly` — idem |
+| GET | `/api/v1/media/acervo/nichos/` | `NicheListView` | `IsManagementUserOnly` — MIG-456 |
+| GET | `/api/v1/media/acervo/elegiveis/` | `StockPhotoElegiveisView` | `IsManagementUserOnly` **ou** token de serviço — MIG-456/457 |
+| POST | `/api/v1/media/acervo/uso/` | `StockPhotoUsageView` | `IsManagementUserOnly` **ou** token de serviço — MIG-457 |
+| PATCH | `/api/v1/media/acervo/<int:pk>/` | `StockPhotoDetailView` | `IsManagementUserOnly` — MIG-455, endurecida na MIG-456 |
+| DELETE | `/api/v1/media/acervo/<int:pk>/` | `StockPhotoDetailView` | `IsManagementUserOnly` — idem |
+| GET | `/api/v1/media/acervo/fontes/` | `FonteExternaListView` | `IsManagementUserOnly` — MIG-371 |
+| GET | `/api/v1/media/acervo/fontes/<str:fonte>/busca/` | `FonteExternaBuscaView` | `IsManagementUserOnly` — MIG-371 |
+| POST | `/api/v1/media/acervo/fontes/<str:fonte>/importar/` | `FonteExternaImportarView` | `IsManagementUserOnly` — MIG-371 |
 
-Nenhuma view do app declara `permission_classes` ou `authentication_classes` próprios; ambas herdam o default do projeto (`core/settings.py:135-141`): autenticação JWT (`rest_framework_simplejwt`) e permissão `app.account.permissions.HasAPIKeyOrIsAuthenticated` (libera acesso por API key OU usuário autenticado).
+As views de `Media` não declaram `permission_classes` nem `authentication_classes` próprios; herdam o default do projeto (`core/settings.py:135-141`): autenticação JWT (`rest_framework_simplejwt`) e permissão `app.account.permissions.HasAPIKeyOrIsAuthenticated` (libera acesso por API key OU usuário autenticado).
+
+**As views do acervo são a exceção**, e desde a MIG-456 são a exceção mais dura do projeto: declaram `permission_classes = [IsManagementUserOnly]` (`app/account/permissions.py:52`) — inclusive no `PATCH` e no `DELETE`, que costumam ficar de fora.
+
+- Cliente autenticado: `403` com `{"detail": "Acesso restrito à equipe Miggo."}`.
+- **API key sozinha: `401`** — ela não entra em nenhuma rota do acervo. Sem usuário autenticado o DRF responde `401`, não `403`.
+
+A diferença para a `IsManagementUser` (que devolve `True` para qualquer API key antes de olhar o usuário) é deliberada: a chave de serviço é **uma só**, compartilhada, não escopada por cliente e já circulou no bundle do frontend. Tolerável numa rota de gestão genérica, deixou de ser aqui — o acervo passou a carregar o **mapa de alocação cliente↔foto** (os dois M2M em toda resposta, e `/acervo/elegiveis/?client_id=` devolvendo o pool exato de um cliente a partir de um id da query string). Com a chave, varrer `client_id` de 1 a N reconstrói justamente o isolamento que o card existe para garantir.
+
+A restrição vale **só nas rotas do acervo**: `IsManagementUser` segue como está e nenhuma outra rota muda.
+
+**A credencial de serviço (MIG-457).** O MiggoAI precisava de duas rotas e só delas, então ganhou token próprio em vez da chave compartilhada: `HasAcervoServiceToken` (`app/account/permissions.py`) compara o header **`Acervo-Service-Token`** com a env **`ACERVO_SERVICE_TOKEN`** em tempo constante (`compare_digest` — o token é fixo e longo, e `==` vazaria o prefixo pelo tempo de resposta).
+
+- Vale **apenas** em `GET /acervo/elegiveis/` e `POST /acervo/uso/`, declarado como `[IsManagementUserOnly | HasAcervoServiceToken]`. As demais rotas do acervo seguem só para gente da equipe.
+- **Sem a env configurada o caminho de serviço é recusado** e o motivo vai para o log — não há default, nem vazio nem de exemplo: um default seria credencial publicada no repositório.
+- O token é escopado **por rota, não por cliente**. Foi decisão explícita: o consumidor legítimo é a rodada do MiggoAI, que precisa do pool da carteira inteira, e um token por cliente não casaria com esse uso. O token vive só em env, nunca em bundle.
+- **No caminho de serviço a resposta é enxuta**: sem `clientes_permitidos`/`nichos_permitidos` (`StockPhotoServicoSerializer`). Quem consome não precisa saber com quais outras marcas a foto é compartilhada; para usuário de gestão a resposta segue completa, porque na tela os vínculos são o assunto.
 
 <AccordionGroup>
 <Accordion title="POST /api/v1/media/create/ — MediaCreateView">
@@ -130,6 +232,189 @@ Erros: `404` — pk fora do escopo do cliente ou inexistente.
 <Accordion title="DELETE /api/v1/media/delete/<pk>/ e /api/v1/media/<pk>/ — MediaDeleteView">
 Exclui o registro (`DestroyAPIView` puro, sem lógica adicional além do queryset completo). As duas rotas apontam para a mesma view.
 </Accordion>
+<Accordion title="GET/POST /api/v1/media/acervo/ — StockPhotoListCreateView (MIG-455)">
+Acervo interno da Miggo. `IsManagementUser` nas duas verbas; `MultiPartParser`/`FormParser`.
+
+**GET** — lista paginada (`StandardPagination`, `utils/pagination.py`), ordenada por `-created_at, -id`.
+
+<ParamField query="nicho" type="string">Casa exato, *case-insensitive* (`__iexact`).</ParamField>
+<ParamField query="tema" type="string">Idem.</ParamField>
+<ParamField query="sentimento" type="string">Idem.</ParamField>
+<ParamField query="ativo" type="string">`true`/`1`/`yes` ou qualquer outra coisa para `false`. Omitido, traz os dois.</ParamField>
+<ParamField query="escopo" type="string">`global` ou `restrita` (MIG-456) — separa o pool compartilhado do que é de alguém. Outro valor é ignorado.</ParamField>
+<ParamField query="q" type="string">Busca em `titulo`, `descricao` e `palavras_chave` (`icontains` sobre o texto cru do JSON — basta para a tela e não exige campo novo).</ParamField>
+<ParamField query="page" type="integer" />
+<ParamField query="page_size" type="integer">10, 30, 50 ou 100 (default 10).</ParamField>
+
+Resposta `200`: `{ "count", "next", "previous", "results": [StockPhoto] }`.
+
+**POST** — upload em **lote** no mesmo multipart.
+
+<ParamField body="image" type="file" required>Repita o campo para enviar várias (`images` também é aceito). Máximo **20** por requisição (`MAX_ARQUIVOS_POR_LOTE`).</ParamField>
+<ParamField body="titulo / descricao / nicho / tema / sentimento / origem" type="string">Valem para **o lote inteiro** — a tela sobe um conjunto já categorizado e a edição fina é o `PATCH`.</ParamField>
+<ParamField body="palavras_chave" type="string">Campo repetido, ou uma string separada por vírgula.</ParamField>
+<ParamField body="escopo" type="string">`global` (default) ou `restrita` — vale para o lote inteiro (MIG-456).</ParamField>
+<ParamField body="clientes_permitidos / nichos_permitidos" type="string">Ids, campo repetido no multipart (`getlist`). Valem para o lote inteiro.</ParamField>
+
+`201` quando **ao menos uma** entrou; `400` com o **mesmo corpo** quando nenhuma entrou:
+
+```json
+{
+  "criadas": [ { "id": 12, "image": "...", "thumbnail": "...", "nicho": "odontologia", "ativo": true, "enviado_por": 3 } ],
+  "falhas":  [ { "arquivo": "virus.txt", "error": "não é uma imagem suportada (aceitos: JPG, PNG, GIF, WEBP)" } ],
+  "total_enviado": 3,
+  "total_criado": 2
+}
+```
+
+Um arquivo ruim **não derruba o lote**: a recusa entra em `falhas` com o motivo e o resto segue. Recusas por arquivo (`_erro_do_arquivo_de_acervo`, `views.py:454-468`): acima de `UPLOAD_MAX_IMAGE_SIZE_MB`, ou conteúdo que não é JPG/PNG/GIF/WEBP pelos magic bytes. `400` **sem as listas** (`{"error": "..."}`) quando não veio arquivo nenhum ou passaram de 20.
+</Accordion>
+
+<Accordion title="GET /api/v1/media/acervo/nichos/ — NicheListView (MIG-456)">
+A taxonomia para o picker de alocação. Devolve `[{id, nome, slug, ativo}]` — **a lista inteira, inativos incluídos**, porque o picker precisa rotular um vínculo que já existe para um nicho desativado.
+
+Nesta volta a tabela tem só a linha semeada **"Não informado"** (`slug='nao-informado'`, migration `app/client/migrations/0022_seed_niche_nao_informado.py`): a taxonomia validada e a reclassificação dos clientes são uma data migration posterior, pendente de decisão de negócio. O estado "sem nicho" precisava existir explícito e endereçável.
+</Accordion>
+
+<Accordion title="GET /api/v1/media/acervo/elegiveis/?client_id=<id> — StockPhotoElegiveisView (MIG-456)">
+O pool **pelo olhar de um cliente**: roda `StockPhoto.objects.elegiveis_para(client)` e devolve a lista paginada igual à do `/acervo/`. É a ferramenta de conferência da equipe — antes de afirmar que o isolamento funciona, dá para ver a lista exata que aquele cliente alcança. Usa o **mesmo** `elegiveis_para` da seleção de imagem: se esta tela e a geração divergissem, a conferência não valeria nada.
+
+<ParamField query="client_id" type="integer" required>Só dígitos. Ausente ou inválido: `400` `{"error": "Informe um client_id válido."}`. Cliente inexistente: `404` `{"error": "Cliente não encontrado."}`.</ParamField>
+<ParamField query="fadiga" type="string">`1`/`true` tira do pool o que **este** cliente já usou dentro da janela de reuso dele (MIG-457) — o `reuse_days` da `ClientMediaPreference`, `0` desliga. É assim que o Orquestrador não repete a mesma foto em gerações seguidas.</ParamField>
+
+Resposta `200`: mesmo envelope paginado da listagem — **completa** para usuário de gestão, **enxuta** (sem os dois M2M) para quem entrou pelo token de serviço.
+</Accordion>
+
+<Accordion title="POST /api/v1/media/acervo/uso/ — StockPhotoUsageView (MIG-457)">
+Registra que uma foto do acervo foi usada. Quem chama é o MiggoAI, **depois** de a geração concluir com uma foto do banco — é este registro que alimenta o `?fadiga=1` da rota acima.
+
+<ParamField body="client_id" type="integer" required />
+<ParamField body="stock_photo_id" type="integer" required />
+<ParamField body="generation_id" type="string" required>Id da geração que consumiu a foto (truncado em 64 caracteres).</ParamField>
+
+<ResponseField name="201 Created" type="object">`{id, client_id, stock_photo_id, generation_id, used_at, ja_registrado: false}`.</ResponseField>
+<ResponseField name="200 OK" type="object">Mesmo corpo com `ja_registrado: true` — a tripla é única, então o retry da mesma geração é inofensivo e **não reabre a janela de fadiga**.</ResponseField>
+<ResponseField name="400 Bad Request" type="object">Campos faltando/invalidos, cliente inexistente, ou **foto fora do pool daquele cliente** (`{"error": "Esta foto não está disponível para este cliente."}`).</ResponseField>
+
+A elegibilidade é reconferida aqui, e não confiada ao chamador: o pool pode ter mudado entre a consulta e a geração, e registrar uso de foto fora do pool gravaria como verdade exatamente o vazamento que a MIG-456 fechou.
+</Accordion>
+
+<Accordion title="PATCH/DELETE /api/v1/media/acervo/<pk>/ — StockPhotoDetailView (MIG-455)">
+`IsManagementUserOnly` nas duas verbas.
+
+**PATCH** — edição parcial de tags, curadoria (`ativo`) e **alocação** (`escopo`, `clientes_permitidos`, `nichos_permitidos`, MIG-456). `200` com o objeto; `400` com os erros por campo do serializer; `404` `{"error": "Foto não encontrada."}`.
+
+**DELETE** — `204` sem corpo; `404` com o mesmo formato; **`409` quando a foto já foi usada** por algum cliente (`StockPhotoUsage` a segura com `PROTECT`): `{"error": "Esta foto já foi usada em conteúdo de cliente e não pode ser apagada. Desative-a para tirá-la do acervo."}`. Sem esse tratamento a `ProtectedError` subia como `500` com stack trace na tela.
+</Accordion>
+
+<Accordion title="GET /api/v1/media/acervo/fontes/ — FonteExternaListView (MIG-371)">
+Lista as fontes externas de imagem registradas no sistema e sua disponibilidade (`IsManagementUserOnly`).
+
+Resposta `200`:
+```json
+[
+  { "chave": "pixabay", "nome": "Pixabay", "disponivel": true }
+]
+```
+`disponivel` indica se a variável de ambiente necessária (`PIXABAY_API_KEY`) está configurada no servidor.
+</Accordion>
+
+<Accordion title="GET /api/v1/media/acervo/fontes/<fonte>/busca/ — FonteExternaBuscaView (MIG-371)">
+Busca paginada de imagens na fonte externa informada (`IsManagementUserOnly`). Hoje suporta `fonte = "pixabay"`.
+
+<ParamField query="q" type="string">Termo de busca textual. Limite máximo de **100** caracteres (`MAX_Q`).</ParamField>
+<ParamField query="image_type" type="string" default="all">Tipo de imagem: `all`, `photo`, `illustration`, `vector`.</ParamField>
+<ParamField query="orientation" type="string" default="all">Orientação: `all`, `horizontal`, `vertical`.</ParamField>
+<ParamField query="category" type="string">Categoria Pixabay (`backgrounds`, `fashion`, `nature`, `science`, `education`, `feelings`, `health`, `people`, `religion`, `places`, `animals`, `industry`, `computer`, `food`, `sports`, `transportation`, `travel`, `buildings`, `business`, `music`).</ParamField>
+<ParamField query="page" type="integer" default="1">Número da página (inteiro >= 1).</ParamField>
+
+Resposta `200` (`per_page` fixo em 30 itens):
+```json
+{
+  "total": 520,
+  "pagina": 1,
+  "por_pagina": 30,
+  "itens": [
+    {
+      "id": "123456",
+      "preview_url": "https://cdn.pixabay.com/photo/..._150.jpg",
+      "imagem_url": "https://pixabay.com/get/..._640.jpg",
+      "largura": 1920,
+      "altura": 1080,
+      "tags": ["escritorio", "trabalho", "reuniao"],
+      "autor": "joaosilva",
+      "pagina_url": "https://pixabay.com/photos/...",
+      "ja_importada": false
+    }
+  ]
+}
+```
+
+O campo `ja_importada` é computado dinamicamente pelo backend checando a existência prévia de `StockPhoto` com `(fonte, fonte_id)`.
+
+**Erros:**
+- `400`: termo `q` excedendo 100 caracteres (`{"error": "O termo de busca aceita até 100 caracteres."}`), valor inválido para filtro (`{"error": "Valor inválido para \"<campo>\"."}`) ou página inválida (`{"error": "Página inválida."}`).
+- `404`: fonte desconhecida (`{"error": "Fonte externa '<fonte>' não encontrada."}`).
+- `502`: erro de rede, timeout, resposta inválida ou rate limit excedido na API da fonte (`{"error": "Não foi possível consultar a fonte externa no momento."}`).
+- `503`: fonte sem chave de API configurada no ambiente (`{"error": "A fonte externa não está configurada neste ambiente."}`).
+</Accordion>
+
+<Accordion title="POST /api/v1/media/acervo/fontes/<fonte>/importar/ — FonteExternaImportarView (MIG-371)">
+Importação em lote de imagens da fonte externa para o acervo (`IsManagementUserOnly`). Body em JSON (`application/json`).
+
+Para cada imagem solicitada em `ids`, o backend consulta novamente os metadados na fonte (a URL de download é efêmera e nunca é informada pelo cliente), valida as regras de segurança e domínio, baixa os bytes da imagem para o storage próprio da Miggo (sem hotlink) e instancia um `StockPhoto` passando pela validação do `StockPhotoSerializer`.
+
+<ParamField body="ids" type="array" required>Lista de até **20** identificadores externos de fotos a importar (`MAX_IDS_POR_IMPORTACAO`). Devem ser strings ou inteiros estritamente numéricos.</ParamField>
+<ParamField body="titulo / descricao / nicho / tema / sentimento / origem" type="string">Metadados de catalogação aplicados a todas as fotos importadas no lote.</ParamField>
+<ParamField body="palavras_chave" type="string | array">Tags extras adicionadas às tags originais da imagem externa.</ParamField>
+<ParamField body="escopo" type="string" default="global">`global` ou `restrita`.</ParamField>
+<ParamField body="clientes_permitidos / nichos_permitidos" type="array">IDs de clientes ou nichos vinculados quando `escopo = "restrita"`.</ParamField>
+
+Resposta `201`:
+```json
+{
+  "importadas": [
+    {
+      "id": 42,
+      "image": "https://.../acervo/a1b2c3d4...jpg",
+      "thumbnail": "https://.../acervo/thumbnails/thumb_...jpg",
+      "titulo": "Reunião de equipe",
+      "descricao": "",
+      "nicho": "tecnologia",
+      "tema": "trabalho",
+      "sentimento": "confianca",
+      "palavras_chave": ["escritorio", "trabalho", "reuniao", "corporativo"],
+      "origem": "Pixabay — joaosilva",
+      "fonte": "pixabay",
+      "fonte_id": "123456",
+      "autor": "joaosilva",
+      "fonte_url": "https://pixabay.com/photos/...",
+      "ativo": true,
+      "enviado_por": 1,
+      "created_at": "2026-10-15T18:00:00Z"
+    }
+  ],
+  "ignoradas": [
+    { "id": "789012", "motivo": "já importada" }
+  ]
+}
+```
+
+**Comportamento do lote:**
+- Uma falha por item **não derruba o lote**: itens válidos continuam sendo persistidos.
+- **Motivos de descarte (`ignoradas`)**:
+  - `já importada`: foto já existe no banco com `(fonte, fonte_id)` ou colidiu concorrentemente com a constraint.
+  - `não encontrada`: ID não retornado pela fonte externa.
+  - `fonte indisponível`: erro transitório ou chave ausente ao buscar item específico.
+  - `falha no download`: erro de rede ou status HTTP diferente de 200 no download da imagem.
+  - `arquivo não suportado`: host de download fora da allowlist (`*.pixabay.com` em https), redirecionamento proibido, Content-Type não-imagem, ou tamanho excedendo 15 MB.
+  - `dados inválidos`: erro de validação de serializer nos campos da foto.
+
+**Erros globais da requisição (rejeição do lote inteiro):**
+- `400`: body sem `ids` ou com lista vazia, mais de 20 IDs, identificadores inválidos, ou metadados de catalogação/alocação inválidos.
+- `404`: fonte informada na URL não existe.
+</Accordion>
+
 </AccordionGroup>
 
 ## Serializers
@@ -152,6 +437,13 @@ Exclui o registro (`DestroyAPIView` puro, sem lógica adicional além do queryse
 - Se não houver `user` resolvido (nem `client` válido nem usuário autenticado), levanta `ValidationError({'user': ...})`.
 - Resolve `client_hash`: por `user.client.hash` (client), depois `user.hash` (fallback), depois `'unknown'`.
 - Resolve `media_path`: busca a última `Media` do mesmo `client_hash`; se existe e tem menos de 100 itens nesse `media_path`, reaproveita o mesmo path; caso contrário (ou se não há mídia anterior), gera um novo via `utils.toolkit.generate_unique_media_path()`. Efeito: mídias do mesmo cliente são agrupadas em lotes de até 100 por "pasta" lógica.
+
+### StockPhotoSerializer (`app/media/serializers.py:147`)
+`ModelSerializer` sobre `StockPhoto`, campos explícitos (não `'__all__'`): `id`, `image`, `thumbnail`, `titulo`, `descricao`, `nicho`, `tema`, `sentimento`, `palavras_chave`, `origem`, `fonte`, `fonte_id`, `autor`, `fonte_url`, `ativo`, `enviado_por`, `created_at`, `updated_at`.
+
+**Campos somente-leitura**: `id`, `thumbnail`, `enviado_por`, `created_at`, `updated_at`, `fonte`, `fonte_id`, `autor`, `fonte_url` — os arquivos, autor e metadados de procedência externa são escritos pelo servidor; quem sobe não escolhe caminho nem autor (`enviado_por` vem de `request.user` no `save()` da view; metadados externos vêm da resposta da API da fonte na importação).
+
+**`validate_palavras_chave`**: aceita lista ou string. String é quebrada por vírgula (multipart manda campo repetido ou texto separado por vírgula), `None`/`''` viram `[]`, e qualquer outro tipo levanta `ValidationError`. Itens em branco são descartados.
 
 ## Regras de negócio e funções
 
@@ -209,6 +501,34 @@ Assinante pago (`Subscription.status == 'ACTIVE'`) não sofre nenhuma trava de t
   - Salva com `media.save(update_fields=['description'])`. Qualquer exceção é só logada via `print`, sem propagar (roda em thread separada, chamada por `MediaCreateView.perform_create` quando `skip_ai_analysis` não é verdadeiro).
   - Nota: esta é uma via de descrição **diferente** da análise `ai_description`/`ai_keywords` de `analysis.py`/`cron.py` — preenche o campo `description` (o mesmo que o cliente edita manualmente), então só roda se `description` ainda estiver vazio.
 
+### `fontes_externas.py` — fontes externas e conector Pixabay (MIG-371)
+
+Centraliza a integração com bancos de imagens externos para abastecer o acervo interno da Miggo (`StockPhoto`).
+
+- **Arquitetura (`FonteExterna` e registro `FONTES`)**:
+  - Toda fonte herda de `FonteExterna` e declara `chave` (`pixabay`), `nome` (`Pixabay`), além dos métodos `disponivel()`, `buscar(filtros, pagina)`, `obter(id_externo)` e `baixar(url)`.
+  - O registro ativo vive em `FONTES = {f.chave: f for f in (PixabayFonte(),)}`.
+- **Regras do conector Pixabay (`PixabayFonte`)**:
+  - **Download seguro**: a foto é baixada diretamente para o storage próprio da Miggo via `SimpleUploadedFile` — não há hotlink nem exibição direta de links de terceiros. A URL de download é obtida novamente na API pelo backend e nunca é aceita a partir do payload do cliente.
+  - **Allowlist de host e protocolo**: apenas URLs com esquema `https` e hostname estritamente igual a `pixabay.com` ou terminando em `.pixabay.com`.
+  - **Redirect bloqueado**: `requests.get` roda com `allow_redirects=False` para impedir ataques de SSRF via redirecionamento externo.
+  - **Content-Type e tamanho**: valida cabeçalho `image/*` e interrompe o stream se ultrapassar 15 MB (`LIMITE_DOWNLOAD_BYTES = 15 * 1024 * 1024`), recusando com `DownloadRecusado('arquivo não suportado')`.
+  - **Cache de buscas por 24h**: exigência dos termos do Pixabay. O digest SHA-256 é calculado sobre os filtros e a página, e a chave é armazenada como `acervo:pixabay:<digest>` (`CACHE_SEGUNDOS = 86400`). A chave da API fica explicitamente fora do hash do cache.
+  - **Rate limiting de 100 req/min**: chave de controle `acervo:pixabay:rate:<YYYYMMDDHHmm>` incrementada no cache com expiração de 70s. Se exceder `LIMITE_REQ_POR_MINUTO = 100`, levanta `FonteComErro` sem disparar requisição externa.
+  - **Segurança da credencial `PIXABAY_API_KEY`**: a chave só existe no backend (`settings.PIXABAY_API_KEY`) e nunca vai ao frontend nem ao log. Exceções geradas pelo `requests` carregam a URL com `key=` na mensagem, portanto são capturadas e mascaradas relançando `FonteComErro()` com `raise ... from None`. Se a chave não estiver configurada no ambiente, `disponivel()` retorna `False` e qualquer tentativa de consulta levanta `FonteIndisponivel` (HTTP 503).
+- **Como adicionar uma nova fonte externa**:
+  1. Crie uma classe herdando de `FonteExterna` em `app/media/fontes_externas.py`.
+  2. Defina os atributos de classe `chave` e `nome`.
+  3. Implemente `disponivel()`, `buscar(filtros, pagina)`, `obter(id_externo)` e `baixar(url)`.
+  4. Instancie e adicione ao dicionário `FONTES`.
+  5. Adicione a choice em `STOCK_PHOTO_FONTES` em `app/media/models.py` e crie a migration correspondente para persistir fotos com a nova fonte.
+  *(Nota: nesta primeira versão a única fonte é o Pixabay. Mixkit ficou de fora porque não tem banco de fotos nem API e os termos de uso proíbem bots; Pexels, porque não libera mais chave de API. A segunda fonte é decisão de planejamento.)*
+
+<Note>
+  **Limitação conhecida — cache e rate limit em LocMem:**
+  O cache de 24h das buscas e o rate limit de 100 req/min utilizam o backend de cache configurado no Django (`django.core.cache.cache`, por padrão `LocMemCache`). Por isso, tanto o cache quanto o contador de requisições valem por processo/worker isolado, e não para o servidor inteiro de forma centralizada.
+</Note>
+
 ## Erros comuns / pontos de atenção
 
 - Upload multipart de cliente em teste grátis acima de `UPLOAD_MAX_IMAGE_SIZE_MB`/`UPLOAD_MAX_VIDEO_SIZE_MB` retorna `400` com `{"error": "..."}` — formato diferente do erro padrão do DRF (`views.py:74-86`).
@@ -217,7 +537,14 @@ Assinante pago (`Subscription.status == 'ACTIVE'`) não sofre nenhuma trava de t
 - `generate_thumb` em `Media.save()` só cobre extensões de imagem fixas (`.png/.jpg/.jpeg/.gif/.webp`); vídeos e outros formatos nunca recebem thumbnail automática. Qualquer falha na geração é engolida (só `print`), então uma mídia pode ficar sem `thumbnail` silenciosamente.
 - A galeria listada em `MediaListView` exclui mídia já vinculada a um post (`media_posts__isnull=True`); uma mídia da galeria some da listagem assim que é usada em um post, mesmo mantendo `from_media_library=True`.
 - O job `analyze_media_library` descarta definitivamente (sem `ai_description`) imagens cujo arquivo sumiu do storage ou que a Vision recusa de forma não recuperável — reprocessar exige `--force` explicitamente.
+- **Acervo e galeria são tabelas diferentes.** `StockPhoto` não aparece em `/api/v1/media/list/`: foto do acervo nunca vaza para a galeria de um cliente, e esconder a tela não é o que garante isso. Ao mexer no acervo, não "resolva" nada com flag na `Media` — a separação é o mecanismo de isolamento.
+- **Vínculo com `escopo=global` é recusado com `400`, nunca corrigido em silêncio** (`StockPhotoSerializer.validate`, MIG-456). É a falha mais perigosa do card e a mais fácil de cometer: o formulário diz "estas fotos são do cliente X", os vínculos são gravados, e `elegiveis_para` casa pelo ramo `escopo='global'` — a foto entra no pool da carteira inteira sem nada na tela indicando isso (`visivel_para_ninguem` só fala de restrita). A mensagem pede que se escolha um dos dois: `{"escopo": "Foto com cliente ou nicho vinculado precisa ter escopo \"restrita\". Para deixá-la global, remova os vínculos."}`.
+- `visivel_para_ninguem` é **somente leitura** e sai em toda resposta de foto: `true` quando a foto é `restrita` e não tem nenhum vínculo. Ela é válida e existe — só não aparece para ninguém, que é o default fechado, não um bug.
+- Tirar uma foto do acervo é `ativo=false` (PATCH), não `DELETE`: o arquivo continua no storage e a foto pode voltar.
+- O `404` do acervo vem com texto diferente em cada verbo — `"Foto não encontrada."` no `PATCH` e `"Foto nao encontrada."` (sem acento) no `DELETE`, `views.py:601` vs `views.py:613`. Quem tratar a mensagem no cliente não deve comparar string.
 - `generate_media_description_async` e o job de `cron.py`/`analysis.py` são dois mecanismos de IA independentes, escrevendo em campos diferentes (`description` vs. `ai_description`/`ai_keywords`) — não confundir um com o outro ao investigar por que uma mídia "não tem descrição".
+- **Importação do Pixabay e unicidade parcial**: o backend garante que a mesma imagem não seja importada em duplicidade através de `UniqueConstraint(fields=['fonte', 'fonte_id'])`. Em colisões concorrentes, o arquivo gravado no storage é deletado de forma best-effort e o item é retornado na lista `ignoradas` com motivo `"já importada"`.
+- O limite e cache do Pixabay operam sobre o cache configurado (LocMem); em ambiente com múltiplos workers Gunicorn, cada processo gerencia sua própria cota e seu próprio cache de 24h.
 
 ## Relacionados
 

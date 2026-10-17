@@ -142,6 +142,7 @@ Fonte: `backend/.env.example:1-17` e leituras `config(...)` em `backend/core/set
 | `DB_HOST` | Sim | Host do PostgreSQL. |
 | `DB_PORT` | Sim | Porta do PostgreSQL. |
 | `MIGGO_API_KEY` | Sim | API Key do backend principal — usada por `apps.common.miggo_client` (`settings.py:179`) para leitura e, na geração diária, para escrita (upload de mídia e update do post). |
+| `ACERVO_SERVICE_TOKEN` | Não | Credencial **escopada** das rotas `media/acervo/elegiveis/` e `media/acervo/uso/` do backend-miggo (MIG-457), enviada no header `Acervo-Service-Token`. **Não é a `MIGGO_API_KEY`** — aquelas rotas recusam a chave compartilhada. Mesma string nos dois repos; ausente, o banco de imagens é ignorado (com `WARNING`) e a geração segue só com a galeria. |
 | `MIGGO_API_BASE_URL` | Sim | URL base do backend principal (`settings.py:180`). |
 | `OPENAI_API_KEY` | Não (default `''`) | Chave OpenAI usada pelos workflows de geração (`settings.py:182`). |
 | `CORS_ALLOWED_ORIGINS` | Não (default vazio) | Origens CORS permitidas, CSV (`settings.py:32`). |

@@ -206,6 +206,7 @@ Consumidas por `apps/common/miggo_client.py` e `apps/generations/services/openai
 | `ALLOWED_HOSTS` | `ALLOWED_HOSTS` | Não |
 | `DB_NAME` / `DB_USER` / `DB_PASSWORD` / `DB_HOST` / `DB_PORT` | `DATABASES` | Sim |
 | `MIGGO_API_KEY` / `MIGGO_API_BASE_URL` | `MIGGO_API_KEY` / `MIGGO_API_BASE_URL` | Sim |
+| `ACERVO_SERVICE_TOKEN` | `ACERVO_SERVICE_TOKEN` | Não (`default=''`) — sem ela o banco de imagens da Miggo não é consultado e a geração segue só com a galeria do cliente |
 | `OPENAI_API_KEY` | `OPENAI_API_KEY` | Não (`default=''`) |
 | `CORS_ALLOWED_ORIGINS` | `CORS_ALLOWED_ORIGINS` | Não |
 | `CSRF_TRUSTED_ORIGINS` | `CSRF_TRUSTED_ORIGINS` | Não |
