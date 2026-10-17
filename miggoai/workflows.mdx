@@ -235,12 +235,17 @@ python manage.py generate_daily_contents --dry-run        # só lista os cards
 Fluxo por card:
 
 1. Clientes: `client/list/?miggoai_workflow_enabled=true` (todas as páginas) — `apps.clients.services.list_workflow_enabled_clients`, que devolve `{id, em_trial, pediu_geracao}` a partir do `subscription.status`. A flag é ligada/desligada pelo admin em **Predefinições de Criação de Conteúdo** (ver [client](/backend/apps/client)). Desde a MIG-399 essa listagem já chega **filtrada por elegibilidade** no backend-miggo (trial vencido e inadimplente fora da carência não vêm); nada mudou aqui, a forma da resposta é a mesma.
+1b. Grid (MIG-462): antes de listar cards, `rodada.cliente_tem_grid` consulta o grid do cliente (`image_url` ou `url`). **Sem grid a rodada pula o cliente**: não chama nenhuma etapa paga e o `generation_requested_at` continua marcado, então o pedido segue pendente até o grid existir. Falha na consulta (`MiggoAPIError`) também pula o cliente, sem consumir o pedido. `gerar-agora/` aplica a mesma regra e responde `detalhe` "cliente sem grid — nada gerado."
 2. Cards: `post/list/?client_id=&status=pending&start_date=&end_date=` na janela do cliente.
 3. Reserva: `PATCH post/update/<id>/` → status `processing`, para duas execuções não pegarem o mesmo card.
 4. Gera: `run_complete(...)`. Qualquer passo que não termine em `SUCCESS` aborta o card.
 5. Entrega (`apps/generations/services/delivery.py::deliver`):
    - cada imagem sobe em `media/create/` (multipart, `client`, `from_media_library=false`, `skip_ai_analysis=true`) e é ligada em `post/media-post/create/` com `sort_order` na ordem dos cards;
-   - `PATCH post/update/<id>/` com `title` (ângulo escolhido), `content` (legenda + hashtags no fim — o post não tem campo de hashtags), `post_format` (só se o card estava sem formato: o sugerido que bate com o `format_key` gerado) e, por último, status `scheduled`.
+   - `PATCH post/update/<id>/` com `title` (`runner.titulo_do_post`: feed/story, o texto da arte; carrossel, o texto de **todos** os cards na ordem, separados por `
+
+---
+
+`, sem corte — MIG-358), `content` (legenda + hashtags no fim — o post não tem campo de hashtags), `post_format` (só se o card estava sem formato: o sugerido que bate com o `format_key` gerado) e, por último, status `scheduled`.
 6. Falha em 4 ou 5 → o card volta para `pending`; o erro fica na `Generation` (painel).
 
 A escrita usa as rotas que o `backend-miggo` já tinha, com a mesma `MIGGO_API_KEY` das leituras (`apps.common.miggo_client.post`/`patch`).
@@ -255,6 +260,20 @@ Pontos de atenção:
 - No dia em que o cliente sai do trial, os cards do próximo dia programado não entram (em trial ele gerava o 1º dia programado; fora dele passa a gerar o 2º). Cubra com uma execução manual para o cliente.
 - Se a falha ocorrer depois do upload das imagens, elas ficam no post; uma nova execução sobe outras.
 - Imagens geradas são **somadas** a mídias que o card pendente já tenha.
+
+### Management command: `estimar_custo_historico`
+
+`backend/apps/custos/management/commands/estimar_custo_historico.py` (MIG-412). Estima o custo das gerações anteriores à instrumentação de custos e grava `ChamadaIA` com `estimado=True` e a data da geração (regras em `apps/custos/services/estimativa.py`). **Não chama API nenhuma:** tokens pelo `tiktoken`, preço pela `PrecoModelo` e câmbio pela `CotacaoDolar` já gravada.
+
+```bash
+python manage.py estimar_custo_historico --dry-run
+python manage.py estimar_custo_historico --desde 2026-08-01 --ate 2026-09-30 --client-id 72 --environment PRODUCTION
+```
+
+- **Fonte:** a trilha de auditoria da geração. Sem trilha, reconstrói a entrada pelo template da versão usada com `variables_used`, a saída pelo `result` e o modelo pelo `WorkflowConfig`; imagem conta por `image_paths`. O relatório agrega o motivo das gerações que ficam de fora.
+- **Idempotente:** geração que já tem qualquer `ChamadaIA` (medida ou estimada) é pulada. Por padrão só entram as gerações criadas antes da primeira chamada medida.
+- **Falha cedo:** sem `tiktoken` (ou sem rede para baixar o encoding) o comando levanta `CommandError` antes de processar o lote. Cada geração é travada com `select_for_update` e revalidada antes de gravar.
+- **Opções:** `--dry-run` (relatório sem gravar), `--desde`/`--ate` (`AAAA-MM-DD`), `--client-id`, `--environment` (`TEST`/`PRODUCTION`).
 
 <Columns cols={2}>
   <Card title="Integração OpenAI" icon="brain" href="/miggoai/integracao-openai">Detalhe de cada chamada à API da OpenAI.</Card>
