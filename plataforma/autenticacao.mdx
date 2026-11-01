@@ -1,243 +1,174 @@
 ---
-title: "Autenticação e autorização"
-description: "Modelo de usuário, JWT, permissões, papéis e endpoints de autenticação do backend-miggo"
+title: "Autenticação"
+description: "Como obter, renovar e usar o token da Plataforma, quando usar a Api-Key de serviço e como o backend decide quem vê o quê."
 icon: "shield-check"
 ---
 
-## Modelo de usuário
+A API aceita duas credenciais:
 
-`AUTH_USER_MODEL = 'account.CustomUser'` (`core/settings.py:302`). Definido em `app/account/models.py:26-51`:
-
-| Campo | Tipo | Observação |
+| Credencial | Header | Quem usa |
 |---|---|---|
-| `hash` | `CharField(64)`, único | Gerado por `generate_unique_hash` (`utils/toolkit.py`) |
-| `email` | `EmailField`, único | `USERNAME_FIELD` |
-| `name` | `CharField(255)` | `REQUIRED_FIELDS` (usado por `createsuperuser`) |
-| `phone` | `CharField(20)`, opcional | |
-| `role` | `CharField(50)`, default `'client'` | Texto livre, não `choices` — ver seção de papéis abaixo |
-| `is_staff` / `is_active` | `BooleanField` | Requisitos padrão do Django Admin |
-| `google_id` | `CharField(255)`, único, opcional | Preenchido no login social |
-| `avatar_url` | `URLField`, opcional | Foto de perfil do Google |
-| `email_verified` | `BooleanField`, default `False` | |
-| `agencia` | `FK agencia.Agencia`, opcional, `PROTECT` | Só nos papéis de agência (MIG-513, migration `0017_customuser_agencia`). Read-only nos serializers de usuário |
-| `created_at` | `DateTimeField(auto_now_add=True)` | |
+| **JWT** (access token) | `Authorization: Bearer <access>` | Pessoas: o web app, scripts de quem tem conta |
+| **Api-Key de serviço** | `Authorization: Api-Key <chave>` | Serviços internos, como o MiggoAI |
 
-Não há campo `username` — login é sempre por `email`. `CustomUserManager.create_superuser` (`app/account/models.py:18-24`) força `is_staff=True`, `is_superuser=True`, `role='admin'`.
+A permissão padrão de toda view (`HasAPIKeyOrIsAuthenticated`) aceita qualquer uma das duas. Views mais restritas pedem papel, módulo ou recusam a Api-Key, como descrito abaixo.
 
-`UserMeta` é um key/value genérico por usuário (`FK CustomUser`), usado por exemplo para guardar o código de reset de senha (`key='password_reset_code'`). Desde a migration `0016_usermeta_created_at` tem `created_at` (nulo nas linhas antigas), que dá a validade do código de reset.
+## Obter um token
 
-`UsuarioModulo` (`user`, `modulo`, `unique_together`) guarda os módulos liberados para `manager` e `agencia_membro` (MIG-518, migrations `0018_usuariomodulo` e `0019_modulos_dos_existentes`). Ver [Módulos de permissão](#módulos-de-permissão).
+<Steps>
+  <Step title="Pedir o par de tokens">
+    ```bash
+    curl -X POST https://api.miggomkt.com.br/api/v1/account/token/ \
+      -H "Content-Type: application/json" \
+      -d '{"email": "voce@exemplo.com", "password": "<senha>"}'
+    ```
 
-## Papéis (roles)
+    ```json
+    { "access": "eyJhbGciOiJSUzI1NiIs...", "refresh": "eyJhbGciOiJSUzI1NiIs..." }
+    ```
 
-Não existe um app de RBAC dedicado — a autorização combina o papel (`role`, `is_staff`, `is_superuser`), o [escopo de clientes](#escopo-de-clientes) e os [módulos](#módulos-de-permissão). As funções centrais estão em `app/account/permissions.py`:
+    O login é sempre por e-mail. O `access` vale **30 minutos**; o `refresh`, **7 dias**.
+  </Step>
 
-| Função | Regra |
+  <Step title="Chamar a API">
+    ```bash
+    curl https://api.miggomkt.com.br/api/v1/account/modules/ \
+      -H "Authorization: Bearer $ACCESS"
+    ```
+
+    A rota devolve os módulos liberados para o usuário do token, o que serve de teste rápido da credencial.
+  </Step>
+
+  <Step title="Renovar o access">
+    ```bash
+    curl -X POST https://api.miggomkt.com.br/api/v1/account/token/refresh/ \
+      -H "Content-Type: application/json" \
+      -d '{"refresh": "'"$REFRESH"'"}'
+    ```
+
+    A resposta traz um `access` novo e, como os refresh tokens são rotacionados, um `refresh` novo. Guarde o novo.
+  </Step>
+</Steps>
+
+<Note>
+  Os exemplos usam a produção. Para homologação, troque a base por `https://test-api.miggomkt.com.br`; localmente, `http://localhost:8000`.
+</Note>
+
+### No navegador: refresh em cookie httpOnly
+
+O web app não usa `/token/`. Ele entra por `POST /api/v1/account/login/` (e-mail e senha) ou `POST /api/v1/account/google/` (ID token do Google). Essas rotas devolvem o `access` no corpo e gravam o refresh num **cookie httpOnly** (`miggo_refresh`, `path=/api/v1/account/`), que o JavaScript não lê.
+
+Para renovar, o navegador chama `POST /api/v1/account/token/refresh/` com o **corpo vazio**: o refresh vai no cookie e o rotacionado volta no cookie. Quem manda `refresh` no corpo recebe-o de volta no corpo também. `POST /api/v1/account/logout/` apaga o cookie.
+
+Como o front consome isso: [Autenticação no web app](/web/autenticacao).
+
+## O token: RS256 e claims
+
+O token é assinado em **RS256** com a `JWT_PRIVATE_KEY` do backend. A chave pública é derivada dela, e o **MiggoAI valida o mesmo access** com a sua cópia da pública (`MIGGO_JWT_PUBLIC_KEY`). Por isso o painel de IA no `/admin` do web app usa o token da Plataforma, sem login próprio.
+
+| Configuração | Valor |
 |---|---|
-| `is_management_user` | `is_superuser` **ou** `role in ('admin', 'manager')` **ou** `is_staff` — `is_staff` não vale para papel de agência |
-| `is_admin_user` | `is_superuser` **ou** `role == 'admin'` (`is_staff` deixou de contar) |
-| `is_agencia_user` | `role in ('agencia_admin', 'agencia_membro')` (`PAPEIS_AGENCIA`) |
-| `is_agencia_admin` | `role == 'agencia_admin'` |
-| `is_agencia_ativa` | usuário de agência com `agencia` preenchida e `agencia.esta_ativa` |
+| Algoritmo | `RS256` |
+| Audiência (`aud`) | `miggo` e `miggoai` |
+| Validade | access 30 min · refresh 7 dias, com rotação |
+| Serializer de emissão | `app.account.tokens.MiggoTokenObtainPairSerializer` |
 
-Níveis efetivos:
-
-| Papel | Quem é | Acesso |
-|---|---|---|
-| `client` (padrão) | cliente final | só o próprio `Client` |
-| `manager` | equipe Miggo | gestão, limitada aos módulos marcados em `UsuarioModulo`; não é admin pleno |
-| `admin` / superusuário | equipe Miggo | tudo, inclusive financeiro, planos e time |
-| `agencia_admin` | dono da agência parceira (app [`agencia`](/backend/apps/agencia)) | a carteira da própria agência, todos os módulos da agência |
-| `agencia_membro` | membro da agência | a carteira da própria agência, só os módulos marcados |
-
-Agência **nunca** é equipe Miggo: `is_staff` no banco não abre a gestão para ela. Papel de agência só nasce pelo cadastro da agência — o serializer de atualização de usuário recusa `role` de agência e `is_staff` em usuário de agência, e força `is_staff = (role == 'admin')` sempre que `role` ou `is_staff` vêm no body (MIG-518: o `manager` deixou de ser staff; o acesso dele vem dos módulos).
-
-## Classes de permissão
-
-Definidas em `app/account/permissions.py`:
-
-| Classe | Regra | Uso típico |
-|---|---|---|
-| `HasAPIKeyOrIsAuthenticated` | API key válida **ou** usuário autenticado | `DEFAULT_PERMISSION_CLASSES` global (`core/settings.py:139-141`) — toda view herda isso por padrão |
-| `IsManagementUser` | API key válida **ou** `is_management_user(request.user)` | Rotas de gestão (bloqueiam clientes finais) |
-| `IsAdminUser` | API key válida **ou** `is_admin_user(request.user)` | Rotas administrativas plenas (ex.: deletar usuário, planos, financeiro) |
-| `IsManagementUserOnly` / `IsAdminUserOnly` | como as anteriores, mas **sem** API key | Rotas que só pessoa logada da equipe (ou admin pleno) usa — ex.: `team/<id>/modules/` |
-| `IsGestorDeCarteira` | API key **ou** equipe **ou** agência ativa | Telas de carteira compartilhadas por Miggo e agência; a view **precisa** estar escopada por `clientes_visiveis` |
-| `IsGestorSemApiKey` | equipe **ou** agência ativa, sem API key | Idem, só pessoa logada |
-| `IsAgenciaAtiva` / `IsAgenciaAdminAtiva` | usuário (ou só o `agencia_admin`) de agência ativa | Área "minha agência" do app [`agencia`](/backend/apps/agencia) |
-| `TemModulo(modulo)` / `ModuloDeCarteira(modulo)` | fábricas em `app/account/modulos.py`, somadas à permissão de papel | Ver [Módulos de permissão](#módulos-de-permissão) |
-
-Exemplos de uso real: `ListUsersView`/`CreateTeamMemberView` usam `IsManagementUser`/`IsAdminUser` (`app/account/views.py:77,85,99`); praticamente todas as views de `app/subscription/views.py` (planos, preços, financeiro) usam `permission_classes = [IsAdminUser]`.
-
-## Escopo de clientes
-
-`app/account/escopo.py` (MIG-512) é o ponto único que diz **quais `Client` uma requisição enxerga**. É lista positiva: papel que nenhuma regra prevê cai em "nenhum cliente", e um papel novo nunca herda o acesso amplo da equipe por esquecimento.
-
-| Função | O que faz |
-|---|---|
-| `ve_todos_os_clientes(request)` | API key de serviço (MiggoAI) ou equipe Miggo que não seja de agência |
-| `clientes_visiveis(request)` | queryset de `Client`: todos (caso acima); os da agência (`Client.agencia`), só com agência ativa — suspensa dá nenhum, o que fecha também token já emitido; o próprio `Client` do cliente; ou `none()` |
-| `cliente_visivel(request, client_id)` | o `Client` pedido se visível, senão `None` (id inválido incluso) |
-| `exigir_cliente_visivel(request, client_id)` | igual, mas levanta `NotFound`: recurso de outro cliente responde `404`, não `403` |
-| `escopar_por_cliente(queryset, request, campo='client')` | filtra qualquer queryset pelo caminho ORM até o `Client` |
-| `EscopoClienteMixin` | mixin de view genérica: escopa `get_queryset` (`escopo_campo`) e confere o dono na gravação (`escopo_escrita`, ex.: `('brandkit', 'client')`) em `perform_create`/`perform_update` |
-
-Views que recebem `client_id` (URL, query ou body) passam por essas funções: foi assim que o MIG-512 fechou os IDORs entre clientes.
-
-## Módulos de permissão
-
-`app/account/modulos.py` (MIG-518): o papel diz **quem** é; o módulo diz **o que** pode usar.
-
-| Catálogo | Códigos |
-|---|---|
-| `MODULOS_MIGGO` (equipe) | `clientes`, `conteudo`, `trials`, `financeiro`, `conversas`, `email_marketing`, `miggoai`, `acervo`, `beneficios`, `suporte`, `logs`, `time` |
-| `MODULOS_AGENCIA` | `clientes`, `conteudo`, `membros`, `plano`, `marca` |
-
-- `modulos_do_usuario(user)`: `admin`/superusuário têm todo o catálogo Miggo e `agencia_admin` todo o da agência, sem linha em `UsuarioModulo`; `manager` e `agencia_membro` têm só o que está marcado; cliente e anônimo, nenhum. O `CustomUserSerializer` expõe a lista no campo `modulos` (e o nome da agência em `agencia_nome`).
-- `TemModulo(modulo)`: permissão DRF que passa quem tem o módulo (a API key passa onde já passava). `ModuloDeCarteira(modulo)`: idem, mas o `client` final também passa — para rotas que o cliente usa e a equipe/agência opera. As duas se **somam** à permissão de papel e ao escopo, não os substituem.
-- `GET /api/v1/account/modules/`: catálogo da área de quem está logado (Miggo para equipe, agência para agência; `[]` para cliente), em `[{codigo, rotulo}]`.
-- `PUT /api/v1/account/team/<id>/modules/` com `{"modulos": [...]}`: `IsAdminUserOnly`, só para `role='manager'`; substitui as marcações; código fora do catálogo dá `400`. Os módulos do membro de agência são gravados pelo app [`agencia`](/backend/apps/agencia).
-- `team/list/` exige o módulo `time`. A edição de usuário deixa o gestor alterar só a própria conta e, com o módulo `clientes`, clientes — nunca outro gestor, admin ou usuário de agência; `role` é read-only ali (papel muda só pelo `team/update/`, restrito a admin).
-
-## Token JWT (RS256)
-
-Desde o MIG-506 o token da plataforma é assinado em **RS256** e é aceito também pelo MiggoAI (painel de IA no `/admin` do front).
-
-| Config (`SIMPLE_JWT`, `core/settings.py`) | Valor |
-|---|---|
-| `ALGORITHM` | `RS256` |
-| `SIGNING_KEY` | env `JWT_PRIVATE_KEY` (PEM; `\n` literal na env vira quebra de linha). **Obrigatória**: sem ela as settings não carregam |
-| `VERIFYING_KEY` | derivada da privada por `core/jwt_keys.py` (`chave_publica_pem`) — não há env da pública no backend |
-| `AUDIENCE` | `['miggo', 'miggoai']` (claim `aud`) |
-| `ACCESS_TOKEN_LIFETIME` / `REFRESH_TOKEN_LIFETIME` | 30 min / 7 dias, com `ROTATE_REFRESH_TOKENS` |
-| `TOKEN_OBTAIN_SERIALIZER` | `app.account.tokens.MiggoTokenObtainPairSerializer` |
-
-`app/account/tokens.py` define `MiggoRefreshToken`, usado por `/token/`, pelo refresh e pelos logins que emitem par (`app/account/auth_cookies.py`). Claims extras no refresh e no access:
+Claims extras, no access e no refresh:
 
 | Claim | Valor |
 |---|---|
-| `email` | `user.email` |
-| `is_management` | `is_management_user(user)` (mesma regra da `ManagementRoute` do front) |
-| `is_superuser` | `user.is_superuser` (no MiggoAI só superusuário altera modelo e preço) |
+| `email` | e-mail do usuário |
+| `is_management` | `true` para a equipe Miggo (mesma regra das permissões de gestão) |
+| `is_superuser` | `true` para superusuário (no MiggoAI, só ele altera modelo e preço) |
 
-Os claims são **recalculados a cada refresh**: quem sai da gestão perde o MiggoAI no próximo access (até 30 min), não quando o refresh expira. O MiggoAI valida o access com a chave pública (`MIGGO_JWT_PUBLIC_KEY`, ver [Referência de API do MiggoAI](/miggoai/api-referencia#autenticação)).
-
-<Warning>
-`JWT_PRIVATE_KEY` (backend) e `MIGGO_JWT_PUBLIC_KEY` (MiggoAI) são **um par**: trocar a privada sem atualizar a pública faz o painel de IA responder `401`. Trocar a chave invalida todos os tokens já emitidos.
-</Warning>
-
-## Autenticação: dois mecanismos coexistindo
-
-O projeto mistura **JWT via header** (o padrão de fato para a maioria das rotas) com **sessão Django via cookie** (usada especificamente pelo fluxo de login):
-
-- `DEFAULT_AUTHENTICATION_CLASSES` é `rest_framework_simplejwt.authentication.JWTAuthentication` (`core/settings.py:136-138`) — a maioria das views autentica por `Authorization: Bearer <access_token>`.
-- `LoginView` (`app/account/views.py:231-265`) e `GoogleAuthView` (`app/account/views.py:281-390`) chamam `django.contrib.auth.login(request, user)`, que grava uma **sessão** (cookie) — além disso, `GoogleAuthView` também emite um par de tokens JWT na resposta.
-- `SendVerificationEmailView` usa `IsAuthenticated` puro (sessão ou JWT, dependendo de quem autenticou a request).
+Os claims são **recalculados a cada refresh**: quem sai da gestão perde o acesso ao MiggoAI no próximo access, em até 30 minutos.
 
 <Warning>
-  `app/account/authentication.py` define uma classe `JWTAuthentication(SessionAuthentication)` que desliga a checagem de CSRF (necessária para chamadas via `fetch`/`axios`). `app/account/views.py` importa essa classe na linha 14 e, logo em seguida (linha 15), importa `rest_framework_simplejwt.authentication.JWTAuthentication` com o **mesmo nome**, sobrescrevendo o import anterior — a classe de `app/account/authentication.py` nunca chega a ser usada de fato nessas views. Não foi possível confirmar se isso é intencional; reporto como inconsistência encontrada no código.
+  `JWT_PRIVATE_KEY` (backend) e `MIGGO_JWT_PUBLIC_KEY` (MiggoAI) são **um par**. Trocar a privada sem atualizar a pública faz o painel de IA responder `401`; trocar a chave invalida todos os tokens já emitidos.
 </Warning>
 
-## Endpoints de autenticação
+## Api-Key de serviço
 
-Todos sob o prefixo `/api/v1/account/` (`core/urls.py:30`, `app/account/urls.py`).
+Chamadas máquina-a-máquina usam o pacote `rest_framework_api_key`: a chave é validada contra a tabela de chaves do banco, não contra uma variável de ambiente.
 
-<AccordionGroup>
-  <Accordion title="POST /api/v1/account/token/ — obter par de tokens JWT">
-    `SafeTokenObtainPairView` (`app/account/views.py`): o `TokenObtainPairView` do `rest_framework_simplejwt` com o `MiggoTokenObtainPairSerializer` e as mesmas travas de agência do login — `403` com `message` se a agência do usuário (ou do cliente) está suspensa ou se o host da requisição não é o da conta (ver `/login/`).
-    <ParamField path="email" type="string" required>Autenticação por email (USERNAME_FIELD)</ParamField>
-    <ParamField path="password" type="string" required />
-    <ResponseField name="access" type="string">Token de acesso (30 min)</ResponseField>
-    <ResponseField name="refresh" type="string">Token de refresh (7 dias)</ResponseField>
-  </Accordion>
+```bash
+curl https://api.miggomkt.com.br/api/v1/client/list/ \
+  -H "Authorization: Api-Key <chave>"
+```
 
-  <Accordion title="POST /api/v1/account/token/refresh/ — renovar access token">
-    `SafeTokenRefreshView` (`app/account/views.py`) — variação do `TokenRefreshView` padrão que devolve 401 em vez de 500 quando o usuário do refresh token antigo já foi apagado. Emite `MiggoRefreshToken` (claims recalculados) e responde `403` se a agência foi suspensa depois da emissão ou se o host não é o da conta.
-    <ParamField path="refresh" type="string" required />
-    <ResponseField name="access" type="string" />
-  </Accordion>
+- **Criar uma chave:** no Django Admin (`/admin/`), em *API Keys*. O valor completo aparece uma única vez, na criação.
+- **Quem usa:** o MiggoAI, para ler clientes, calendário e posts e gravar o conteúdo gerado.
+- **O que ela abre:** tudo que aceita `HasAPIKeyOrIsAuthenticated`, `IsManagementUser`, `IsAdminUser` e `IsGestorDeCarteira`, com visão de **todos** os clientes.
+- **O que ela não abre:** rotas com as permissões `*Only` e `IsGestorSemApiKey`, que exigem pessoa logada.
 
-  <Accordion title="POST /api/v1/account/create/ e /register/ — criar usuário">
-    `CreateUserView` (`app/account/views.py:51-67`), sem autenticação exigida (`AllowAny`). Loga o usuário automaticamente após criar (`login(request, user)`) para permitir seguir direto para o onboarding.
-    <ResponseField name="user" type="object">Serialização completa do `CustomUser` criado</ResponseField>
-  </Accordion>
+<Warning>
+  A chave de serviço é uma só e não tem escopo por cliente. Não a coloque em código de front nem em variável `VITE_*`.
+</Warning>
 
-  <Accordion title="POST /api/v1/account/login/ — login por email/senha">
-    `LoginView` (`app/account/views.py:231-265`), `AllowAny`, sem verificação de CSRF (`csrf_exempt`).
+O acervo Miggo tem uma credencial à parte: o header `Acervo-Service-Token`, comparado com `ACERVO_SERVICE_TOKEN`, só nas rotas `media/acervo/elegiveis/` e `media/acervo/uso/`.
 
-    <ParamField path="email" type="string" required />
-    <ParamField path="password" type="string" required />
+## Papéis
 
-    Regras de negócio:
-    - `role in ('admin','manager')` ou `is_staff`: login sempre permitido (bypass de checagem de cliente ativo).
-    - Demais usuários: exige `user.client.active == True`; se o `Client` não existir e `role == 'client'`, retorna 403 "Perfil cliente não encontrado."
+O papel vem do campo `CustomUser.role`, somado a `is_staff` e `is_superuser`:
 
-    <ResponseField name="message" type="string" />
-    <ResponseField name="user" type="object">`CustomUserSerializer` (`__all__`, com `is_active`/`is_staff`/`is_superuser`/`groups`/`user_permissions`/`last_login`/`google_id`/`avatar_url` como read-only)</ResponseField>
+| Papel | Quem é | Enxerga |
+|---|---|---|
+| `client` (padrão) | cliente final | só o próprio `Client` |
+| `manager` | equipe Miggo | a gestão, limitada aos módulos marcados para ele |
+| `admin` ou superusuário | equipe Miggo | tudo, inclusive financeiro, planos e time |
+| `agencia_admin` | dono de uma agência parceira | a carteira da própria agência, todos os módulos da agência |
+| `agencia_membro` | membro da agência | a carteira da própria agência, só os módulos marcados |
 
-    Respostas: `200` sucesso · `401` credenciais inválidas · `403` conta/cliente inativo, agência suspensa ou host errado (mensagem em `message`).
+Agência **nunca** é equipe Miggo: `is_staff` não abre a gestão para ela, e agência suspensa perde a carteira na hora, inclusive com token já emitido.
 
-    **Host da conta (MIG-516):** `host_nao_pertence_ao_usuario` (`app/agencia/host.py`) compara a agência do usuário com a agência do host da requisição — usuário de agência não entra pelo host da Miggo, e usuário da Miggo não entra pelo domínio de uma agência. Exceção: agência sem domínio próprio ativo também entra pelo host da Miggo. A mesma checagem vale em `/token/`, `/token/refresh/` e `/google/`.
-  </Accordion>
+## Permissões
 
-  <Accordion title="POST /api/v1/account/logout/">
-    `LogoutView` (`app/account/views.py:268-273`) — `AllowAny`, chama `django.contrib.auth.logout`.
-  </Accordion>
+Definidas em `app/account/permissions.py`:
 
-  <Accordion title="POST /api/v1/account/google/ — login/registro social">
-    `GoogleAuthView` (`app/account/views.py:281-390`), `AllowAny`.
-    <ParamField path="credential" type="string" required>ID token do Google (aceita também a chave alternativa `token`)</ParamField>
+| Classe | Passa |
+|---|---|
+| `HasAPIKeyOrIsAuthenticated` (padrão) | Api-Key ou qualquer usuário autenticado |
+| `IsManagementUser` | Api-Key ou equipe Miggo |
+| `IsAdminUser` | Api-Key ou admin/superusuário |
+| `IsManagementUserOnly`, `IsAdminUserOnly` | como as anteriores, **sem** Api-Key |
+| `IsGestorDeCarteira` | Api-Key, equipe ou agência ativa |
+| `IsGestorSemApiKey` | equipe ou agência ativa, sem Api-Key |
+| `IsAgenciaAtiva`, `IsAgenciaAdminAtiva` | usuário (ou só o admin) de agência ativa |
+| `TemModulo(m)`, `ModuloDeCarteira(m)` | quem tem o módulo `m`; a segunda também deixa passar o cliente final |
 
-    Valida o token com `google.oauth2.id_token.verify_oauth2_token` contra `GOOGLE_CLIENT_ID`, com tolerância de relógio `GOOGLE_AUTH_CLOCK_SKEW` (default 10s). Confere `iss` (`accounts.google.com`) e `email_verified`. Cria o `CustomUser` se não existir (email como chave), ou atualiza `google_id`/`avatar_url`/`email_verified` se já existir. Aplica a mesma checagem de `client.active` da `LoginView` para usuários não-management, além das travas de agência suspensa e de host. Cadastro novo feito pelo domínio de uma agência vincula o `Client` a ela (`agencia_do_cadastro`, que também confere a vaga do plano da agência); o mesmo vale para `create/`/`register/`.
+### Escopo de clientes
 
-    <ResponseField name="user" type="object" />
-    <ResponseField name="access" type="string">Emitido mesmo sendo um fluxo baseado em sessão</ResponseField>
-    <ResponseField name="refresh" type="string" />
-    <ResponseField name="created" type="boolean">Se o usuário foi criado nesta chamada</ResponseField>
+`app/account/escopo.py` decide **quais clientes** uma requisição enxerga (`clientes_visiveis`). A regra é lista positiva: Api-Key e equipe veem todos; agência ativa vê os seus; cliente vê a si mesmo; qualquer outro caso vê nenhum. Recurso de outro cliente responde **`404`**, não `403`, para não confirmar que ele existe.
 
-    Respostas: `503` se `GOOGLE_CLIENT_ID` não configurado ou falha de rede ao validar · `401` token inválido/issuer inesperado/email não verificado · `403` conta/cliente inativo.
-  </Accordion>
+### Módulos
 
-  <Accordion title="POST /api/v1/account/password-reset/request/">
-    `PasswordResetRequestView` (`app/account/views.py:392-441`), `AllowAny`. Gera um código de 6 dígitos (`generate_code`, `utils/toolkit.py`), salva em `UserMeta` (`key='password_reset_code'`, apaga códigos anteriores) e envia por e-mail (template `emails/password_reset.html`).
-    <ParamField path="email" type="string" required />
-    Sempre responde `200` com mensagem genérica, mesmo se o e-mail não existir (evita enumeração de contas) — exceto falha real de envio de e-mail, que retorna `500`.
-  </Accordion>
+O papel diz quem é; o módulo diz o que pode usar. `GET /api/v1/account/modules/` devolve o catálogo da área de quem está logado. Os códigos da equipe são `clientes`, `conteudo`, `trials`, `financeiro`, `conversas`, `email_marketing`, `miggoai`, `acervo`, `beneficios`, `suporte`, `logs` e `time`; os da agência, `clientes`, `conteudo`, `membros`, `plano` e `marca`. Admin e `agencia_admin` têm todos sem marcação; `manager` e `agencia_membro` têm só os marcados.
 
-  <Accordion title="POST /api/v1/account/password-reset/confirm/">
-    `PasswordResetConfirmView` (`app/account/views.py:444-484`), `AllowAny`.
-    <ParamField path="email" type="string" required />
-    <ParamField path="code" type="string" required />
-    <ParamField path="new_password" type="string" required>Mínimo 8 caracteres, ao menos 1 maiúscula e 1 número (validado manualmente na view, não via `AUTH_PASSWORD_VALIDATORS`)</ParamField>
-    Retorna `400` se o código não bater com o último gravado em `UserMeta`. Desde o MIG-498: comparação em tempo constante (`hmac.compare_digest`), o código vale **15 min** (`VALIDADE_CODIGO_RESET`, pelo `UserMeta.created_at`; linha sem data conta como expirada) e **5 tentativas erradas** (`MAX_TENTATIVAS_RESET`, contadas em `password_reset_attempts`) apagam o código. Usado com sucesso, o código é apagado.
-  </Accordion>
+## Erros
 
-  <Accordion title="POST /api/v1/account/verify-email/send/ e /verify-email/confirm/">
-    `SendVerificationEmailView` (`IsAuthenticated`) gera um token via `django.contrib.auth.tokens.default_token_generator` e monta um link para `FRONTEND_URL/verify-email?uid=...&token=...`. `ConfirmEmailVerificationView` (`AllowAny`) valida `uid`/`token` e marca `email_verified=True`.
-  </Accordion>
+| Status | Quando |
+|---|---|
+| `401` | Sem credencial, access expirado ou inválido, refresh ausente ou expirado, e-mail ou senha errados |
+| `403` | Credencial válida sem permissão (papel ou módulo), conta ou cliente inativo, agência suspensa, ou login pelo host errado (usuário de agência no domínio da Miggo, ou o contrário) |
+| `404` | Recurso de um cliente fora do seu escopo |
 
-  <Accordion title="Suporte: /support/chat/, /support/ticket/, /support/tickets/...">
-    `SupportChatView` é um proxy autenticado para IA de suporte (a chave OpenAI fica só no servidor, conforme comentário em `app/account/urls.py:46`). `SupportTicketCreateView`/`ListView`/`ReplyView` gerenciam `SupportTicket` (ver [modelo de dados](/backend/modelo-de-dados)), com sincronização opcional para o Jira (`SupportTicketJiraStatusView`, `SupportTicketJiraSyncView`) via `app/account/jira_service.py`.
-  </Accordion>
-</AccordionGroup>
+```json
+{ "detail": "Given token not valid for any token type", "code": "token_not_valid" }
+```
 
-## Meta de usuário e de cliente pela API (MIG-498)
+As rotas de conta respondem com `{"message": "..."}`; as demais seguem o padrão do DRF, `{"detail": "..."}`.
 
-`UserMeta` e `ClientMeta` guardam de preferência de tela a código de ativação e de reset; gravar nelas por API permitia tomar uma conta. `app/account/meta_access.py` fecha isso por lista de permissão:
+<Tip>
+  Recebeu `401` com um access que acabou de funcionar? Ele expirou: renove pelo refresh e repita a chamada uma vez. Se o refresh também der `401`, faça login de novo.
+</Tip>
 
-- `CHAVES_META_PROIBIDAS` (`password_reset_code`, `activation_code`): nunca aparecem na listagem nem são gravadas por API, por ninguém.
-- `MetaAccessMixin` (views de `UserMeta` e `ClientMeta`): a equipe vê e grava tudo; o dono só as próprias linhas e só as chaves liberadas (na `UserMeta`, nenhuma: ali moram id de cobrança e fluxo de reivindicação); os demais, nada.
-- `validar_escrita_de_meta` roda no `validate` dos serializers de meta.
-- A API key de serviço segue lendo `client-meta/list` (só leitura, `client_id` obrigatório).
+## Outras rotas de conta
 
-Também do MIG-498: `role` e `agencia` são read-only no `CustomUserSerializer` (o usuário não promove a si mesmo), e o e-mail de credenciais só sai depois do commit (`transaction.on_commit`).
+| Rota | Para quê |
+|---|---|
+| `POST /api/v1/account/create/` | Cadastro de usuário |
+| `POST /api/v1/account/password-reset/request/` | Envia um código de 6 dígitos por e-mail; responde `200` mesmo para e-mail inexistente |
+| `POST /api/v1/account/password-reset/confirm/` | Troca a senha com o código: vale 15 minutos e cai após 5 tentativas erradas |
+| `POST /api/v1/account/verify-email/send/` e `/confirm/` | Verificação de e-mail |
 
-## Como o frontend consome
-
-- Login por e-mail/senha (`/login/`) e Google (`/google/`) resultam em sessão Django (cookie) — o `csrf_exempt` nas views de auth existe justamente porque o frontend chama via `fetch`/`axios` sem token CSRF.
-- A maior parte das demais chamadas autenticadas do frontend usa o header `Authorization: Bearer <access>` obtido em `/token/` (ou no `access` devolvido por `/google/`) e renovado via `/token/refresh/`.
-- `CORS_ALLOWED_ORIGINS`/`CSRF_TRUSTED_ORIGINS` (ver [Configuração](/backend/configuracao)) precisam incluir a origem do frontend para que cookies de sessão funcionem entre domínios diferentes.
-
-<Note>
-  Não foi possível confirmar no código do backend se o frontend efetivamente depende da sessão (cookie) em algum fluxo, ou se usa exclusivamente o Bearer token — isso está fora do escopo deste repositório e cabe à documentação do `frontend-miggo`.
-</Note>
+Schemas completos na [Referência de API](/plataforma/api-referencia).

@@ -1,234 +1,78 @@
 ---
 title: "Tarefas agendadas"
-description: "O que roda periodicamente no backend: cobrança, lembretes de grid, análise de mídia e revisões de post."
+description: "O que roda periodicamente no backend-miggo, quem dispara cada rotina e como diagnosticar uma que não rodou."
 icon: "clock"
 ---
 
-O backend tem duas formas de agendamento, e é importante não confundi-las:
+## Quem agenda o quê
 
 | Mecanismo | Onde vive | Para quê |
-| --- | --- | --- |
-| **Schedule do Dokploy** | Infraestrutura de produção | Chama os management commands nos intervalos reais |
-| **`run_cron.py`** | Script na raiz do repositório | Substituto local do `django-crontab` para desenvolvimento no Windows |
-| **Worker Celery** | Container próprio (mesma imagem, `ROLE=worker`) | Executa as tasks que a API e os Schedules enfileiram. Não agenda nada: **não há Celery beat** |
+|---|---|---|
+| **Schedules do Dokploy** | Painel do Dokploy, por ambiente | Chamam `python manage.py <comando>` nos intervalos de produção. **É a fonte da verdade do agendamento** |
+| **`CRONJOBS`** (`django-crontab`) | `core/settings.py` | Só `app.post.cron.send_scheduled_reviews`, a cada minuto |
+| **`run_cron.py`** | Raiz do repositório | Laço local para desenvolvimento, com um subconjunto das rotinas |
+| **Worker Celery** | Serviço com `ROLE=worker` | Executa o que os schedules enfileiram. Não agenda nada: **não há Celery beat** |
 
 <Warning>
-  Em produção, quem dispara as rotinas é o **Dokploy**, chamando `manage.py <comando>`. O `CRONJOBS` de `core/settings.py:374` declara apenas um job e o `run_cron.py` roda um subconjunto — nenhum dos dois é a fonte da verdade do agendamento de produção. Ao adicionar rotina nova, cadastre o schedule no Dokploy.
+  Rotina nova não roda sozinha: cadastre o schedule no Dokploy de cada ambiente. Com `<COMANDO>_ASYNC=1` na env do schedule, o comando só enfileira e o worker executa — ver [Filas e Celery](/plataforma/filas-e-celery).
 </Warning>
 
-## Filas Celery
+## Rotinas
 
-Infra do MIG-472 (fase 0) e fluxos em fila dos MIG-474 a MIG-483. Referência completa no repo: `docs/celery.md`.
+| Comando | Intervalo | O que faz |
+|---|---|---|
+| `notify_trial_ending` | diária | Avisa quem está a 3 e a 1 dia do fim do teste; o WhatsApp usa `TRIAL_ENDING_FLOW_ID` |
+| `expire_trials` | diária | Encerra testes vencidos que não converteram, avisa o cliente (in-app e WhatsApp, `TRIAL_ENDED_FLOW_ID`) e notifica os admins |
+| `check_invoices` | diária | Marca como `OVERDUE` as faturas vencidas e notifica o cliente. Não cobra: quem tenta o cartão é a Stripe |
+| `check_subscriptions` | diária | Expira quem passou da carência (`BILLING_GRACE_DAYS`) |
+| `scan_gateway_orphans` | diária | Procura no gateway assinaturas e cobranças sem dono na base local |
+| `disconnect_inactive_zernio_accounts` | diária | Desconecta do Zernio as contas de trials expirados há 15 dias ou mais e de inadimplentes há 40 dias ou mais. Só grava com `--apply` |
+| `sync_stripe_billing` | a cada 6 h | Relê na Stripe as assinaturas vinculadas e reespelha status e faturas: cobre webhook perdido |
+| `sync_asaas_billing` | a cada 6 h | O mesmo, no Asaas |
+| `send_marketing_emails` | horária | Dispara as campanhas de e-mail marketing elegíveis |
+| `pedir_primeira_geracao` | a cada 15 min | Pede ao MiggoAI a primeira geração de quem está em teste e ainda não tem post gerado |
+| `analyze_media_library` | a cada 15 min | Descreve por IA as imagens da galeria ainda sem descrição — é isso que torna a foto encontrável pelo MiggoAI |
+| `send_grid_approval_reminders` | a cada 5 min | Cobra no WhatsApp a aprovação do grid pendente, respeitando o intervalo entre lembretes e o teto `GRID_APPROVAL_MAX_REMINDERS` |
+| `generate_pending_grids` | a cada 5 min | Gera o grid personalizado das sessões de onboarding com estilo aprovado e geração pendente |
+| `reconcile_zernio_posts` | sugerido a cada 10 min | Fecha as publicações presas em `sending`/`pending` perguntando o desfecho ao Zernio — rede de segurança do webhook de status |
+| `sync_jira_ticket_status` | periódico | Atualiza o status dos tickets de suporte pela coluna do issue no Jira |
+| `send_scheduled_reviews` | a cada minuto (`CRONJOBS`) | Envia ao ManyChat as revisões de post agendadas (`ScheduledReview`) cuja hora chegou |
 
-| Peça | Onde | O que faz |
-| --- | --- | --- |
-| App Celery | `core/celery.py`, `core/celery_config.py` | Filas `interativo`, `integracoes` e `leve` (padrão `leve`), cada uma com exchange `direct` e routing key própria; chaves no Redis com prefixo `backend-miggo:` |
-| Gatilhos | `core/fila.py` | `fila_ativa()` (há broker de verdade) e uma função por fluxo, cada uma lendo sua flag `*_ASYNC` |
-| Tasks | `core/tasks.py`, `app/*/tasks.py` | `core.ping`, `core.rodar_rotina` e as tasks de negócio (`brandkit.*`, `client.atualizar_brand_knowledge`, `media.analisar_midia`, `onboarding.*`, `post.*`, `subscription.executar_sync`) |
-| Worker | `docker-entrypoint.sh` com `ROLE=worker` | `celery -A core worker -Q interativo,integracoes,leve -E -n backend@%h`, concorrência em `CELERY_WORKER_CONCURRENCY` (padrão 2); sem migrate, collectstatic nem Flower. `ROLE` ausente ou `web` sobe a API; outro valor recusa subir (exit 64) |
-| Flower | `core/flower_guard.py` | Sobe em segundo plano no container do web (porta `FLOWER_PORT`, padrão 5555). Sem `FLOWER_BASIC_AUTH` válida (`usuario:senha`, senha ≥ 12 caracteres) ele não sobe e o web segue. `FLOWER_ENABLED=0` desliga |
+Argumentos e exemplos de cada comando: [Comandos](/plataforma/comandos).
 
-<Warning>
-  **Tudo vem desligado por padrão.** Sem `REDIS_URL` o Celery roda *eager* (em memória, no próprio processo) e `fila_ativa()` é falso. Com `REDIS_URL`, cada fluxo ainda exige a própria flag `=1`; sem ela o código segue pelo caminho anterior (thread ou inline). Broker fora na hora de enfileirar também cai no caminho anterior.
-</Warning>
+Todas as rotinas são **idempotentes** e terminam com um resumo no log: rodar de novo é seguro.
 
-| Flag | Fluxo | Fila |
-| --- | --- | --- |
-| `ONBOARDING_ASYNC` | Análise, estratégia, primeiro post e grid do onboarding (MIG-475) | `interativo` |
-| `PERFIL_ASYNC` | Correção de peça de perfil, `post.executar_correcao_perfil` (MIG-474) | `interativo` |
-| `INGESTAO_ASYNC` | Análise de design reference (MIG-476) | `interativo` |
-| `INGESTAO_JOBS_ASYNC` | Transmute por URL e import-website viram `202 {job_id, status}` (MIG-476) | `interativo` |
-| `APIFY_ASYNC` | Veredito do Instagram **e** troca o `CACHES` para Redis (MIG-477) | `integracoes` |
-| `APIFY_JOBS_ASYNC` | `instagram-scrape/` vira `202` + job (MIG-477) | `integracoes` |
-| `MIDIA_ASYNC` | Análise de mídia da galeria (MIG-478) | `leve` |
-| `ZERNIO_ASYNC` | Publicação por rede e webhook legado do Zernio (MIG-479) | `integracoes` |
-| `SYNCJOB_ASYNC` | Sync de assinaturas (`SyncJob`) (MIG-480) | `integracoes` |
-| `MANYCHAT_ASYNC` | Retry do flow do código de verificação (MIG-481) | `integracoes` |
-| `BRANDKNOWLEDGE_ASYNC` | Resumo `brand_knowledge` (MIG-482) | `leve` |
-| `<COMMAND>_ASYNC` | Schedule do Dokploy só enfileira (MIG-483, abaixo) | `integracoes` / `leve` |
+### Cobrança: webhook e rotina se complementam
 
-<Warning>
-  `INGESTAO_JOBS_ASYNC` e `APIFY_JOBS_ASYNC` mudam o contrato (200 vira 202 + polling em `GET /api/v1/brandkit/ingestion-job/<id>/`). Ordem: front que trata o 202, backend com as migrations do `brandkit`, worker, e só então a flag.
-</Warning>
+O webhook reage em tempo real ao que o gateway avisa ([Webhooks](/plataforma/guias/webhooks)). As rotinas cuidam do que o gateway não avisa — o teste grátis local, sem cartão, não existe na Stripe — e servem de rede de segurança para evento perdido. Detalhes de regras em [Subscription](/plataforma/apps/subscription).
 
-Teste de fumaça: `python manage.py celery_ping` imprime `OK [broker] {"pong": true, ...}` com worker no ar, `FALHA (<tipo>)` sem ele. Nunca imprime a URL do Redis.
+## Rodar localmente
 
-### Schedules que só enfileiram (MIG-483)
-
-Os Schedules do Dokploy continuam com o mesmo comando e o mesmo cron. Com `<NOME_DO_COMMAND>_ASYNC=1` (ex.: `EXPIRE_TRIALS_ASYNC=1`) na env do schedule **e** fila ativa, o command enfileira `core.rodar_rotina(nome, opcoes)` e sai; sem isso, roda no processo como antes. A tabela de rotinas fica em `core/rotinas.py`.
-
-- **Dry-run nunca enfileira** (`disconnect_inactive_zernio_accounts` sem `--apply`, `send_marketing_emails --dry-run`, `pedir_primeira_geracao --dry-run`).
-- **Sem retry** e `acks_late=False`: quem reexecuta é o próximo schedule. Advisory lock do Postgres por nome garante uma execução por rotina.
-- **`expires` por rotina:** disparo parado na fila além do intervalo é descartado (5 min → 10 min; 15 min → 20 min; horária → 30 min; 6 h → 3 h; diária → 6 h).
-- Limites: `ROTINAS_TASK_TIME_LIMIT` (1800 s) e `ROTINAS_TASK_SOFT_TIME_LIMIT` (1700 s).
-- O log do Dokploy mostra só `[rotina] <nome> enfileirada na fila '<fila>'.`; o resumo vai para o log do worker.
-
-Cobertos: `notify_trial_ending`, `expire_trials`, `check_invoices`, `check_subscriptions`, `sync_stripe_billing`, `sync_asaas_billing`, `scan_gateway_orphans`, `disconnect_inactive_zernio_accounts`, `reconcile_zernio_posts`, `send_grid_approval_reminders`, `send_marketing_emails`, `generate_pending_grids` e `pedir_primeira_geracao`. `analyze_media_library` e `sync_jira_ticket_status` seguem no processo.
-
-## Rotinas de cobrança
-
-`app/subscription/cron.py`. A divisão de responsabilidade está documentada no próprio módulo: o **webhook** (`app/webhooks/views.py`) reage em tempo real ao que acontece na Stripe; estes jobs cuidam do que a Stripe não avisa (trial local sem cartão) e funcionam como rede de segurança para eventos perdidos.
-
-<Note>
-  **No Asaas não existe webhook.** Lá o `sync_asaas_billing` é o único caminho automático, e é ele que transforma cobrança paga em fatura `PAID`.
-</Note>
-
-Todos são idempotentes e devolvem um resumo em `dict`.
-
-| Comando | Frequência | Função | O que faz |
-| --- | --- | --- | --- |
-| `notify_trial_ending` | 1x/dia | `notify_trial_ending()` | Avisa o cliente de que o teste está acabando; o aviso no WhatsApp usa o flow `TRIAL_ENDING_FLOW_ID` (vazia, não sai) |
-| `expire_trials` | 1x/dia | `expire_trials()` | Encerra os testes vencidos, avisa o cliente (in-app e WhatsApp) e notifica os admins (`role='admin'`) com link para a lista filtrada (`/admin/clients?suspenso_por_trial=1`) |
-| `check_invoices` | 1x/dia | `check_invoices()` | Reconcilia o estado das faturas |
-| `check_subscriptions` | 1x/dia | `check_subscriptions()` | Reconcilia o estado das assinaturas |
-| `sync_stripe_billing` | a cada 6h | `sync_stripe_billing(limit=None)` | Sincroniza cobrança da Stripe |
-| `sync_asaas_billing` | a cada 6h | `sync_asaas_billing(limit=None)` | Sincroniza cobrança do Asaas — único caminho automático nesse gateway |
-| `restore_lost_trials` | sob demanda | — | Restaura testes perdidos (uso corretivo, não agendado) |
-
-### Helpers internos do módulo
-
-| Função | O que faz |
-| --- | --- |
-| `_notify_client(client, notification_type, title, message, link='/billing')` | Cria a notificação para o cliente |
-| `_avisar_equipe_trial_expirado(subscription)` | Notifica os admins (`notify_admins`, tipo `trial_expired`, sem dedupe) com link para `/admin/clients?suspenso_por_trial=1` |
-| `_already_notified(subscription, key, within_hours=20)` | Evita notificar o mesmo assunto duas vezes na janela |
-| `_mark_notified(subscription, key)` | Marca o aviso como enviado |
-| `_log_cron_integration(client, path, payload, response, status_code=200)` | Registra a execução na tabela `Integration` |
-| `_avisar_fim_do_teste(subscription)` | Dispara o flow ManyChat de fim de teste (`TRIAL_ENDED_FLOW_ID`) na transição `TRIAL → EXPIRED`. Falha de envio não desfaz a expiração (MIG-453) |
-| `_log_trial_ended(client, payload, response, status_code=200)` | Auditoria desse aviso em `Integration`, com `service='sendFlow Trial Ended'` |
-| `_status_no_gateway(invoice)` | Resolve o status quando a fatura não tem gateway |
-
-As classes `SubscriptionCron` e `InvoiceCron` (final do arquivo) são apenas invólucros com os métodos `check_subscriptions()` e `check_invoices()`, usados pelo `run_cron.py`.
-
-Referência complementar: `docs/billing-stripe.md` no repositório do backend, e [Subscription](/backend/apps/subscription).
-
-## Lembretes de aprovação do grid
-
-`app/onboarding/cron.py` — rotina do card **MIG-165**, rodada **a cada 5 minutos** pelo schedule do Dokploy:
+Chame o comando da rotina que quer testar, como o Dokploy faz:
 
 ```bash
 python manage.py send_grid_approval_reminders
 ```
 
-Função: `send_grid_approval_reminders()`.
-
-<Steps>
-  <Step title="Filtra quem ainda não aprovou">
-    Percorre os clientes e verifica `data.grid.client_approved`. Só age quando **não** foi aprovado.
-  </Step>
-  <Step title="Exige grid pronto">
-    Só cobra quem tem grid pronto para aprovar e cujo grid não está em regeração (`generation_status != 'pending'`).
-  </Step>
-  <Step title="Respeita o intervalo">
-    Para não repetir a cobrança a cada 5 minutos, reenvia apenas quando o último lembrete já passou da janela configurada.
-  </Step>
-  <Step title="Dispara o flow">
-    Chama o flow de cobrança de aprovação no ManyChat, autenticado com `MANYCHAT_API_KEY`.
-  </Step>
-</Steps>
-
-Variáveis relacionadas: `GRID_APPROVAL_FLOW_ID`, `GRID_APPROVAL_MAX_REMINDERS`.
-
-<Warning>
-  O cabeçalho do módulo (`app/onboarding/cron.py:12`) diz que o filtro usa `grid.reference_id`, mas o código em `app/onboarding/cron.py:90` filtra por `grid.image_url`. O comentário está defasado; vale confiar no código.
-</Warning>
-
-## Geração dos grids pendentes
-
-Também do MIG-165, agendado no Dokploy:
+O `run_cron.py` roda em laço `check_subscriptions` e `check_invoices` (a cada 30 s) e `send_scheduled_reviews` (a cada 60 s), intervalos curtos só para teste:
 
 ```bash
-python manage.py generate_pending_grids [--limit N]
+python run_cron.py
 ```
 
-A etapa do grid no onboarding apenas **escolhe** uma referência; a geração da imagem personalizada — recriar a referência com as cores e a logo da marca — roda depois, em lote, por este comando. Ele busca as sessões com `data.grid.generation_status == 'pending'`, gera cada uma reusando o pipeline de imagem, grava o resultado em `SocialNetworkGrid` e notifica quando fica pronto.
-
-Implementação: `services.generate_pending_grids` em `app/onboarding/services.py`.
-
-## Análise da galeria de mídia
-
-`app/media/cron.py` — card **MIG-138**:
-
-```bash
-python manage.py analyze_media_library
-```
-
-Função principal: `analyze_media_library(limit=DEFAULT_LIMIT, client_id=None, force=False, dry_run=False)`.
-
-Roda em lote sobre as imagens que o cliente subiu e ainda não foram lidas pela IA, gravando `ai_description` e `ai_keywords` — **é isso que torna a foto encontrável pelo MiggoAI** na hora de compor a imagem do post. Idempotente: só pega o que ainda não foi analisado, a menos que se passe `force`. Devolve resumo em `dict`.
-
-| Helper | O que faz |
-| --- | --- |
-| `_pendentes(client_id=None, force=False)` | Imagens da galeria a analisar, **mais recentes primeiro** |
-| `_descartar(media, motivo, dry_run=False)` | Tira a mídia da fila sem descrição |
-| `_contar_falha(media, motivo, dry_run=False)` | Registra mais uma falha e descarta ao bater o teto |
-| `_log_integration(client, payload, response, status_code=200)` | Auditoria em `Integration` |
-| `relatorio_galeria(client_id=None, amostra=10)` | Relatório do estado da galeria, para diagnóstico |
-
-<Tip>
-  `dry_run=True` e `relatorio_galeria()` permitem inspecionar o efeito do job antes de rodar de verdade. Use-os quando uma galeria grande estiver com resultados estranhos.
-</Tip>
-
-Modelo de IA usado: `MEDIA_ANALYSIS_MODEL`.
-
-## Desfecho das publicações no Zernio
-
-`app/post/status_sync.py` — comando `reconcile_zernio_posts`, agendado no Dokploy (sugestão: `*/10 * * * *`), **não** em `CRONJOBS`.
-
-Procura até 200 `PostPublication` em `sending`/`pending` sem atualização há pelo menos `--minutos` (default `15`), pergunta o desfecho ao Zernio e aplica: *Publicado* (publicação e post) com `permalink` e `published_at`, ou `failed` só na publicação quando a rede recusou de verdade. É a rede de segurança do webhook `/webhooks/zernio/status/` — enquanto ele não estiver configurado no painel do Zernio, ou quando a entrega se perder, é este comando que tira o post de "Enviando" (MIG-454).
-
-Idempotente: não toca em publicação já `published`/`canceled`, nem em `scheduled` (fora do filtro), e não marca falha no que não conseguiu confirmar.
-
-## Revisões de post agendadas
-
-`app/post/cron.py` — função `send_scheduled_reviews()`. É o **único** job declarado em `CRONJOBS` (`core/settings.py:374`), com expressão de cada minuto.
-
-Verifica os registros de `ScheduledReview` com `scheduled_at <= agora` e dispara a revisão para o ManyChat, usando `app/conversation/services`. Toca `SocialNetwork` e `PlatformIntegration` e registra em `Integration`.
-
-## Rodando localmente
-
-`run_cron.py` substitui o `django-crontab` no Windows: roda os jobs registrados em uma lista própria, uma vez por minuto (ou a cada 30 s, para os que pedem esse intervalo).
-
-```bash
-./venv/Scripts/python.exe run_cron.py
-```
-
-Pare com `Ctrl+C`. Jobs que o script roda:
-
-| Job | Intervalo |
-| --- | --- |
-| `app.subscription.cron.SubscriptionCron.check_subscriptions` | 30 s |
-| `app.subscription.cron.InvoiceCron.check_invoices` | 30 s |
-| `app.post.cron.send_scheduled_reviews` | 60 s |
-
-<Note>
-  A lista `JOBS` do `run_cron.py` é **menor** que o conjunto real de produção, e os intervalos de 30 s existem só para acelerar o teste local. Para exercitar uma rotina específica, prefira chamar o management command diretamente — é o que o Dokploy faz.
-</Note>
-
-## Como diagnosticar uma rotina que não rodou
+## Diagnosticar uma rotina que não rodou
 
 <Steps>
   <Step title="Rode o comando na mão">
-    `./venv/Scripts/python.exe manage.py <comando>` — todos devolvem resumo e são idempotentes, então rodar de novo é seguro.
+    `python manage.py <comando>`. Se funciona assim, o problema é o agendamento, não o código.
+  </Step>
+  <Step title="Veja o log do schedule e do worker">
+    Com a flag `_ASYNC` ligada, o log do schedule só diz que a rotina foi enfileirada; o resultado está no log do worker. Disparo que ficou parado na fila além do `expires` é descartado.
   </Step>
   <Step title="Olhe a tabela Integration">
-    As rotinas registram execução e resposta externa lá. Veja [Integration](/backend/apps/integration) ou a tela `/admin/logs`.
+    As rotinas registram chamadas externas e respostas lá — tela `/admin/logs` ou [Integration](/plataforma/apps/integration).
   </Step>
-  <Step title="Confirme o log">
-    Sem `LOG_LEVEL` e `LOG_FILE` configurados, o `logger.info` do job pode não deixar rastro. Veja [Configuração](/backend/configuracao).
-  </Step>
-  <Step title="Verifique o schedule do Dokploy">
-    Se o comando funciona na mão, o problema é o agendamento, não o código.
+  <Step title="Confira o schedule no Dokploy">
+    Comando, cron, ambiente e as variáveis do schedule.
   </Step>
 </Steps>
-
-## Relacionados
-
-<Columns cols={2}>
-  <Card title="Comandos" icon="terminal" href="/backend/comandos">
-    Todos os management commands, com argumentos e exemplos.
-  </Card>
-  <Card title="Fluxos principais" icon="git-branch" href="/arquitetura/fluxos">
-    Onde cada rotina entra no ciclo de vida.
-  </Card>
-</Columns>
