@@ -4,6 +4,10 @@ description: "Como uma tela do frontend-miggo chama a Plataforma e o MiggoAI: ca
 icon: "plug"
 ---
 
+**Objetivo:** buscar dados da Plataforma (ou do MiggoAI) numa tela, com token, renovação e erros tratados.
+
+**Pré-requisitos:** Web app e Plataforma rodando localmente ([Rodar o Web app localmente](/web/rodar-localmente)) e o endpoint já existente na [Referência de API da Plataforma](/plataforma/api-referencia).
+
 O Web app usa `fetch` nativo. Não há cliente HTTP nem interceptor por tela: `setupAuthFetchInterceptor()` (em `src/services/jwtAuth.ts`, instalado no `main.tsx`) já cuida do token para toda chamada de API.
 
 ## Regras
@@ -80,3 +84,10 @@ As telas do [painel de IA](/web/painel-de-ia) usam o cliente tipado `src/service
 <Warning>
 O token da Plataforma só sai do app para a origem de `VITE_MIGGOAI_API_URL`. Chamada para qualquer outro domínio vai sem `Authorization`, de propósito.
 </Warning>
+
+## Verifique
+
+- Na aba Network do navegador, a chamada vai para `/api/v1/...` (caminho relativo) com `Authorization: Bearer <token>`.
+- Quando o access expira (30 min), a próxima chamada recebe `401`, o interceptor chama `token/refresh/` e repete a chamada com sucesso.
+- Com um usuário sem permissão, a tela mostra a mensagem do `403` em vez de quebrar.
+- `npm run lint` e `npm run build` passam.

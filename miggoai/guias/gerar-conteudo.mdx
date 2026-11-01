@@ -16,7 +16,15 @@ Todas as gerações passam pelo mesmo núcleo (`apps/generations/services/runner
 | Peças de perfil | `backend-miggo` (onboarding) | `POST /api/generations/perfil/{bio,banner,destaques}/` | texto ou imagens na resposta |
 | [Teste no painel](#gerar-pelo-painel) | painel de IA | `POST /api/generations/{test,production}/[complete/]` | `Generation` na resposta |
 
-Exemplos usam `$AI=https://backend-ai.miggomkt.com.br` e a chave de serviço (ver [Autenticação](/miggoai/autenticacao)).
+Exemplos usam `$AI=https://backend-ai.miggomkt.com.br` e a chave de serviço (ver [Autenticação no MiggoAI](/miggoai/autenticacao)).
+
+## Pré-requisitos
+
+- MiggoAI com `seed_prompts` executado e `MIGGO_API_BASE_URL`/`MIGGO_API_KEY` apontando para a Plataforma do mesmo ambiente ([Rodar o MiggoAI localmente](/miggoai/rodar-localmente)).
+- Uma chave de serviço (`Authorization: Api-Key <chave>`, criada no admin do Django) ou o JWT de um usuário de gestão.
+- Um cliente na Plataforma com o workflow do MiggoAI ligado e, para gerar card, um post com calendário. Grid e peças de perfil precisam do onboarding com briefing.
+
+Os contratos completos (campos, códigos de resposta, idempotência) estão na [Introdução à API do MiggoAI](/miggoai/api-referencia) e nos endpoints da aba.
 
 ## Rodada diária
 
@@ -187,6 +195,15 @@ Gerações de `TEST` ficam em pasta própria e podem ser apagadas (`DELETE /api/
 | `GET /api/generations/resumo/` | contagem por status, com os mesmos filtros da lista |
 
 Filtros comuns: `environment`, `workflow`, `client_id`, `post_id`, `status`, `page`, `page_size`.
+
+### O que conferir em cada fluxo
+
+| Fluxo | Resultado verificável |
+|---|---|
+| Rodada diária, gerar agora, gerar card, regenerar | `GET /api/generations/linhas/?client_id=<id>` mostra a execução em `SUCCESS`, e o post na Plataforma recebe título, legenda e arte. |
+| Grid | `GET /api/generations/grid/by-key/<chave>/` devolve a geração em `SUCCESS` com a imagem. |
+| Peças de perfil | `GET /api/generations/perfil/by-key/<chave>/` devolve a peça em `SUCCESS`. |
+| Teste no painel | A `Generation` aparece em `GET /api/generations/?environment=test`. |
 
 ## Fila (Celery)
 

@@ -4,7 +4,13 @@ description: "Passo a passo para acrescentar uma tela ao frontend-miggo: rota, g
 icon: "square-plus"
 ---
 
-O exemplo cria a tela "Relatórios" para a equipe Miggo e para agências, em `/admin/reports` e `/agency/reports`, protegida pelo módulo `clientes`.
+**Objetivo:** acrescentar uma tela protegida por papel e módulo, com dados da API e item no menu. O exemplo cria a tela "Relatórios" para a equipe Miggo e para agências, em `/admin/reports` e `/agency/reports`, protegida pelo módulo `clientes`.
+
+**Pré-requisitos:**
+
+- Web app e Plataforma rodando localmente ([Rodar o Web app localmente](/web/rodar-localmente)).
+- O módulo que protege a tela existe na Plataforma (`app/account/modulos.py`) e em `src/routes/modulos.ts`.
+- Usuários de teste: um admin, um gestor sem o módulo e um usuário de agência.
 
 <Steps>
   <Step title="Confirme o endpoint e a permissão na Plataforma">

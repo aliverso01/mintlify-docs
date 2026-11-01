@@ -108,6 +108,14 @@ O Dynamic Block decide o que mostrar pelo `ConversationFlowState`, nunca por par
 
 ## Testar localmente
 
+**Objetivo:** fazer um evento de cada provedor chegar ao backend local e conferir o efeito.
+
+**Pré-requisitos:**
+
+- Plataforma rodando em `localhost:8000` ([Rodar a Plataforma localmente](/plataforma/rodar-localmente)).
+- A variável do webhook preenchida no `.env` (tabela acima); sem ela a rota responde `503`.
+- Stripe: a [Stripe CLI](https://docs.stripe.com/stripe-cli) logada na conta de teste.
+
 <Tabs>
   <Tab title="Stripe">
     Com a [Stripe CLI](https://docs.stripe.com/stripe-cli):
@@ -143,6 +151,16 @@ O Dynamic Block decide o que mostrar pelo `ConversationFlowState`, nunca por par
     Para o Asaas, o header é `asaas-access-token`; para o Jira, `X-Miggo-Token`.
   </Tab>
 </Tabs>
+
+**Resultado esperado:**
+
+| Provedor | O que conferir |
+|---|---|
+| Stripe | A CLI mostra `200` para cada evento e há uma linha nova em `Integration` com o tipo do evento. |
+| ManyChat | O comando imprime a resposta do backend e a mensagem aparece na `Conversation` do cliente. |
+| Zernio | `200` com `already_processed`, `publication_not_found` ou o desfecho aplicado à `PostPublication`; a chave do evento fica em `Integration` (`service='Zernio Status'`). |
+| Asaas | `200` e a `Invoice` espelhada; `401` indica token errado. |
+| Jira | `200`; o `SupportTicket` do issue muda de status. |
 
 ## Depois de um deploy ou troca de domínio
 
