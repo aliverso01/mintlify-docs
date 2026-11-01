@@ -9,14 +9,14 @@ O app usa cinco React Contexts. A árvore de providers é montada em dois pontos
 ```
 main.tsx
 └── ThemeProvider
-    └── PreviewProvider
-        └── AuthProvider
+    └── AuthProvider
+        └── MarcaProvider
             └── AppWrapper (HelmetProvider)
                 └── App
                     └── ... (dentro de AppLayout, nas rotas autenticadas)
                         └── SidebarProvider
                             └── SearchProvider
-                                └── LayoutContent + PreviewModeBanner
+                                └── LayoutContent
 ```
 
 ## `ThemeContext` (`src/context/ThemeContext.tsx`)
@@ -30,26 +30,20 @@ main.tsx
 - **Hook de consumo**: `useTheme()` (`ThemeContext.tsx:52-58`), lança erro se usado fora do provider.
 - **Montado em**: `src/main.tsx:22` — envolve toda a aplicação (nível mais externo).
 
-## `PreviewContext` (`src/context/PreviewContext.tsx`)
+## `MarcaContext` (`src/context/MarcaContext.tsx`)
 
-- **Guarda**: `isPreviewMode: boolean`, `previewClientId: number | null`, `previewClientName: string` (`PreviewContext.tsx:3-7`).
-- **Shape do value** (`PreviewContext.tsx:9-12`):
-  ```ts
-  interface PreviewContextValue extends PreviewState {
-    startPreview: (clientId: number, clientName: string) => void;
-    stopPreview: () => void;
-  }
-  ```
-- **Persistência**: sincroniza com `localStorage["miggo_preview_mode"]` em todo `setState` (`PreviewContext.tsx:16,49-55`), com validação de shape ao carregar (`loadPreviewState`, `PreviewContext.tsx:19-43`).
-- **Hook de consumo**: `usePreview()` (`PreviewContext.tsx:72-76`).
-- **Montado em**: `src/main.tsx:23` — envolve `AuthProvider`, porque `AuthContext` lê `usePreview()` para calcular o `effectiveUser` (ver `autenticacao.mdx`).
-- **Consumidores notáveis**: `AuthContext` (effectiveUser), `useClient`, `AppHeader` (botão "visualizar como cliente", só para admin), `AppLayout` (checagem de status do cliente).
+- **Guarda**: `marca: MarcaApi | null` (marca da agência; `null` = marca Miggo) e `nome` (o da agência ou "Miggo").
+- **Carga**: `fetchMarca()` (`src/utils/marca.ts`) antes das rotas, com splash neutro, e de novo a cada troca de usuário (login, logout, troca de conta). O backend resolve a marca pelo usuário logado ou, anônimo, pelo host (`X-Miggo-Host`). `applyMarca`/`clearMarca` aplicam a paleta; só no host Miggo carrega o Google Analytics (MIG-517).
+- **Hook de consumo**: `useMarca()`; o logo sai de `MarcaLogo` (`src/components/common/MarcaLogo.tsx`).
+- **Montado em**: `src/main.tsx`, dentro de `AuthProvider` (lê `useAuthContext()`), envolvendo `AppWrapper`/`App`.
+
+O antigo `PreviewContext` (preview mode, "visualizar como cliente") foi removido.
 
 ## `AuthContext` (`src/context/AuthContext.tsx`)
 
 - **Guarda**: `user`, `loading`, `error` + as operações de conta. Detalhado por completo em `autenticacao.mdx`.
 - **Hook de consumo**: `useAuthContext()` (`AuthContext.tsx:414-420`) — a maioria das telas usa o wrapper `useAuth()` (`src/hooks/authHook.ts`), que adiciona navegação.
-- **Montado em**: `src/main.tsx:24` — dentro de `PreviewProvider`, envolve `AppWrapper`/`App`.
+- **Montado em**: `src/main.tsx`, logo abaixo de `ThemeProvider`; envolve `MarcaProvider`.
 
 ## `SearchContext` (`src/context/SearchContext.tsx`)
 
@@ -83,7 +77,7 @@ main.tsx
 | Contexto | Montado em | Escopo |
 |---|---|---|
 | `ThemeContext` | `main.tsx` | App inteira (inclusive telas públicas) |
-| `PreviewContext` | `main.tsx` | App inteira |
 | `AuthContext` | `main.tsx` | App inteira |
+| `MarcaContext` | `main.tsx` | App inteira (inclusive telas públicas, pelo host) |
 | `SidebarContext` | `layout/AppLayout.tsx` | Só dentro da área autenticada (após os guards) |
 | `SearchContext` | `layout/AppLayout.tsx` | Só dentro da área autenticada |

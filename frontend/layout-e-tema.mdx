@@ -18,7 +18,6 @@ AppLayout
 │       │       ├── AppHeader
 │       │       └── <Outlet />   ← a tela da rota
 │       │   └── SupportChatWidget
-│       └── PreviewModeBanner
 ```
 
 | Arquivo | Responsabilidade |
@@ -47,7 +46,7 @@ A transição é `transition-all duration-300 ease-in-out`, e o conteúdo é lim
 
 <Steps>
   <Step title="Descobre o próprio cliente">
-    `GET /api/v1/client/list/` e então `findOwnClient(toClientList(raw), user.id, isPreviewMode)` (`src/utils/clients`).
+    `GET /api/v1/client/list/` e então `findOwnClient(toClientList(raw), user.id)` (`src/utils/clients`).
   </Step>
   <Step title="Busca o status real">
     `GET /api/v1/client/retrieve/{id}/` e guarda `detail.active` em `isClientActive`.
@@ -180,7 +179,7 @@ Como o SVG vira componente, ele aceita `className` e herda `currentColor` — o 
 
 <Columns cols={2}>
   <Card title="Contextos" icon="box" href="/frontend/contextos">
-    `SidebarContext`, `SearchContext`, `PreviewContext` e `ThemeContext` em detalhe.
+    `SidebarContext`, `SearchContext`, `MarcaContext` e `ThemeContext` em detalhe.
   </Card>
   <Card title="Componentes" icon="component" href="/frontend/componentes">
     Inventário dos componentes por subpasta.

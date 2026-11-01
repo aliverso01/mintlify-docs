@@ -71,7 +71,7 @@ const { brandkits, loading, error, refetch } = useBrandkits(clientId, isAdmin);
 export const useClient = (): { clientId: number | null; loading: boolean; error: string | null };
 ```
 
-Sem parâmetros — resolve o `clientId` do usuário logado. Em preview mode, usa direto `previewClientId` do `PreviewContext`. Caso contrário, consulta `GET /api/v1/client/list/?user=<user.id>` e usa o primeiro resultado; guarda o resultado em `localStorage["client_id_<user.id>"]` como cache entre sessões (`useClient.ts:9-12,25-51`). Só dispara a busca se `user.role === 'client'`.
+Sem parâmetros — resolve o `clientId` do usuário logado: consulta `GET /api/v1/client/list/?user=<user.id>` e usa o primeiro resultado; guarda o resultado em `localStorage["client_id_<user.id>"]` como cache entre sessões (`useClient.ts:9-12,25-51`). Só dispara a busca se `user.role === 'client'`.
 
 **Uso real** (`src/components/OnboardingGuard.tsx:15`):
 ```ts

@@ -4,14 +4,14 @@ description: "Inventário de src/components/ por subpasta e props dos componente
 icon: "component"
 ---
 
-`src/components/` tem ~90 arquivos, agrupados por subpasta de domínio. Esta página lista todos os componentes por pasta e detalha props dos reutilizáveis genéricos (`ui/`, `form/`, `common/`). Para os guards de rota (`ProtectedRoute`, `AdminRoute`, `ManagementRoute`, `ClientRoute`, `RoleRedirect`, `OnboardingGuard`, `SubscriptionGuard`), ver `roteamento.mdx`.
+`src/components/` tem ~90 arquivos, agrupados por subpasta de domínio. Esta página lista todos os componentes por pasta e detalha props dos reutilizáveis genéricos (`ui/`, `form/`, `common/`). Para os guards de rota (`ProtectedRoute`, `AdminRoute`, `ManagementRoute`, `ClientRoute`, `AgencyRoute`, `ModuloRoute`, `RoleRedirect`, `OnboardingGuard`, `SubscriptionGuard`), ver `roteamento.mdx`.
 
 ## Inventário por subpasta
 
 | Subpasta | Componentes |
 |---|---|
-| **raiz** (`components/`) | `ProtectedRoute`, `AdminRoute`, `ManagementRoute`, `ClientRoute`, `RoleRedirect` (`RoleHomeRedirect` + `LegacyPathRedirect`), `OnboardingGuard`, `SubscriptionGuard`, `OnboardingGamificationWidget`, `OnboardingRequiredState` |
-| `admin/` | `PreviewModeBanner` |
+| **raiz** (`components/`) | `ProtectedRoute`, `AdminRoute`, `ManagementRoute`, `ClientRoute`, `AgencyRoute`, `ModuloRoute`, `RoleRedirect` (`RoleHomeRedirect` + `LegacyPathRedirect`), `OnboardingGuard`, `SubscriptionGuard`, `OnboardingGamificationWidget`, `OnboardingRequiredState` |
+| `admin/` | `ImportarReferenciaLink` |
 | `analytics/` | `InsightsHistoryCharts`, `PostTimelineModal`, `SmartInsightsPanel` |
 | `auth/` | `SignInForm`, `SignUpForm` |
 | `briefing/` | `BrandMaterialsPanel`, `BriefingReviewModal`, `PlatformProfileConfigPanel`, `ReviewFields` |
@@ -128,7 +128,7 @@ interface ClientSearchSelectProps {
 
 ## Componentes de guard (raiz de `components/`)
 
-Documentados em detalhe em `roteamento.mdx`: `ProtectedRoute`, `AdminRoute`, `ManagementRoute`, `ClientRoute`, `RoleHomeRedirect`/`LegacyPathRedirect` (em `RoleRedirect.tsx`), `OnboardingGuard`, `SubscriptionGuard`. Nenhum recebe props — todos leem contexto/hooks e renderizam `<Outlet />` ou um `<Navigate>`.
+Documentados em detalhe em `roteamento.mdx`: `ProtectedRoute`, `AdminRoute`, `ManagementRoute`, `ClientRoute`, `AgencyRoute`, `ModuloRoute`, `RoleHomeRedirect`/`LegacyPathRedirect` (em `RoleRedirect.tsx`), `OnboardingGuard`, `SubscriptionGuard`. Nenhum recebe props — todos leem contexto/hooks e renderizam `<Outlet />` ou um `<Navigate>`.
 
 ## Componentes de layout de página comuns
 
