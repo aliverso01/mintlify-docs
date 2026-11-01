@@ -1,199 +1,123 @@
 ---
 title: "Integração com a OpenAI"
-description: "modules/openai.py: modelos usados, parâmetros de cada chamada, geração de imagem e tratamento de erro."
+description: "Como o MiggoAI chama a OpenAI: endpoints, modelos, parâmetros, timeouts, fallbacks, recusa de conteúdo e registro de custo."
 icon: "brain"
 ---
 
-`modules/openai.py` (810 linhas) é a única camada que fala com a OpenAI. Toda função recebe contexto, monta um prompt, faz uma requisição HTTP com `requests` e devolve um `dict`.
+Toda chamada à OpenAI sai de `backend/apps/generations/services/openai_service.py`, com exceção do grid, que tem o próprio cliente em `grid_workflow.py` com as mesmas regras. A chave é `OPENAI_API_KEY`, enviada como `Authorization: Bearer`. As chamadas usam `requests` direto, sem SDK.
 
-## Configuração
+## Endpoints usados
 
-```python
-api_key = os.environ["OPENAI_API_KEY"]
-```
+| Endpoint | Função | Usado por | Timeout |
+|---|---|---|---|
+| `POST /v1/chat/completions` | `chat_json` | título, legenda, hashtags, bio, seleção de microângulo, classificação de foto, intenção de ajuste do banner | 60 s |
+| `POST /v1/images/edits` | `generate_image` | imagem do post (grid do cliente como referência) | 300 s |
+| `POST /v1/images/edits` | `grid_workflow._recriar_referencia` | grid a partir de uma referência ou da peça anterior | 300 s |
+| `POST /v1/images/generations` | `gerar_arte` | arte de fundo do banner do LinkedIn | 300 s |
+| `POST /v1/images/generations` | `grid_workflow._gerar_do_zero` | grid sem referência | 300 s |
 
-A chave é lida do ambiente logo após `load_dotenv()`, com acesso direto ao dicionário.
+## Modelos
 
-<Warning>
-  `os.environ["OPENAI_API_KEY"]` levanta `KeyError` **na importação do módulo** se a variável não existir. Não é um erro tratado no meio do fluxo: sem a chave no `.env`, qualquer import de `modules.openai` explode na hora. É o primeiro lugar a checar quando o serviço não sobe.
-</Warning>
+O modelo de cada workflow não é fixo no código: vem da `WorkflowConfig` (`text_model`, `image_model`, `temperature`, `max_tokens`), editável no [painel de IA](/web/painel-de-ia) por superusuário. Os defaults do model são `gpt-4o-mini` (texto) e `gpt-image-2` (imagem). Chamadas auxiliares com prompt fixo, como o `media_classifier`, usam `gpt-4o-mini`.
 
-### Modelos e endpoints
+Trocar o modelo para um que não tem `PrecoModelo` cadastrado é permitido; a API devolve o aviso em `modelos_sem_preco` e as chamadas ficam com `sem_preco=True` no custo (ver [Custos de IA](/miggoai/custos)).
 
-| Constante | Valor |
-| --- | --- |
-| `MODEL` | `gpt-4o-mini` |
-| `IMAGE_MODEL` | `gpt-image-2` |
-| `OPENAI_API_URL` | `https://api.openai.com/v1/chat/completions` |
-| `OPENAI_IMAGE_EDIT_URL` | `https://api.openai.com/v1/images/edits` |
-
-<Note>
-  Os valores estão **fixos no código**, não em variáveis de ambiente. O backend principal tem `OPENAI_MODEL` e `OPENAI_IMAGE_MODEL` configuráveis, mas aqui a troca de modelo exige editar o módulo.
-</Note>
-
-### Tamanhos de imagem
-
-Duas tabelas, uma para a entrega e outra para o pedido à API:
-
-| Formato | Entrega (`IMAGE_FORMAT_SIZES`) | Pedido à API (`IMAGE_GEN_SIZES`) | Proporção |
-| --- | --- | --- | --- |
-| `story` | 1080x1920 | `2160x3840` | 9:16 |
-| `reel` | 1080x1920 | `2160x3840` | 9:16 |
-| `feed` | 1080x1350 | `1536x1920` | 4:5 |
-| `carousel` | 1080x1350 | `1536x1920` | 4:5 |
-
-O tamanho pedido mantém **exatamente a mesma proporção** do formato final, para não precisar esticar a imagem depois. O comentário no código registra as restrições do `gpt-image-2` que motivaram essa escolha: lados múltiplos de 16, lado maior até 3840 px, razão até 3:1 e área entre 655.360 e 8.294.400 px.
-
-## Funções de texto
-
-Todas seguem o mesmo molde: `POST` em `OPENAI_API_URL`, `response_format: {"type": "json_object"}` e timeout de **30 s**. O que muda é o prompt e os parâmetros de amostragem.
-
-| Função | `temperature` | `max_tokens` | O que faz |
-| --- | --- | --- | --- |
-| `generate_microangles(context, format_type="story")` | 0.7 | 2000 | Gera **3 microângulos** para o post a partir de cliente, briefing, histórico e calendário |
-| `select_best_microangle(microangles, context)` | 0.5 | 500 | Agente que escolhe o melhor dos 3 microângulos, considerando conteúdo e histórico |
-| `select_best_format(suggested_formats, context)` | 0.5 | 300 | Escolhe o melhor formato entre os sugeridos, com justificativa |
-| `generate_caption(context, title_text, image_content)` | 0.7 | 800 | Gera a legenda do post |
-| `generate_hashtags(context, caption_text)` | 0.6 | 500 | Gera as hashtags do post |
-
-<Tip>
-  A leitura dos números conta a intenção: `0.7` onde se quer variedade criativa (microângulos, legenda), `0.5`–`0.6` onde se quer decisão estável (escolha de formato e de microângulo, hashtags).
-</Tip>
-
-### `generate_microangles(context, format_type="story")`
-
-Recebe um `context` com informações do cliente, briefing, histórico e calendário. Retorna a lista de 3 microângulos em JSON.
-
-O pós-processamento fica em `_extrair_microangles(payload)`: para cada microângulo, remove as chaves `abertura`, `desenvolvimento` e `fecho`, descarta as vazias e junta as restantes em um único campo `content`, separadas por linha em branco. Se o payload trouxer `avoided_angles`, a lista é anexada ao **primeiro** item como `_avoided_angles`.
-
-### `select_best_format(suggested_formats, context)`
-
-Se `suggested_formats` vier vazio, devolve `{"error": "Nenhum formato sugerido"}` sem chamar a API.
-
-### `generate_caption(context, title_text, image_content)`
-
-Segue o título e o ângulo escolhidos, o texto que já foi usado na imagem e o racional do calendário editorial.
-
-Guardas declaradas no prompt e no código:
-
-| Guarda | Comportamento |
-| --- | --- |
-| Formato efêmero | `story`/`stories` devolvem `{"skipped": True, "reason": ...}` sem chamar a API |
-| Sem repetir a imagem | A legenda complementa o texto da arte, não o repete literalmente |
-| Calendário | Reforça `objetivo` e `macro_objetivo` |
-| CTA | Inclui o CTA do calendário quando `cta_required=True` |
-| Sem invenção | Não cria dado fora do briefing e do calendário |
-| Sem hashtags | Hashtags são um workflow separado |
-
-Retorno: `dict` com `caption`, `cta_used` e `reason`; ou `{"skipped": True, ...}`; ou `{"error": ...}`.
-
-### `generate_hashtags(context, caption_text)`
-
-Baseia-se no negócio do cliente, no calendário editorial e na legenda já gerada.
-
-| Guarda | Regra |
-| --- | --- |
-| Formato efêmero | `story` devolve `{"skipped": True, ...}` |
-| Quantidade | Entre 8 e 15 hashtags |
-| Composição | Mistura hashtags de **nicho** (negócio, diferencial, público) com hashtags de **alcance** (tema geral) |
-| Formato | Sem espaços, sem caracteres especiais, tudo junto |
-| Repetição | Não repete as hashtags dos posts recentes |
-| Antispam | Nada de engajamento artificial (por exemplo `#like4like`) |
-| Concorrência | Não cita concorrentes |
-
-Retorno: `dict` com `hashtags` (lista) e `reason`; ou `{"skipped": True, ...}`; ou `{"error": ...}`.
-
-O conjunto `_FORMATS_SEM_LEGENDA` (`{"story", "stories"}`) é o que governa as duas guardas de formato efêmero.
-
-## Geração de imagem
-
-### `build_image_prompt(format_name, text)`
-
-Monta o prompt no padrão validado (há um PDF de referência citado no código): pede o card do grid **como estilo**, sem mesclar cards e sem aplicar o logo. Usa `IMAGE_FORMAT_SIZES` para obter largura e altura, caindo em `story` quando o formato é desconhecido.
-
-### `generate_post_image(format_name, text, grid_url)`
-
-Gera a imagem final via `images/edits`, usando o grid do cliente como referência visual de estilo, cores e composição.
-
-| Parâmetro | Descrição |
-| --- | --- |
-| `format_name` | `story`, `feed`, `reel` ou `carousel` — define o tamanho |
-| `text` | Texto que vai sobre a imagem, já no formato final, com linha em branco entre blocos |
-| `grid_url` | URL pública do grid do brandkit do cliente |
-
-Sem `grid_url`, retorna imediatamente `{"error": "Grid do cliente não encontrado — não é possível gerar a imagem."}`.
-
-Payload enviado:
-
-```json
-{
-  "model": "gpt-image-2",
-  "images": [{ "image_url": "<grid_url>" }],
-  "prompt": "<build_image_prompt(...)>",
-  "size": "<IMAGE_GEN_SIZES[format]>",
-  "quality": "high",
-  "output_format": "png",
-  "n": 1
-}
-```
-
-O timeout aqui é de **300 s** — dez vezes o das chamadas de texto, porque geração de imagem em alta qualidade é lenta.
-
-A resposta traz a imagem em base64 em `data[0].b64_json`, decodificada antes de retornar:
+## Texto: `chat_json`
 
 ```python
-{ "image_bytes": <bytes>, "prompt": <prompt usado> }
+chat_json(prompt, model='gpt-4o-mini', temperature=0.7, max_tokens=2000, schema=None) -> dict
 ```
 
-<Note>
-  A função devolve **bytes**, não caminho de arquivo. Quem grava em `outputs/` é o workflow que a chamou. Veja [Workflows](/miggoai/workflows).
-</Note>
+- **Mensagens:** duas de sistema (papel de copywriter de social media brasileiro e "Responda sempre com JSON válido.") e o prompt renderizado do CMS como mensagem do usuário.
+- **Formato da resposta:** com `schema`, `response_format` é `json_schema` com `strict: true`, montado pelo contrato de saída (`output_contract.py`); sem `schema`, `json_object`.
+- **`max_tokens`** vai como `max_completion_tokens`. Nos modelos de raciocínio o limite inclui os tokens de raciocínio.
+- **`temperature`** só é enviada para modelos `gpt-4*` e `gpt-3.5*`. Os modelos de raciocínio aceitam só o default.
+- **Nunca levanta exceção.** Erro de rede, HTTP ou parse volta como `{"error": "..."}`; o workflow decide o que fazer.
 
-## Versão em produção: `openai_service.chat_json`
+Fallbacks em `400`, cada um tentado uma única vez:
 
-As seções acima descrevem o protótipo `modules/openai.py`. O caminho que roda em produção é `backend/apps/generations/services/openai_service.py`; o `chat_json` dele (structured output dos workflows de título, legenda e hashtags) mudou nesta versão:
+| A OpenAI recusou | O que acontece |
+|---|---|
+| `temperature` | repete sem `temperature` |
+| `response_format` / `json_schema` | repete com `json_object` |
+| outro parâmetro | devolve `{"error": "Erro OpenAI 400: ..."}` |
 
-- **Modelos de raciocínio** (fix de 29/10): `max_tokens` vai como `max_completion_tokens` (os modelos de raciocínio recusam o nome antigo, e neles o limite inclui os tokens de raciocínio). `temperature` só é enviada às famílias em `PREFIXOS_COM_TEMPERATURA = ('gpt-4', 'gpt-3.5')`; as demais (gpt-5*, gpt-6*, o1/o3/o4*) só aceitam o default.
-- **400 reconhecido repete uma vez** sem o parâmetro recusado: `temperature`, ou o `json_schema` (cai para `json_object`). Qualquer outro 400 falha de vez. Resposta vazia com `finish_reason == 'length'` vira o erro "Resposta cortada por limite de tokens".
-- **Duas mensagens de sistema** (MIG-509): `PAPEL_COPYWRITER` (persona e critério de qualidade) separada de `INSTRUCAO_JSON` (formato).
+Resposta vazia cortada por `finish_reason == "length"` vira erro explícito. JSON envolvido em bloco de código ou com texto em volta é extraído antes de desistir.
 
-## Tratamento de erro
+## Imagem do post: `generate_image`
 
-Não há exceção propagada para o chamador: **toda falha volta como `dict` com a chave `error`**.
+```python
+generate_image(prompt, grid_url, gen_size, model='gpt-image-2', extra_reference_urls=None) -> bytes
+```
 
-<AccordionGroup>
-  <Accordion title="Erros de rede e HTTP">
-    Cada função captura `requests.exceptions.RequestException`. Na geração de imagem, o tratamento é mais detalhado: tenta ler `e.response.json()` e, se não for JSON, usa `e.response.text`, anexando o detalhe à mensagem — é isso que permite ver a razão real de um 400 da OpenAI.
-  </Accordion>
-  <Accordion title="JSON inválido">
-    `_parse_json_response(content)` tolera resposta embrulhada em *markdown fences*, que é o fallback comum quando o `json_object` não é respeitado. A ordem de tentativa é:
+- **Referências:** o grid do cliente vai sempre em `images[0]`; foto da galeria ou do banco de imagens, logo e referência de design entram como extras.
+- **Payload:** `quality: "high"`, `output_format: "png"`, `n: 1`, `size` pelo formato.
+- **Tamanhos**, já na proporção de entrega (sem corte nem reamostragem):
 
-    1. `json.loads(content)` direto.
-    2. Extrair o conteúdo de dentro das cercas de código e parsear.
-    3. Recortar do primeiro `{` ao último `}` e parsear.
-    4. Desistir com `{"error": "JSON inválido: ...", "content": content[:500]}`.
+| Formato | Tamanho |
+|---|---|
+| `story`, `reel` | `1152x2048` (9:16) |
+| `feed`, `carrossel` | `1088x1360` (4:5) |
 
-    O `content` truncado em 500 caracteres é o que permite diagnosticar sem despejar a resposta inteira no log.
-  </Accordion>
-  <Accordion title="Pré-condições">
-    Algumas funções retornam erro **antes** de gastar chamada: `select_best_format` sem formatos sugeridos, `generate_post_image` sem `grid_url`, e as guardas de formato efêmero em legenda e hashtags (que retornam `skipped`, não `error` — a distinção importa: `skipped` é comportamento esperado).
-  </Accordion>
-</AccordionGroup>
+Antes da chamada, cada referência é conferida:
 
-<Warning>
-  **Não há retry nem backoff.** Um 429 de rate limit ou um 5xx transitório vira `{"error": ...}` e o workflow segue com o erro. Também não há contabilização de tokens nem de custo no módulo. Se isso passar a importar, é aqui que a instrumentação precisa entrar.
-</Warning>
+- extensão que a API não lê (`.svg`, `.gif`, `.pdf`, …) é descartada;
+- URL que não responde (ex.: `404`) sai do payload; o resultado da checagem fica em cache por 5 minutos;
+- host local ou de rede privada, que a OpenAI não alcança, é baixado e enviado como data URL (até 12 MB) **só com `DEBUG`**; em produção é recusado. Cada redirect é revalidado (no máximo 3).
 
-## Relacionados
+Se a OpenAI recusar mesmo assim:
 
-<Columns cols={3}>
-  <Card title="Workflows" icon="workflow" href="/miggoai/workflows">
-    Quem chama estas funções e em que ordem.
-  </Card>
-  <Card title="Prompts" icon="message-square" href="/miggoai/prompts">
-    Como os prompts são armazenados e resolvidos.
-  </Card>
-  <Card title="Configuração" icon="settings" href="/miggoai/configuracao">
-    Variáveis de ambiente do serviço.
-  </Card>
+| Erro | Reação |
+|---|---|
+| `invalid_image_file` numa referência extra | repete uma vez sem aquela referência |
+| falha ao baixar uma URL (não diz qual) | repete uma vez só com o grid |
+| grid inacessível | falha antes de chamar, sem gastar a chamada |
+| qualquer outro | `RuntimeError` com mensagem para o usuário |
+
+## Arte de fundo: `gerar_arte`
+
+`images/generations`, sem referência, `1024x1024`, `quality: "medium"`. Serve ao banner do LinkedIn, que é composto depois em HTML. As capas de destaque não usam IA.
+
+## Grid do onboarding
+
+`grid_workflow.py`, quadrado `1024x1024`, modelo padrão `gpt-image-2`:
+
+- **com referência:** `images/edits` recriando o molde com a paleta e o logo do cliente; `input_fidelity: "high"` só para `gpt-image-1` (a família `gpt-image-2` recusa o parâmetro);
+- **modo correção** (`peca_anterior_url` + `feedback`): edita a peça anterior; se a OpenAI recusar a base, cai no modo referência;
+- **sem referência:** `images/generations` com `quality: "high"`.
+
+## Recusa de conteúdo (moderação)
+
+A OpenAI recusa com `code: "moderation_blocked"` ou com a mensagem "rejected by the safety system".
+
+| Onde | Resultado |
+|---|---|
+| Imagem do post | `RuntimeError` com "A imagem foi recusada pelo filtro de segurança do provedor. Ajuste o texto do card e tente novamente." |
+| Grid | `GridRecusadoPorConteudo`; a `Generation` grava `result = {"error_kind": "content_policy"}` e a API responde `422`. A mesma `idempotency_key` passa a responder `422` sem chamar a OpenAI. |
+
+Recusa de moderação nunca é retentada pela fila.
+
+## Mensagens de erro
+
+O usuário vê só frases do MiggoAI:
+
+| Constante | Quando |
+|---|---|
+| `MENSAGEM_FALHA_IMAGEM` | falha genérica da imagem |
+| `MENSAGEM_FALHA_REFERENCIA` | grid, logo, foto ou referência inacessível |
+| `MENSAGEM_FALHA_MODERACAO` | recusa do filtro de segurança |
+
+O corpo de erro da OpenAI vai só para o log, e URLs assinadas são logadas sem a query (que carrega a credencial).
+
+## Retentativa
+
+`openai_service` não repete por conta própria fora dos fallbacks acima. A repetição automática existe só nas tasks do Celery e só para falha transitória (`grid_workflow.eh_falha_transitoria`): erro de conexão, `429` e `5xx`. Read timeout **não** é repetido: depois de 300 s a OpenAI pode ter gerado e cobrado.
+
+## Registro de custo
+
+Toda resposta com sucesso chama `apps.custos.services.registro.registrar_resposta(modelo, operacao, corpo, imagens=...)`, que grava uma `ChamadaIA` com os tokens do campo `usage`, o custo em dólar pela `PrecoModelo` e a etapa corrente da auditoria. O registro **nunca levanta exceção**: perder o custo é ruim, perder a geração por causa dele seria pior. Detalhes em [Custos de IA](/miggoai/custos).
+
+<Columns cols={2}>
+  <Card title="Workflows" icon="workflow" href="/miggoai/workflows">Quem chama cada função.</Card>
+  <Card title="Prompts" icon="file-code" href="/miggoai/prompts">De onde vem o texto enviado.</Card>
 </Columns>

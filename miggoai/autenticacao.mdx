@@ -1,0 +1,111 @@
+---
+title: "Autenticação no MiggoAI"
+description: "Como obter e enviar a credencial certa para a API do MiggoAI: token da plataforma, chave de serviço ou token local."
+icon: "key-round"
+---
+
+Toda rota da API exige autenticação (`IsAuthenticated` por padrão), exceto `/health/` e as rotas de token. O MiggoAI aceita três credenciais, testadas nesta ordem (`REST_FRAMEWORK.DEFAULT_AUTHENTICATION_CLASSES`):
+
+| Ordem | Credencial | Header | Quem usa | Classe |
+|---|---|---|---|---|
+| 1 | Token da plataforma (JWT RS256 emitido pelo `backend-miggo`) | `Authorization: Bearer <access>` | painel de IA no `/admin` do `frontend-miggo` | `apps.common.authentication.PlataformaJWTAuthentication` |
+| 2 | Token local (JWT HS256 do próprio MiggoAI) | `Authorization: Bearer <access>` | scripts e uso local com usuário do Django | `rest_framework_simplejwt.authentication.JWTAuthentication` |
+| 3 | Chave de serviço | `Authorization: Api-Key <chave>` | `backend-miggo` (servidor para servidor) | `apps.common.authentication.BackendApiKeyAuthentication` |
+
+Os dois `Bearer` não se confundem: o algoritmo no cabeçalho do JWT decide. `RS256` vai para a classe da plataforma; o resto segue para o JWT local.
+
+## Token da plataforma
+
+É o mesmo access token que o `frontend-miggo` já usa com a plataforma. O painel de IA chama o MiggoAI direto do navegador com ele; não há login separado.
+
+<Steps>
+  <Step title="Obter o token no backend-miggo">
+    ```bash
+    curl -X POST https://api.miggomkt.com.br/api/v1/account/token/ \
+      -H "Content-Type: application/json" \
+      -d '{"email": "gestao@exemplo.com", "password": "***"}'
+    ```
+
+    O access vem no corpo; o refresh fica em cookie httpOnly. Detalhes em [Autenticação da plataforma](/plataforma/autenticacao).
+  </Step>
+  <Step title="Chamar o MiggoAI com o mesmo token">
+    ```bash
+    curl https://backend-ai.miggomkt.com.br/api/generations/resumo/ \
+      -H "Authorization: Bearer $ACCESS"
+    ```
+  </Step>
+</Steps>
+
+O MiggoAI valida o token só com a chave pública, sem chamar a plataforma:
+
+- assinatura RS256 com `MIGGO_JWT_PUBLIC_KEY`, audiência `miggoai`, `exp` e `user_id` obrigatórios, `token_type == "access"`. Falha em qualquer um: `401 Token da plataforma inválido ou expirado.`;
+- claim `is_management` verdadeiro. Quem não é da gestão da plataforma recebe `403 Acesso restrito à gestão da plataforma.` e não ganha usuário local;
+- o usuário local é um **espelho**: `apps.common.models.UsuarioPlataforma` liga o `user_id` da plataforma a um `User` `plataforma-<id>`, sem senha utilizável. É ele que aparece em `created_by` de gerações e execuções. Os claims ficam em `request.auth`.
+
+<Warning>
+  `MIGGO_JWT_PUBLIC_KEY` tem de ser a pública da `JWT_PRIVATE_KEY` do `backend-miggo` do **mesmo ambiente**. Par trocado: todo acesso do painel volta `401`.
+</Warning>
+
+### Escrita restrita a superusuário
+
+Configuração de modelo dos workflows (`PATCH /api/prompts/workflows/<id>/`), preços e cotação manual (`/api/custos/precos/`, `/api/custos/cotacoes/`) usam `apps.common.permissions.SuperusuarioParaEscrever`: leitura para qualquer autenticado, escrita só para superusuário. Com o token da plataforma vale o claim `is_superuser`; com usuário local, o `is_superuser` do Django. A chave de serviço nunca é superusuário. Sem permissão: `403`.
+
+## Chave de serviço (Api-Key)
+
+É como o `backend-miggo` aciona o MiggoAI (gerar agora, gerar card, regenerar, grid, peças de perfil). A chave é do pacote `rest_framework_api_key` e vive no **banco do MiggoAI**, não em variável de ambiente.
+
+<Steps>
+  <Step title="Criar a chave">
+    No Django admin do MiggoAI (`/admin/` → *API Keys*), crie uma chave para o ambiente. O valor só aparece uma vez.
+  </Step>
+  <Step title="Configurar o backend-miggo">
+    Grave o valor em `MIGGOAI_V2_API_KEY` no `backend-miggo` do mesmo ambiente, junto com `MIGGOAI_V2_API_URL` apontando para este MiggoAI.
+  </Step>
+  <Step title="Chamar">
+    ```bash
+    curl -X POST https://backend-ai.miggomkt.com.br/api/generations/gerar-agora/ \
+      -H "Authorization: Api-Key $MIGGOAI_V2_API_KEY" \
+      -H "Content-Type: application/json" \
+      -d '{"client_id": 42}'
+    ```
+  </Step>
+</Steps>
+
+Toda requisição com chave válida roda como o usuário de serviço `backend-miggo` (criado sozinho na primeira chamada, sem senha). Chave revogada ou inválida: `401 Api-Key inválida.`
+
+<Note>
+  `BACKEND_API_KEY`, presente no `.env.example`, não é lida pelo código. Revogar a chave no admin é o que corta o acesso.
+</Note>
+
+## Token local
+
+`POST /api/token/` e `POST /api/token/refresh/` (SimpleJWT) continuam no ar para usuários do Django do MiggoAI. Access de 30 minutos, refresh de 7 dias com rotação.
+
+```bash
+curl -X POST http://localhost:8010/api/token/ \
+  -H "Content-Type: application/json" \
+  -d '{"username": "admin", "password": "***"}'
+# {"access": "...", "refresh": "..."}
+
+curl -X POST http://localhost:8010/api/token/refresh/ \
+  -H "Content-Type: application/json" \
+  -d '{"refresh": "..."}'
+```
+
+## Credenciais que o MiggoAI envia
+
+No sentido contrário, o MiggoAI chama o `backend-miggo` com:
+
+| Header | Variável | Rotas |
+|---|---|---|
+| `Authorization: Api-Key <valor>` | `MIGGO_API_KEY` | leitura de cliente, post, brandkit e galeria; entrega do post gerado |
+| `Acervo-Service-Token: <valor>` | `ACERVO_SERVICE_TOKEN` | só `media/acervo/elegiveis/` e `media/acervo/uso/` (banco de imagens). Essas rotas recusam a `MIGGO_API_KEY`. |
+
+Ver [Integração com a plataforma](/miggoai/guias/integracao-com-a-plataforma).
+
+## Erros
+
+| Status | Quando |
+|---|---|
+| `401` | Sem credencial, token expirado ou de outro par de chaves, `Api-Key` inválida. O header `WWW-Authenticate` diz o esquema esperado. |
+| `403` | Token da plataforma sem `is_management`, ou escrita sem superusuário. |

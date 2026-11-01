@@ -1,0 +1,210 @@
+---
+title: "Gerar conteúdo com o MiggoAI"
+description: "Como disparar e acompanhar cada tipo de geração: rodada diária, gerar agora, gerar card, regenerar, grid e peças de perfil."
+icon: "sparkles"
+---
+
+Todas as gerações passam pelo mesmo núcleo (`apps/generations/services/runner.py`): cria uma `Generation`, monta o contexto do cliente, roda o workflow e fecha o registro como `SUCCESS` ou `FAILED`. O que muda é **quem dispara** e **como o resultado volta**.
+
+| Fluxo | Quem dispara | Endpoint ou comando | Resultado |
+|---|---|---|---|
+| Rodada diária | agendador do Dokploy | `generate_daily_contents` | entregue no post da plataforma |
+| [Gerar agora](#gerar-agora-e-gerar-card) | `backend-miggo` (botão do admin) | `POST /api/generations/gerar-agora/` | entregue no post |
+| [Gerar card](#gerar-agora-e-gerar-card) | `backend-miggo` | `POST /api/generations/gerar-card/` | entregue no post |
+| [Regenerar](#regenerar-um-item-do-card) | `backend-miggo` | `POST /api/generations/regenerate/` | entregue no post |
+| [Grid](#grid-do-onboarding) | `backend-miggo` (onboarding) | `POST /api/generations/grid/` | imagem em base64 na resposta |
+| Peças de perfil | `backend-miggo` (onboarding) | `POST /api/generations/perfil/{bio,banner,destaques}/` | texto ou imagens na resposta |
+| [Teste no painel](#gerar-pelo-painel) | painel de IA | `POST /api/generations/{test,production}/[complete/]` | `Generation` na resposta |
+
+Exemplos usam `$AI=https://backend-ai.miggomkt.com.br` e a chave de serviço (ver [Autenticação](/miggoai/autenticacao)).
+
+## Rodada diária
+
+O comando `generate_daily_contents` roda o fluxo completo (título → imagem → legenda → hashtags) nos cards `pending` dos clientes com o workflow ligado (`miggoai_workflow_enabled` no `backend-miggo`) e entrega o resultado no post, que fica `scheduled`.
+
+O MiggoAI não tem agendador próprio. Em produção é uma tarefa agendada no Dokploy, no container web:
+
+```bash
+*/15 * * * *  python manage.py generate_daily_contents
+```
+
+- **A primeira execução do dia varre todos os clientes** e grava uma `VarreduraDiaria`. As seguintes atendem só os clientes com pedido pendente (`generation_requested_at`, marcado pelo botão do admin e pela conclusão do onboarding).
+- **Antecedência em dias de postagem**: cliente em trial gera os cards do próximo dia programado no calendário editorial; assinante, os do segundo. Sem calendário ativo, conta dias corridos.
+- **Cliente sem grid é pulado** sem chamar nenhuma etapa paga, e o pedido continua pendente.
+- **Duas rodadas nunca se sobrepõem** (`rodada.lock`; lock de arquivo, ou por cliente no Redis com fila).
+
+Por card: reserva (`processing`) → gera → entrega → `scheduled`. Falha na geração ou na entrega devolve o card para `pending` e o erro fica na `Generation`. Card que falha não é retentado na mesma varredura do dia.
+
+```bash
+python manage.py generate_daily_contents --dry-run              # só lista
+python manage.py generate_daily_contents --client-id 7 --limit 5
+python manage.py generate_daily_contents --somente-pedidos      # só pedidos pendentes
+python manage.py generate_daily_contents --completa             # varre mesmo se já varreu hoje
+python manage.py generate_daily_contents --extra-days 2         # estende a janela
+```
+
+## Gerar agora e gerar card
+
+Rodam o mesmo código da rodada (`services/rodada.py`), fora do horário do cron.
+
+```bash
+# próximo(s) card(s) pending do cliente
+curl -X POST $AI/api/generations/gerar-agora/ -H "Authorization: Api-Key $KEY" \
+  -H "Content-Type: application/json" -d '{"client_id": 42, "limit": 1}'
+
+# um card específico
+curl -X POST $AI/api/generations/gerar-card/ -H "Authorization: Api-Key $KEY" \
+  -H "Content-Type: application/json" -d '{"client_id": 42, "post_id": 5409}'
+```
+
+| Campo | Endpoint | Obrigatório | Efeito |
+|---|---|---|---|
+| `client_id` | ambos | sim | cliente no `backend-miggo` |
+| `post_id` | `gerar-card/` | sim | card a gerar |
+| `extra_days` | `gerar-agora/` | não | dias somados à janela (padrão 0) |
+| `limit` | `gerar-agora/` | não | teto de cards (padrão sem limite) |
+
+Os dois respondem `202` na hora e trabalham fora da requisição:
+
+```json
+{"client_id": 42, "status": "aceito"}
+{"post_id": 5409, "client_id": 42, "status": "na_fila"}
+```
+
+<Warning>
+  Decida pelo `status`, não pelo código HTTP. `aceito`: o lock foi tomado e a geração começou. Qualquer outra coisa (`na_fila`, campo ausente): já havia rodada em andamento e o pedido fica para o cron. Adiar é desfecho normal, por isso os dois são `202`.
+</Warning>
+
+`400` sem `client_id`/`post_id` ou com valor não numérico. Cliente sem grid: a rodada não chama nenhuma etapa paga e registra `cliente sem grid — nada gerado.`. O resultado aparece no post da plataforma e na lista de gerações (`GET /api/generations/linhas/`).
+
+## Regenerar um item do card
+
+Regera **um** item de um card já gerado e grava de volta no post.
+
+```bash
+curl -X POST $AI/api/generations/regenerate/ -H "Authorization: Api-Key $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"post_id": 5409, "target": "imagem", "instrucao": "fundo mais claro"}'
+# 202 {"post_id": 5409, "target": "imagem", "media_id": null, "media_link_ids": null, "since_id": 812}
+```
+
+| Campo | Obrigatório | Efeito |
+|---|---|---|
+| `post_id` | sim | card |
+| `target` | sim | `titulo`, `imagem`, `legenda` ou `hashtag` |
+| `instrucao` | não | pedido de ajuste em texto livre (teto de caracteres validado: `400` acima) |
+| `media_id` | não | só `imagem`: foto da galeria escolhida à mão |
+| `media_link_ids` | não | só `imagem`: lista de ids dos slides do carrossel a regerar |
+
+Acompanhe com o `since_id` devolvido:
+
+```bash
+curl "$AI/api/generations/regenerate/status/?post_id=5409&target=imagem&since_id=812" \
+  -H "Authorization: Api-Key $KEY"
+# {"status": "running" | "success" | "failed", "error": "", "stage": "...", "generations": [...]}
+```
+
+## Grid do onboarding
+
+Gera o mosaico 3x3 da marca e devolve a imagem em base64 (a plataforma guarda a peça; o bucket do MiggoAI é privado e assina URL por uma hora).
+
+```bash
+curl -X POST $AI/api/generations/grid/ -H "Authorization: Api-Key $KEY" \
+  -H "Content-Type: application/json" -d '{
+    "client_id": 42,
+    "cores": ["#111111", "#2a96a4", "#ffffff"],
+    "nicho": "estética automotiva",
+    "referencia_url": "https://.../referencia.png",
+    "logo_url": "https://.../logo.png",
+    "idempotency_key": "grid-42-3f9c"
+  }'
+```
+
+Campos: `client_id` (obrigatório), `cores` (lista de hex), `nicho`, `descricao_referencia`, `feedback`, `referencia_url` (sem ela o grid é gerado do zero), `logo_url`, `peca_anterior_url` (com `feedback`, ativa o modo correção) e `idempotency_key` (até 64 caracteres).
+
+| Resposta | Quando |
+|---|---|
+| `200 {image_b64, generation_id, reused}` | gerou, ou a chave já tinha peça pronta (`reused: true`, sem gerar nem cobrar) |
+| `409 {status, generation_id, detail}` | a geração daquela chave está `PENDING`/`RUNNING` |
+| `422 {error, error_kind: "content_policy", generation_id}` | a OpenAI recusou pelo filtro de segurança. Repetir a mesma chave devolve o mesmo `422` sem chamar a OpenAI |
+| `502 {error, generation_id}` | a peça não saiu |
+| `400` | campo inválido, ou chave de outro cliente |
+
+### Como a chave se comporta
+
+| Estado da chave | Resultado |
+|---|---|
+| sem chave | gera e cobra sempre |
+| nova | gera, cobra e grava a chave na `Generation` |
+| `SUCCESS` | devolve a peça pronta, `reused: true` |
+| `PENDING`/`RUNNING` | `409` (ou `202` no modo fila) |
+| `FAILED` comum | gera de novo sob a mesma `Generation` |
+| `FAILED` por `content_policy` | `422`; só uma chave nova destrava |
+| parada há mais de 15 min | marcada `FAILED` (órfã) na consulta e tratada como falha comum |
+
+Use uma chave por **pedido lógico**: retry e timeout reusam a chave; mudar referência ou feedback exige chave nova.
+
+### Recuperar pelo by-key
+
+Se o `POST` estourou o timeout do lado de quem chamou, o pk nunca chegou. Consulte pela chave:
+
+```bash
+curl "$AI/api/generations/grid/by-key/grid-42-3f9c/?client_id=42" -H "Authorization: Api-Key $KEY"
+# 200 {status, generation_id, image_b64?, error?, error_kind?}  ·  404 chave desconhecida
+```
+
+## Peças de perfil
+
+| Endpoint | Corpo | Resposta (síncrona) |
+|---|---|---|
+| `POST perfil/bio/` | `client_id`, `rede` (`instagram` ou `linkedin`), `briefing`, `bio_atual`, `feedback`, `max_caracteres` | texto da bio |
+| `POST perfil/banner/` | `client_id`, `content` ou `subject`, `bg_color`, `outline_color`, `feedback` | banner do LinkedIn em base64 (sem logo) |
+| `POST perfil/destaques/` | `client_id`, `destaques: [{texto, icone, bg_color, outline_color}]`, `bg_color`, `outline_color` | capas em base64, na ordem enviada |
+
+No banner, a arte de fundo vem da OpenAI e a peça final é composta em HTML com Chromium (Playwright); as capas de destaque são só template HTML, sem IA. `502` quando a peça não sai: a plataforma mantém a anterior. Com `idempotency_key` e fila ligada (`PERFIL_ASYNC`), respondem `202` e o resultado sai em `GET perfil/by-key/<chave>/?client_id=` (`client_id` obrigatório), com o mesmo corpo da resposta síncrona.
+
+## Gerar pelo painel
+
+O [painel de IA](/web/painel-de-ia) usa os endpoints de teste e produção, síncronos:
+
+| Endpoint | Faz |
+|---|---|
+| `POST /api/generations/test/` e `/production/` | roda **um** workflow (`workflow_key`: `title`, `image`, `caption`, `hashtags`, ou uma peça de perfil) |
+| `POST /api/generations/test/complete/` e `/production/complete/` | roda os quatro em cadeia; para no primeiro que falhar |
+| `GET /api/generations/context/?client_id=&post_id=` | prévia do contexto que o prompt receberá, sem chamar IA |
+
+Corpo: `client_id`, `post_id` (dispensado nas peças de perfil), `variables` (sobrescreve o contexto só nesta chamada) e `salvar_variaveis` (padrão `true`; o painel manda `false` para o override não virar padrão do cliente). `201` com sucesso, `502` com falha, sempre com o objeto `Generation` no corpo.
+
+Gerações de `TEST` ficam em pasta própria e podem ser apagadas (`DELETE /api/generations/<id>/`, só `TEST`) ou limpas por `python manage.py cleanup_test_generations --hours 24`.
+
+## Acompanhar e auditar
+
+| Rota | Uso |
+|---|---|
+| `GET /api/generations/linhas/` | lista unificada de execuções e gerações avulsas, paginada, com o bloco `custo` |
+| `GET /api/generations/execucoes/<id>/` | execução com os passos, custo total e por etapa |
+| `GET /api/generations/<id>/` | uma geração, com `stage`, `result`, `image_urls`, `error`, trilha e custo |
+| `GET /api/generations/resumo/` | contagem por status, com os mesmos filtros da lista |
+
+Filtros comuns: `environment`, `workflow`, `client_id`, `post_id`, `status`, `page`, `page_size`.
+
+## Fila (Celery)
+
+Com `REDIS_URL` e a flag do fluxo ligada, o trabalho sai da thread e vai para o worker. O contrato HTTP não muda, exceto onde indicado.
+
+| Flag | Fluxo | Task | Fila |
+|---|---|---|---|
+| `GRID_ASYNC` | grid com `idempotency_key` (`POST` passa a responder `202`) | `generations.executar_grid` | `ia_interativo` |
+| `FILA_ASYNC` | rodada diária (uma task por cliente) | `generations.gerar_para_cliente_task` | `ia_lote` |
+| `FILA_ASYNC` | gerar agora, gerar card, regenerar | `gerar_para_cliente_task`, `gerar_card_task`, `regenerar_card` | `ia_interativo` |
+| `FILA_ASYNC` | entrega no post | `generations.entregar` (idempotente por `Generation.entregue_em`) | `entrega` |
+| `PERFIL_ASYNC` | bio / banner e destaques | `generations.executar_perfil` | `ia_interativo` / `composicao` |
+
+- Retry automático só em falha de conexão, `429` e `5xx`; nunca em read timeout (a OpenAI pode ter cobrado), moderação ou `4xx`.
+- Broker fora na hora de enfileirar: grid e perfil gravam `FAILED` e respondem `502`; os demais caem no caminho por thread.
+- **Ordem de deploy ao ligar uma flag:** `backend-miggo` primeiro (ele aceita `200` e `202`), depois o MiggoAI.
+
+<Columns cols={2}>
+  <Card title="Workflows" icon="workflow" href="/miggoai/workflows">O que cada etapa faz por dentro.</Card>
+  <Card title="Integração com a plataforma" icon="link" href="/miggoai/guias/integracao-com-a-plataforma">Leitura e entrega no backend-miggo.</Card>
+</Columns>

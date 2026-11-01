@@ -1,30 +1,32 @@
 ---
-title: "Deploy"
-description: "Imagens do backend e do frontend do miggoai, build no ECR, web x worker do Celery, Flower e URL da API em runtime."
+title: "Deploy do MiggoAI"
+description: "Como a imagem do MiggoAI é construída no ECR e publicada no Dokploy, com web, worker, Flower e agendamentos."
 icon: "cloud-upload"
 ---
 
-O `miggoai_v2` gera **duas imagens** a partir da raiz do repositório: `Dockerfile.backend` (Django + Gunicorn) e `Dockerfile.frontend` (React servido pelo Nginx). Não há `docker-compose.yml` versionado: os serviços são configurados no Dokploy.
+O serviço roda a imagem de `Dockerfile.backend` (Django + Gunicorn), construída na raiz do repositório. Não há `docker-compose.yml` versionado: os serviços (web, worker) são configurados no Dokploy, e a troca de versão lá é **manual**.
 
 ## Build das imagens no ECR (GitHub Actions)
 
-O workflow `.github/workflows/docker-ecr.yml` (MIG-494) constrói as duas imagens e as publica no **Amazon ECR**. Ele **não faz deploy**: a troca de versão no Dokploy continua manual.
+O workflow `.github/workflows/docker-ecr.yml` constrói a imagem e a publica no **Amazon ECR**. Ele **não faz deploy**.
 
 | Item | Como está no workflow |
 | --- | --- |
 | Gatilho | `push` na `main` e `workflow_dispatch`, com `if: github.ref == 'refs/heads/main'`. A `develop` não gera imagem |
-| Matriz | `backend` (`Dockerfile.backend`, repositório em `vars.ECR_REPOSITORY_BACKEND`) e `frontend` (`Dockerfile.frontend`, `vars.ECR_REPOSITORY_FRONTEND`), com `fail-fast: false` |
+| Matriz | `backend` (`Dockerfile.backend`, repositório em `vars.ECR_REPOSITORY_BACKEND`). A matriz também publica a imagem do painel antigo (`frontend`), que não faz parte do serviço em uso |
 | Environment | `production`, com `permissions: id-token: write` |
 | Autenticação na AWS | OIDC (`vars.AWS_ROLE_ARN`, `vars.AWS_REGION`; o registry da Miggo fica em `us-east-2`), sem chave guardada |
 | Tags | `<registry>/<repositório>:<sha do commit>` (imutável) e `:latest` |
 | Plataforma | `vars.BUILD_PLATFORM`, padrão `linux/amd64` |
 | Cache | buildx `type=gha`, com escopo por imagem |
 
-Var de repositório vazia faz o job falhar com erro explícito (`vars.ECR_REPOSITORY_* vazia neste environment`). Nenhuma variável entra no build do frontend.
+Var de repositório vazia faz o job falhar com erro explícito (`vars.ECR_REPOSITORY_* vazia neste environment`).
+
+Para publicar uma versão: copie a tag do commit no ECR, troque a imagem do serviço web (e do worker) no Dokploy e faça o redeploy.
 
 ## Imagem do backend
 
-`Dockerfile.backend`: `python:3.13-slim`, `libpq5`, `pip install -r backend/requirements.txt` e `playwright install --with-deps chromium` (o Chromium compõe o banner do LinkedIn e as capas de destaque a partir de HTML, MIG-409). Copia `backend/manage.py`, `backend/core` e `backend/apps` para `/app`, expõe `8000` (web) e `5555` (Flower) e usa `ENTRYPOINT ["/app/docker-entrypoint.sh"]`.
+`Dockerfile.backend`: `python:3.13-slim`, `libpq5`, `pip install -r backend/requirements.txt` e `playwright install --with-deps chromium` (o Chromium compõe o banner do LinkedIn e as capas de destaque a partir de HTML). Copia `backend/manage.py`, `backend/core` e `backend/apps` para `/app`, expõe `8000` (web) e `5555` (Flower) e usa `ENTRYPOINT ["/app/docker-entrypoint.sh"]`.
 
 O `CMD` do web:
 
@@ -38,7 +40,7 @@ O timeout longo existe porque parte da geração ainda roda dentro do request; c
 
 ### Entrypoint: `ROLE`
 
-`backend/docker-entrypoint.sh` escolhe o processo pela env `ROLE` (MIG-503). Web e worker usam **a mesma imagem**; o serviço de worker no Dokploy só muda a env.
+`backend/docker-entrypoint.sh` escolhe o processo pela env `ROLE`. Web e worker usam **a mesma imagem**; o serviço de worker no Dokploy só muda a env.
 
 | `ROLE` | O que sobe |
 | --- | --- |
@@ -54,7 +56,7 @@ O timeout longo existe porque parte da geração ainda roda dentro do request; c
   `docker-entrypoint.sh` precisa de fim de linha LF (o `.gitattributes` força `*.sh text eol=lf`). Com CRLF o container morre com `/bin/sh^M: bad interpreter`.
 </Warning>
 
-### Variáveis que mudaram nesta imagem
+### Variáveis essenciais do container
 
 | Variável | Para quê |
 | --- | --- |
@@ -70,23 +72,28 @@ Lista completa e defaults: `backend/.env.example` e `docs/celery.md` no reposit�
   `MIGGO_JWT_PUBLIC_KEY` não aparece no `backend/.env.example` da `main`; a obrigatoriedade vem do `config('MIGGO_JWT_PUBLIC_KEY')` nas settings.
 </Note>
 
-## Imagem do frontend
+## Agendamentos no Dokploy
 
-`Dockerfile.frontend`: build em `node:22-alpine` (`npm ci` e `npm run build`) e estágio final em `nginx:alpine`, com `frontend/nginx.conf` no lugar do `default.conf`.
+O MiggoAI não tem cron próprio. As tarefas agendadas ficam no serviço web do Dokploy:
 
-A URL da API **não** entra no build. Um script em `/docker-entrypoint.d/40-miggo-config.sh` roda no start do Nginx e grava `/usr/share/nginx/html/config.js` com `window.__MIGGO_CONFIG__ = { API_BASE_URL: ... }`, a partir da env `VITE_API_BASE_URL` do container (padrão `http://localhost:8010`). O `index.html` carrega `/config.js` antes do bundle. A mesma imagem serve qualquer ambiente.
+| Comando | Frequência | Para quê |
+|---|---|---|
+| `python manage.py generate_daily_contents` | a cada 15 min | rodada diária e pedidos de geração ([detalhes](/miggoai/guias/gerar-conteudo)) |
+| `python manage.py atualizar_cotacao` | diária (opcional) | cotação do dólar do dia; sem ela, a primeira leitura do dia busca |
+| `python manage.py cleanup_test_generations --hours 24` | opcional | limpa gerações de teste |
 
-| `location` | Cache |
-| --- | --- |
-| `/` | `try_files $uri $uri/ /index.html` (deep link do react-router) |
-| `= /config.js` | `no-store` (muda por ambiente) |
-| `= /index.html` | `no-cache` (aponta para os assets com hash) |
-| `/assets/` | `public, max-age=31536000, immutable` |
+A geração de um card pode passar de 5 minutos: não use timeout curto na tarefa.
+
+## Ordem de deploy
+
+1. Mudança de contrato com a plataforma (nova resposta, flag de fila nova): `backend-miggo` primeiro, depois o MiggoAI.
+2. Migrations rodam sozinhas no start do web (`ROLE=web`); o worker não migra, então suba o web antes do worker.
+3. Confira `curl https://backend-ai.miggomkt.com.br/health/` depois da troca.
 
 ## Relacionados
 
 <Columns cols={3}>
-  <Card title="Configuração" icon="settings" href="/miggoai/configuracao" />
-  <Card title="Deploy do backend-miggo" icon="server" href="/backend/deploy" />
+  <Card title="Variáveis de ambiente" icon="sliders-horizontal" href="/miggoai/configuracao" />
+  <Card title="Deploy da plataforma" icon="server" href="/plataforma/deploy" />
   <Card title="Ambientes" icon="layers" href="/arquitetura/ambientes" />
 </Columns>

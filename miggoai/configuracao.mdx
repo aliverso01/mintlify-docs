@@ -1,255 +1,97 @@
 ---
-title: "Configuração"
-description: "Settings do Django (apps, middleware, banco, DRF, JWT, CORS/CSRF, estáticos, logging) do backend MiggoAI"
-icon: "sliders"
+title: "Variáveis de ambiente do MiggoAI"
+description: "Todas as variáveis que o backend do MiggoAI lê, com obrigatoriedade, padrão e efeito."
+icon: "sliders-horizontal"
 ---
 
-Toda a configuração do backend está em `backend/core/settings.py`. As variáveis vêm de `.env` via `python-decouple`.
-
-## Apps instalados
-
-`backend/core/settings.py:38-56`:
-
-```python
-INSTALLED_APPS = [
-    'django.contrib.admin',
-    'django.contrib.auth',
-    'django.contrib.contenttypes',
-    'django.contrib.sessions',
-    'django.contrib.messages',
-    'django.contrib.staticfiles',
-
-    # Django REST Framework
-    'rest_framework',
-    'rest_framework_api_key',
-    'corsheaders',
-    'drf_spectacular',
-
-    # Apps do projeto
-    'apps.clients',
-    'apps.posts',
-    'apps.prompts',
-    'apps.generations',
-    'apps.custos',
-    'apps.common',
-]
-```
-
-A lista também tem `rest_framework_api_key` (chave do backend-miggo, MIG-379) e, desde a release de 01/11/2026, `apps.common` (modelo `UsuarioPlataforma`, que espelha localmente o usuário da gestão que entra pelo token da plataforma, MIG-506).
-
-| App | Responsabilidade |
-|---|---|
-| `apps.clients` | Proxy de clientes do `backend-miggo` + modelo local `ClientVariableValue`/`ClientPostHistory`. |
-| `apps.posts` | Proxy de posts (cards)/formatos/status do `backend-miggo`. |
-| `apps.prompts` | CMS de prompts/workflows/variáveis, versionamento. |
-| `apps.generations` | Execução dos workflows de IA e registro de auditoria (`Generation`, `Execucao`). |
-| `apps.custos` | Auditoria granular de tokens, tabela de preços dos modelos da OpenAI e cotação USD/BRL (MIG-411, MIG-468). |
-| `apps.common` | Cliente da API do backend-miggo (`miggo_client.py`), autenticação (`authentication.py`: token da plataforma e chave do backend) e permissões (`permissions.py`). Entrou em `INSTALLED_APPS` com a migration `0001_usuario_plataforma` (MIG-506). |
-
-## Middleware
-
-`backend/core/settings.py:58-68`, na ordem declarada:
-
-```python
-MIDDLEWARE = [
-    'corsheaders.middleware.CorsMiddleware',
-    'django.middleware.security.SecurityMiddleware',
-    'whitenoise.middleware.WhiteNoiseMiddleware',
-    'django.contrib.sessions.middleware.SessionMiddleware',
-    'django.middleware.common.CommonMiddleware',
-    'django.middleware.csrf.CsrfViewMiddleware',
-    'django.contrib.auth.middleware.AuthenticationMiddleware',
-    'django.contrib.messages.middleware.MessageMiddleware',
-    'django.middleware.clickjacking.XFrameOptionsMiddleware',
-]
-```
-
-`CorsMiddleware` vem primeiro (padrão exigido pelo `django-cors-headers`) e `WhiteNoiseMiddleware` logo após `SecurityMiddleware`, para servir estáticos comprimidos (admin, drf-spectacular) sem depender de servidor de arquivos externo.
-
-## Banco de dados
-
-`backend/core/settings.py:93-102` — exclusivamente PostgreSQL, sem fallback:
-
-```python
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': config('DB_NAME'),
-        'USER': config('DB_USER'),
-        'PASSWORD': config('DB_PASSWORD'),
-        'HOST': config('DB_HOST'),
-        'PORT': config('DB_PORT'),
-    }
-}
-```
-
-## Django REST Framework
-
-`backend/core/settings.py:105-113`:
-
-```python
-REST_FRAMEWORK = {
-    'DEFAULT_AUTHENTICATION_CLASSES': [
-        'rest_framework_simplejwt.authentication.JWTAuthentication',
-    ],
-    'DEFAULT_PERMISSION_CLASSES': [
-        'rest_framework.permissions.IsAuthenticated',
-    ],
-    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
-}
-```
-
-Toda view é autenticada por padrão (JWT via header `Authorization: Bearer <token>`) — não há classe de permissão diferenciada por view nos apps documentados; nenhuma view usa `AllowAny` ou `permission_classes` customizado.
-
-## JWT (SimpleJWT)
-
-`backend/core/settings.py:115-121`:
-
-```python
-SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=30),
-    'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
-    'ROTATE_REFRESH_TOKENS': True,
-    'BLACKLIST_AFTER_ROTATION': False,
-    'AUTH_HEADER_TYPES': ('Bearer',),
-}
-```
-
-- Access token expira em 30 minutos, refresh em 7 dias.
-- `ROTATE_REFRESH_TOKENS: True` — cada refresh emite um novo refresh token, mas `BLACKLIST_AFTER_ROTATION: False` significa que o token antigo **não** é invalidado (não há blacklist app instalado).
-- Endpoints: `POST /api/token/` (obtenção) e `POST /api/token/refresh/` (renovação) — `backend/core/urls.py:12-13`.
-
-**Token da plataforma (MIG-506).** `DEFAULT_AUTHENTICATION_CLASSES` tem, nesta ordem: `apps.common.authentication.PlataformaJWTAuthentication` (JWT RS256 emitido pelo backend-miggo, validado com `MIGGO_JWT_PUBLIC_KEY`), o `JWTAuthentication` local (HS256, acima) e `BackendApiKeyAuthentication` (`Authorization: Api-Key`, MIG-379). É pelo primeiro que o painel de IA no `/admin` do frontend-miggo entra. `MIGGO_JWT_PUBLIC_KEY` é **obrigatória** (as settings não carregam sem ela) e precisa ser a pública do par da `JWT_PRIVATE_KEY` do backend-miggo; na env, `
-` vira quebra de linha.
-
-## CORS e CSRF
-
-`backend/core/settings.py:17-33`:
-
-```python
-def _get_csv(key, default=''):
-    val = config(key, default=default)
-    if not val:
-        return []
-    return [x.strip() for x in val.split(',') if x.strip()]
-
-ALLOWED_HOSTS = _get_csv('ALLOWED_HOSTS')
-CORS_ALLOWED_ORIGINS = _get_csv('CORS_ALLOWED_ORIGINS')
-CSRF_TRUSTED_ORIGINS = _get_csv('CSRF_TRUSTED_ORIGINS')
-```
-
-`_get_csv` é um helper local que transforma uma variável de ambiente CSV (`"http://a.com,http://b.com"`) em lista, descartando vazios — usado para as três variáveis de host/origem, evitando repetir o parsing em cada uma.
-
-## Estáticos e mídia
-
-`backend/core/settings.py:154-172`:
-
-```python
-STATIC_URL = 'static/'
-STATIC_ROOT = BASE_DIR / 'static'
-
-STORAGES = {
-    'default': {
-        'BACKEND': 'django.core.files.storage.FileSystemStorage',
-    },
-    'staticfiles': {
-        'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage',
-    },
-}
-
-MEDIA_URL = '/media/'
-MEDIA_ROOT = BASE_DIR / 'media'
-```
-
-- Estáticos (admin, drf-spectacular) são comprimidos e versionados por hash via WhiteNoise, servidos mesmo com `DEBUG=False`.
-- Mídia (imagens geradas por IA, salvas por `apps/generations/services/runner.py`) usa o storage padrão de sistema de arquivos — em dev, servida via `static(settings.MEDIA_URL, ...)` quando `DEBUG=True` (`backend/core/urls.py:20-21`); em produção, ver <a href="/miggoai/deploy">Deploy</a>.
-
-## drf-spectacular
-
-`backend/core/settings.py:123-128`:
-
-```python
-SPECTACULAR_SETTINGS = {
-    'TITLE': 'Miggo AI Studio API',
-    'DESCRIPTION': 'Ferramenta interna para geração de conteúdo IA (título, imagem, legenda, hashtags).',
-    'VERSION': '1.0.0',
-    'SERVE_INCLUDE_SCHEMA': False,
-}
-```
-
-`SERVE_INCLUDE_SCHEMA: False` — o schema OpenAPI não é servido automaticamente numa rota própria (não há `path` para `/api/schema/` em `core/urls.py`); o drf-spectacular está instalado como `DEFAULT_SCHEMA_CLASS` mas sem endpoint de schema/Swagger exposto nas URLs documentadas.
-
-## Logging
-
-Não há bloco `LOGGING` customizado em `backend/core/settings.py` — o projeto usa o logging padrão do Django (saída no console via `logger = logging.getLogger(__name__)` em módulos como `context_builder.py:15`, `media_classifier.py:26`, `openai_service.py:14`), sem handlers/formatters próprios configurados nas settings.
-
-## Internacionalização e fuso
-
-`backend/core/settings.py:145-151`:
-
-```python
-LANGUAGE_CODE = 'pt-br'
-TIME_ZONE = 'America/Sao_Paulo'
-USE_I18N = True
-USE_TZ = True
-```
-
-## Integração com o backend-miggo
-
-`backend/core/settings.py:177-182` — únicas settings específicas do domínio (fora do padrão Django/DRF):
-
-```python
-MIGGO_API_KEY = config('MIGGO_API_KEY')
-MIGGO_API_BASE_URL = config('MIGGO_API_BASE_URL')
-OPENAI_API_KEY = config('OPENAI_API_KEY', default='')
-```
-
-Consumidas por `apps/common/miggo_client.py` e `apps/generations/services/openai_service.py` — ver <a href="/miggoai/arquitetura">Arquitetura</a>.
-
-## Celery, Redis e Flower
-
-Infra do MIG-472 em `backend/core/celery.py`; filas `ia_interativo` (padrão), `ia_lote`, `composicao` e `entrega`, com prefixo de chave `miggoai:` no Redis. Referência completa no repo: `docs/celery.md`.
+As variáveis vêm do `.env` (dev) ou do serviço no Dokploy (homologação e produção), lidas por `python-decouple` em `backend/core/settings.py`, `backend/core/celery.py`, `backend/apps/generations/tasks.py` e `backend/docker-entrypoint.sh`. Ponto de partida: `backend/.env.example`.
 
 <Warning>
-  **Tudo vem desligado por padrão.** Sem `REDIS_URL` o Celery roda eager (broker em memória) e nada conecta. Com ela, cada fluxo ainda exige a própria flag `=1`; sem a flag, o caminho é o síncrono de antes.
+  Variável marcada como obrigatória não tem default: sem ela o processo não sobe. É o caso de `MIGGO_JWT_PUBLIC_KEY`, que **não** aparece no `.env.example`.
+</Warning>
+
+## Django e banco
+
+| Variável | Obrigatória | Padrão | Efeito |
+|---|---|---|---|
+| `SECRET_KEY` | Sim | — | Chave do Django. Segredo. |
+| `DEBUG` | Sim | — | `True` só em dev. Com `DEBUG`, a mídia é servida pelo próprio Django e referências em host local podem ser embutidas na chamada à OpenAI. |
+| `ALLOWED_HOSTS` | Não | vazio | Hosts aceitos, separados por vírgula. |
+| `CORS_ALLOWED_ORIGINS` | Não | vazio | Origens do navegador que chamam a API. Precisa incluir a origem do `frontend-miggo` (o painel de IA chama o MiggoAI direto do navegador). |
+| `CSRF_TRUSTED_ORIGINS` | Não | vazio | Origens confiáveis para o Django admin. |
+| `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT` | Sim | — | PostgreSQL. Homologação e produção têm bancos separados. |
+
+## Integração com a plataforma
+
+| Variável | Obrigatória | Padrão | Efeito |
+|---|---|---|---|
+| `MIGGO_API_BASE_URL` | Sim | — | Base da API do `backend-miggo`, com `/api/v1/` no fim (ex.: `https://api.miggomkt.com.br/api/v1/`). |
+| `MIGGO_API_KEY` | Sim | — | Chave que o MiggoAI apresenta ao `backend-miggo` (`Authorization: Api-Key ...`) para ler cliente, post e brandkit e para entregar o resultado. Segredo, diferente por ambiente. |
+| `MIGGO_JWT_PUBLIC_KEY` | Sim | — | Chave pública (PEM) que valida o token da plataforma (RS256). Tem de ser o par da `JWT_PRIVATE_KEY` do `backend-miggo`. Na env, `\n` literal vira quebra de linha. |
+| `ACERVO_SERVICE_TOKEN` | Não | vazio | Credencial das rotas do banco de imagens da Miggo no `backend-miggo` (header `Acervo-Service-Token`). Mesmo valor nos dois serviços. Vazia, o banco é ignorado com `WARNING` e a geração usa só a galeria do cliente. |
+
+<Note>
+  `BACKEND_API_KEY` aparece no `.env.example`, mas o código não a lê. A chave que o `backend-miggo` usa para chamar o MiggoAI é criada no Django admin (`rest_framework_api_key`) e guardada no banco. Ver [Autenticação](/miggoai/autenticacao).
+</Note>
+
+## OpenAI
+
+| Variável | Obrigatória | Padrão | Efeito |
+|---|---|---|---|
+| `OPENAI_API_KEY` | Não | vazio | Chave da OpenAI. Vazia, as settings carregam, mas toda geração falha na chamada. |
+
+Modelo, temperatura e `max_tokens` não são variáveis: ficam na `WorkflowConfig` de cada workflow, editável no [painel de IA](/web/painel-de-ia). Ver [Integração com a OpenAI](/miggoai/integracao-openai).
+
+## Armazenamento (S3)
+
+Com `USE_S3` as imagens geradas vão para o bucket; sem ele, para `backend/media/` no disco. O código sempre grava e lê pelo `default_storage`, então `Generation.image_paths` vale nos dois casos.
+
+| Variável | Obrigatória | Padrão | Efeito |
+|---|---|---|---|
+| `USE_S3` | Não | `False` | Liga o storage S3. |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_STORAGE_BUCKET_NAME` | Sim, com `USE_S3` | — | Credenciais e bucket. Segredo. |
+| `AWS_S3_REGION_NAME` | Não | `us-east-1` | Região do bucket. |
+| `AWS_S3_CUSTOM_DOMAIN` | Não | vazio | Domínio próprio para as URLs. |
+| `AWS_S3_PROJECT_FOLDER` | Não | `miggoai` | Pasta do serviço no bucket; a mídia fica em `<pasta>/media`. |
+| `AWS_QUERYSTRING_AUTH` | Não | `True` | URL assinada (bucket privado). `False` só para bucket de leitura pública. |
+| `AWS_QUERYSTRING_EXPIRE` | Não | `3600` | Validade da URL assinada, em segundos. |
+
+Arquivo nunca é sobrescrito no bucket (`AWS_S3_FILE_OVERWRITE = False`).
+
+## Fila (Celery, Redis e Flower)
+
+<Warning>
+  **Tudo vem desligado por padrão.** Sem `REDIS_URL` o Celery roda *eager* (broker em memória) e nada conecta. Com ela, cada fluxo ainda exige a própria flag `=1`; sem a flag, vale o caminho síncrono.
 </Warning>
 
 | Variável | Padrão | Efeito |
 |---|---|---|
-| `REDIS_URL` | ausente (eager) | Broker e result backend. Segredo |
-| `CELERY_REDIS_DB` | `2` | DB index; `0` em Redis de DB único |
-| `CELERY_TASK_TIME_LIMIT` / `CELERY_TASK_SOFT_TIME_LIMIT` | `900` / hard − 60 s | Limite padrão de uma task |
-| `CELERY_VISIBILITY_TIMEOUT` | `7200` s | Tem de ser maior que o time limit mais longo; se não for, a app recusa subir |
-| `CELERY_RESULT_EXPIRES` | `3600` s | Validade do resultado no Redis |
-| `CELERY_BROKER_POOL_LIMIT` / `CELERY_REDIS_MAX_CONNECTIONS` | `3` / `10` | Conexões por processo com o Redis |
-| `ROLE` | `web` | `web`: migrate, `seed_prompts`, collectstatic, gunicorn e Flower. `worker`: `celery -A core worker -Q ia_interativo,ia_lote,composicao,entrega -E -n ia@%h`, sem migrate nem Flower. Outro valor recusa subir |
-| `CELERY_WORKER_CONCURRENCY` | `2` | Concorrência do worker |
-| `FLOWER_BASIC_AUTH` | — | `usuario:senha` (senha ≥ 12 caracteres). Sem ela o Flower não sobe; o web segue. Segredo |
-| `FLOWER_ENABLED` / `FLOWER_PORT` / `FLOWER_ADDRESS` | `1` / `5555` / `0.0.0.0` no container | Liga e posiciona o Flower |
-| `GRID_ASYNC` | desligado | `POST /api/generations/grid/` com `idempotency_key` responde `202` e roda em `generations.executar_grid` (`ia_interativo`); resultado em `grid/by-key/<chave>/` (MIG-461) |
-| `FILA_ASYNC` | desligado | Rodada diária (`ia_lote`), gerar agora, gerar card e regenerar (`ia_interativo`) e entrega ao backend (`entrega`) em fila, com lock por cliente no Redis (MIG-473) |
-| `PERFIL_ASYNC` | desligado | Bio (`ia_interativo`), banner e destaques (`composicao`) respondem `202`; resultado em `perfil/by-key/<chave>/` (MIG-474) |
-| `GRID_TASK_TIME_LIMIT`, `REGENERAR_TASK_TIME_LIMIT`, `GERAR_CARD_TASK_TIME_LIMIT`, `GERAR_CLIENTE_TASK_TIME_LIMIT`, `ENTREGA_TASK_TIME_LIMIT`, `PERFIL_TASK_TIME_LIMIT` | 600, 1800, 1800, 3600, 600, 780 s | Limites por task, validados na carga |
+| `REDIS_URL` | ausente (eager) | Broker e result backend. Segredo. As chaves levam o prefixo `miggoai:`. |
+| `CELERY_REDIS_DB` | `2` | DB index. Use `0` em Redis de um DB só. |
+| `CELERY_TASK_TIME_LIMIT` / `CELERY_TASK_SOFT_TIME_LIMIT` | `900` / hard − 60 s | Limite padrão de uma task. O soft tem de ser menor que o hard. |
+| `CELERY_VISIBILITY_TIMEOUT` | `7200` s | Tem de ser maior que o maior time limit; se não for, a app recusa subir. |
+| `CELERY_RESULT_EXPIRES` | `3600` s | Validade do resultado no Redis. |
+| `CELERY_BROKER_POOL_LIMIT` / `CELERY_REDIS_MAX_CONNECTIONS` | `3` / `10` | Conexões por processo com o Redis. |
+| `GRID_ASYNC` | desligado | Grid com `idempotency_key` responde `202` e roda na fila. |
+| `FILA_ASYNC` | desligado | Rodada diária, gerar agora, gerar card, regenerar e entrega na fila, com lock por cliente no Redis. |
+| `PERFIL_ASYNC` | desligado | Bio, banner e destaques com `idempotency_key` respondem `202` e rodam na fila. |
+| `GRID_TASK_TIME_LIMIT`, `REGENERAR_TASK_TIME_LIMIT`, `GERAR_CARD_TASK_TIME_LIMIT`, `GERAR_CLIENTE_TASK_TIME_LIMIT`, `ENTREGA_TASK_TIME_LIMIT`, `PERFIL_TASK_TIME_LIMIT` | 600, 1800, 1800, 3600, 600, 780 s | Limite por task, validado na carga. |
+| `ROLE` | `web` | Processo do container: `web` (migrate, `seed_prompts`, collectstatic, Gunicorn e Flower) ou `worker` (Celery). Outro valor recusa subir. |
+| `CELERY_WORKER_CONCURRENCY` | `2` | Concorrência do worker. |
+| `FLOWER_BASIC_AUTH` | — | `usuario:senha`, senha com 12 caracteres ou mais. Sem ela o Flower não sobe; o web segue. Segredo. |
+| `FLOWER_ENABLED` / `FLOWER_PORT` / `FLOWER_ADDRESS` | `1` / `5555` / `0.0.0.0` no container | Liga e posiciona o Flower. Use `FLOWER_ENABLED=0` no serviço de worker. |
 
-Teste de fumaça: `python manage.py celery_ping [--fila ia_lote]` imprime `OK {"pong": true, ...}` com worker no ar e `FALHA (<tipo>)` sem ele.
+Teste de fumaça: `python manage.py celery_ping [--fila ia_lote]` imprime `OK {"pong": true, ...}` com o worker no ar e `FALHA (<tipo>)` sem ele.
 
-## Tabela consolidada de variáveis
+## O que não é variável
 
-| Variável | Setting | Obrigatória |
-|---|---|---|
-| `SECRET_KEY` | `SECRET_KEY` | Sim |
-| `DEBUG` | `DEBUG` | Sim |
-| `ALLOWED_HOSTS` | `ALLOWED_HOSTS` | Não |
-| `DB_NAME` / `DB_USER` / `DB_PASSWORD` / `DB_HOST` / `DB_PORT` | `DATABASES` | Sim |
-| `MIGGO_API_KEY` / `MIGGO_API_BASE_URL` | `MIGGO_API_KEY` / `MIGGO_API_BASE_URL` | Sim |
-| `MIGGO_JWT_PUBLIC_KEY` | `MIGGO_JWT_PUBLIC_KEY` | Sim — chave pública (PEM) do JWT RS256 do backend-miggo (MIG-506) |
-| `REDIS_URL`, `CELERY_*`, `FLOWER_*`, `ROLE`, `GRID_ASYNC`, `FILA_ASYNC`, `PERFIL_ASYNC` | ver [Celery, Redis e Flower](#celery-redis-e-flower) | Não |
-| `ACERVO_SERVICE_TOKEN` | `ACERVO_SERVICE_TOKEN` | Não (`default=''`) — sem ela o banco de imagens da Miggo não é consultado e a geração segue só com a galeria do cliente |
-| `OPENAI_API_KEY` | `OPENAI_API_KEY` | Não (`default=''`) |
-| `CORS_ALLOWED_ORIGINS` | `CORS_ALLOWED_ORIGINS` | Não |
-| `CSRF_TRUSTED_ORIGINS` | `CSRF_TRUSTED_ORIGINS` | Não |
+| Configuração | Onde fica |
+|---|---|
+| JWT local (SimpleJWT) | `SIMPLE_JWT` nas settings: access 30 min, refresh 7 dias, rotação ligada. |
+| Fuso e idioma | `America/Sao_Paulo`, `pt-br`. |
+| Schema OpenAPI | `drf-spectacular` está instalado, mas o serviço não expõe rota de schema. A referência deste portal é gerada com `manage.py spectacular`. |
 
 <Columns cols={2}>
-  <Card title="Instalação" icon="download" href="/miggoai/instalacao">Passo a passo de setup local.</Card>
-  <Card title="Arquitetura" icon="sitemap" href="/miggoai/arquitetura">Como as peças se conectam.</Card>
+  <Card title="Rodar localmente" icon="terminal" href="/miggoai/rodar-localmente">Setup passo a passo.</Card>
+  <Card title="Deploy" icon="cloud-upload" href="/miggoai/deploy">Imagem, web e worker.</Card>
 </Columns>
