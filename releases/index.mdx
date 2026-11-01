@@ -5,8 +5,132 @@ icon: "clock-rotate-left"
 ---
 
 <Note>
-**Versão atual da plataforma:** `v2.2.0` (número proposto pela regra de cadência de [Proposta de versionamento](/releases/proposta-versionamento), ainda sem aprovação; `frontend-miggo/package.json` segue em `2.1.0`) · Release de 17/10/2026.
+**Versão atual da plataforma:** `v2.3.0` (número proposto pela regra de cadência de [Proposta de versionamento](/releases/proposta-versionamento), ainda sem aprovação; `frontend-miggo/package.json` segue em `2.1.0`) · Release de 01/11/2026.
 </Note>
+
+<Update label="01/11/2026" description="v2.3.0">
+
+## Release v2.3.0 (01/11/2026)
+
+Consolida 43 cards a partir do código da `main` dos três repositórios (`backend-miggo` `15f359c`, `frontend-miggo` `cc43807`, `miggoai_v2` `10dc1af`): Celery em todos os fluxos longos (desligado por padrão, atrás de flags), JWT RS256 compartilhado com o MiggoAI, painel de IA dentro do `/admin`, agências (app `agencia`), escopo central de clientes, permissões por módulo e imagens publicadas no ECR. Três cards são investigação ou spike, sem código. Fora da release: **MIG-502**, entregue só em parte (o commit `66cd674` do front, que tira a `VITE_MIGGO_API_KEY` e valida `next`/redirects, está na `main`, mas o card não fecha nesta release).
+
+### 🗄️ Migrações de banco de dados
+
+- **`backend-miggo`**:
+  - `app/account`: `0016_usermeta_created_at` (MIG-498, validade de 15 min do código de reset), `0017_customuser_agencia` (MIG-513), `0018_usuariomodulo` e `0019_modulos_dos_existentes` (MIG-518; a `0019` é de dados e dá os módulos a quem já existe).
+  - `app/agencia` (app nova): `0001_initial` (MIG-513), `0002_mig515_faturamento_agencia` e `0003_planos_de_agencia` (MIG-515), `0004_dominio_agencia` (MIG-516), `0005_marca_agencia`, `0006_validadores_da_marca` e `0007_cores_por_elemento_da_marca` (MIG-517).
+  - `app/brandkit`: `0011_ingestionjob` (MIG-476), `0011_importar_referencia_por_link` (MIG-371), `0012_ingestionjob_kind_instagram` (MIG-477) e `0013_merge_20261022_2106` (une as duas folhas `0011`).
+  - `app/client`: `0025_client_agencia` (MIG-513).
+  - `app/notification`: `0007_alter_notification_type_cancellation_requested` (MIG-344).
+  - `app/post`: `0040_profilecorrectionjob` (MIG-474).
+  - `app/subscription`: `0027_billingidentity` (MIG-390) e `0028_mig515_faturamento_agencia` (MIG-515).
+- **`miggoai-2.0/miggoai_v2`**:
+  - `apps.common` (app nova): `0001_usuario_plataforma` (MIG-506).
+  - `apps.generations`: `0012_generation_entregue_em` (MIG-473, entrega idempotente).
+
+### ⚙️ Variáveis de ambiente novas
+
+| Variável | Serviço | Para quê |
+| :--- | :--- | :--- |
+| `JWT_PRIVATE_KEY` | `backend-miggo` | **Obrigatória.** Chave privada RSA (PEM; `\n` literal é aceito) que assina o JWT em RS256. Sem ela as settings não carregam (MIG-506). |
+| `MIGGO_JWT_PUBLIC_KEY` | `miggoai_v2` | **Obrigatória.** Chave pública do par acima; o MiggoAI valida com ela o token da plataforma. Sem ela as settings não carregam (MIG-506). Não está no `.env.example` do repo. |
+| `PROXY_HOST_TOKEN` | `backend-miggo` e `frontend-miggo` (runtime do nginx) | Segredo compartilhado: o nginx manda `X-Miggo-Host` com `X-Miggo-Proxy-Token`, e o backend só confia no host da agência quando o token confere. **A mesma string nos dois.** No front é lida pelo `docker-entrypoint.sh`, não entra no build (MIG-516/517). |
+| `PLATFORM_BASE_DOMAIN` | `backend-miggo` | Domínio base do subdomínio da agência (`<slug>.<base>`); vazio desliga o subdomínio (padrão `localhost` só com `DEBUG`) (MIG-516). |
+| `HOSTS_PLATAFORMA` | `backend-miggo` | Opcional, CSV: hosts extras tratados como Miggo (não agência), além dos fixos do `settings.py` (MIG-516). |
+| `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ZONE_ID` | `backend-miggo` | Cadastro e verificação do domínio próprio da agência via Cloudflare for SaaS (MIG-516). |
+| `AGENCIA_CNAME_ALVO` | `backend-miggo` | Host para onde o CNAME do domínio da agência deve apontar; mostrado na instrução de DNS (MIG-516). |
+| `REDIS_URL` | `backend-miggo` e `miggoai_v2` | Broker e resultado do Celery. **Ausente, o Celery roda em modo eager** (no próprio processo, como antes). Segredo (MIG-472). |
+| `CELERY_REDIS_DB` / `CACHE_REDIS_DB` | `backend-miggo` (`CELERY_REDIS_DB` também no `miggoai_v2`) | Índice do DB no Redis (padrões 1 no backend, 2 no miggoai, 3 para o cache); `0` em Redis gerenciado de um DB só. |
+| `ROLE` | `backend-miggo` e `miggoai_v2` | `web` (padrão) ou `worker`: a mesma imagem sobe gunicorn + Flower ou o worker Celery, sem `migrate`/`collectstatic`. Outro valor recusa subir (MIG-503). |
+| `CELERY_WORKER_CONCURRENCY` | `backend-miggo` e `miggoai_v2` | Concorrência do worker com `ROLE=worker` (padrão 2). |
+| `CELERY_TASK_TIME_LIMIT`, `CELERY_TASK_SOFT_TIME_LIMIT`, `CELERY_VISIBILITY_TIMEOUT`, `CELERY_BROKER_POOL_LIMIT`, `CELERY_REDIS_MAX_CONNECTIONS` (e `CELERY_RESULT_EXPIRES` no miggoai) | `backend-miggo` e `miggoai_v2` | Limites do Celery e do pool do Redis; valor inválido recusa subir. |
+| `FLOWER_BASIC_AUTH` | `backend-miggo` e `miggoai_v2` | `usuario:senha` do Flower (senha com 12+ caracteres). Sem ela o Flower não sobe e o web segue. Segredo. |
+| `FLOWER_ENABLED`, `FLOWER_PORT`, `FLOWER_ADDRESS` | `backend-miggo` e `miggoai_v2` | `0` desliga o Flower no container; porta padrão 5555. |
+| `ONBOARDING_ASYNC`, `INGESTAO_ASYNC`, `INGESTAO_JOBS_ASYNC`, `APIFY_ASYNC`, `APIFY_JOBS_ASYNC`, `MIDIA_ASYNC`, `ZERNIO_ASYNC`, `SYNCJOB_ASYNC`, `MANYCHAT_ASYNC`, `BRANDKNOWLEDGE_ASYNC`, `PERFIL_ASYNC` | `backend-miggo` | Uma flag por fluxo (MIG-474 a 482). Vazia ou `0`, tudo como antes; `1` com `REDIS_URL` e worker, o fluxo vai para a fila. Cada uma tem `*_TASK_TIME_LIMIT`/`*_SOFT_TIME_LIMIT` próprios. |
+| `<COMMAND>_ASYNC` (ex.: `EXPIRE_TRIALS_ASYNC`) | `backend-miggo` (env do Schedule do Dokploy) | O command agendado só enfileira `core.rodar_rotina` e sai (MIG-483). `ROTINAS_TASK_TIME_LIMIT`/`_SOFT_TIME_LIMIT` limitam a rotina. |
+| `GRID_ASYNC_ESPERA_MAXIMA`, `PERFIL_ESPERA_NA_REQUEST`, `PERFIL_ESPERA_NA_TASK` | `backend-miggo` | Tetos (s; padrões 300, 30 e 840) da espera do backend quando o MiggoAI responde `202` no grid (MIG-461) e nas peças de perfil (MIG-474). |
+| `GRID_ASYNC`, `FILA_ASYNC`, `PERFIL_ASYNC` | `miggoai_v2` | Grid em fila (MIG-461); rodada diária, gerar/regenerar e entrega em fila (MIG-473); bio, banner e destaques em fila (MIG-474). Vazias, fluxo síncrono de sempre. |
+| `TRIAL_ENDING_FLOW_ID` | `backend-miggo` | Flow do ManyChat do aviso "seu teste está acabando"; vazio, o aviso não sai (MIG-453). |
+| `OPENAI_MODEL_ESTRATEGIA` | `backend-miggo` | Modelo só da etapa de estratégia do onboarding; padrão `OPENAI_MODEL` (MIG-400). |
+| `VITE_MIGGOAI_API_URL` | `frontend-miggo` (build) | URL da API do MiggoAI chamada pelo painel de IA do `/admin`; o token da plataforma só sai para essa origem (MIG-507). |
+| `VITE_CLARITY_PROJECT_ID` | `frontend-miggo` (build) | Projeto do Microsoft Clarity no onboarding, só em produção e com consentimento; vazio, o script não carrega (MIG-470). |
+
+Removida do front: `VITE_MIGGO_API_KEY` (commit `66cd674`, do MIG-502); o bundle não leva mais a API key.
+
+<Warning>
+**Chaves JWT em par (MIG-506):** `JWT_PRIVATE_KEY` no backend e `MIGGO_JWT_PUBLIC_KEY` no MiggoAI são o mesmo par RSA e precisam estar nos dois `.env` **antes** de subir as imagens novas; sem uma delas o serviço não sobe. A troca de HS256 para RS256 invalida os tokens emitidos antes: toda sessão precisa logar de novo.
+</Warning>
+
+<Warning>
+**Celery chega desligado.** Sem `REDIS_URL` tudo roda como antes. Para ligar: Redis, um serviço de worker por repo com a **mesma imagem** e `ROLE=worker` (mais `FLOWER_ENABLED=0`), e só então as flags `*_ASYNC`. `INGESTAO_JOBS_ASYNC` e `APIFY_JOBS_ASYNC` mudam o contrato para `202` + job: o front desta release já trata, mas não ligue antes de ele estar no ar. Grid e peças de perfil em fila: `backend-miggo` antes do `miggoai_v2`.
+</Warning>
+
+<Warning>
+**Build e imagens (MIG-494):** cada repo tem `.github/workflows/docker-ecr.yml`, que só roda na `main` e publica no Amazon ECR as tags `:<sha>` e `:latest`, com OIDC e as `vars` do environment `production` do GitHub. O build do front agora acontece no GitHub Actions: as `VITE_*` (inclusive `VITE_MIGGOAI_API_URL` e `VITE_API_BASE_URL`) têm de estar nas `vars` desse environment. O deploy no Dokploy **continua manual**.
+</Warning>
+
+<Warning>
+**Agências (MIG-516/517):** os domínios de agência entram pelo router catch-all do Traefik no `docker-compose.yml` do front (`HostRegexp`, prioridade 1, TLS terminando na Cloudflare). O fallback origin do Cloudflare for SaaS é passo manual.
+</Warning>
+
+### 🔌 Contratos de API e integrações
+
+- **Autenticação (MIG-498, 506, 512):** `POST /api/v1/account/token/` passa por `SafeTokenObtainPairView` e emite JWT RS256 com audiência `miggo` e `miggoai` e claims `is_management`, `is_superuser` e `email`; o MiggoAI aceita esse token. `role` deixou de ser gravável pelo serializer comum, `UserMeta`/`ClientMeta` só para equipe ou dono em allowlist, reset de senha com 5 tentativas e código válido por 15 min. `app/account/escopo.py` (`clientes_visiveis`, `cliente_visivel`, `EscopoClienteMixin`) restringe os clientes por quem pede; `history` e `integration` viram só equipe.
+- **Permissões por módulo (MIG-518):** `GET /api/v1/account/modules/` (catálogo) e `/api/v1/account/team/<pk>/modules/`; no front, `ModuloRoute` e `src/routes/modulos.ts`.
+- **Agência (MIG-513 a 517):** `/api/v1/agency/` (CRUD do Admin Miggo, `<pk>/users/`, `<pk>/clients/link/`, `<pk>/domains/` e `verify/`, `<pk>/brand/`), `me/` (`members/`, `brand/`, `clients/`), `subscription/` (`checkout/`, `portal/`), `plans/`, `context/`, `meta-tags/` (incluído por SSI no `index.html`) e `manifest.webmanifest`. Ver [app `agencia`](/backend/apps/agencia).
+- **Filas (MIG-461, 473 a 482):** com as flags, `202 {job_id, status}` em transmute-por-URL, import-website e `instagram-scrape/`, consultados em `GET /api/v1/brandkit/ingestion-job/<id>/`; correção de peça de perfil por job em `GET /api/v1/post/platform-profile-config/<pk>/correction/<job_id>/`. No MiggoAI, `POST /api/generations/grid/` e `perfil/{bio,banner,destaques}/` respondem `202` e o resultado sai de `grid/by-key/<chave>/` e `perfil/by-key/<chave>/`; o backend aceita `200` e `202`.
+- **MiggoAI no `/admin` (MIG-506 a 508):** `GET /api/generations/` passa a ser paginado (`page`, `page_size` até 200) e devolve `{count, page, total_pages, results}` em vez da lista sem envelope; `GET /api/generations/resumo/`, custos (`precos/`, `cotacoes/`, `chamadas/`), `prompts/workflows/<pk>/`, restauração de versão de prompt e variáveis por cliente (`clients/<id>/variables/<key>/`). O front chama o MiggoAI direto, com o JWT da plataforma, em `/admin/miggoai/*`.
+- **Outros:** `GET /api/v1/media/limits/` e erros `413`/`415` estruturados no upload (MIG-386); `/api/v1/subscription/billing-identities/` e o command `backfill_billing_identities` (MIG-390); `/api/v1/brandkit/reference-import/` com captura por Playwright no servidor (MIG-371); `trials/sales-funnel/channels/` (MIG-385); filtro `account_type` (`trial`/`paid`/`all`) no Kanban admin (MIG-370); tipo de notificação `cancellation_requested` (MIG-344).
+
+### 📋 Cards entregues na release
+
+| Card | Repositórios | Tipo | Resumo técnico |
+| :--- | :--- | :--- | :--- |
+| **MIG-344** | Backend, Frontend | Feature | Aviso no sino do admin quando o cliente pede cancelamento (`cancellation_requested`). |
+| **MIG-370** | Backend, Frontend | Feature | Filtro `account_type` no Kanban admin e selo Trial/Cliente. |
+| **MIG-371** | Backend, Frontend | Feature | Importar referência por link de post do Instagram ou pin do Pinterest (Playwright no servidor). |
+| **MIG-385** | Backend, Frontend | Feature | Rosca de origem dos leads por etapa do funil. |
+| **MIG-386** | Backend, Frontend | UX | Erros de upload estruturados (`413`/`415`), endpoint de limites e validação prévia no front. |
+| **MIG-390** | Backend, Frontend | Tarefa | `BillingIdentity`: identidade de cobrança gravada e priorizada na busca do gateway. |
+| **MIG-400** | Backend, MiggoAI | Feature | Bio e Sobre do LinkedIn validados contra o briefing; capa de destaque legível; `OPENAI_MODEL_ESTRATEGIA`. |
+| **MIG-453** | Backend | Feature | Aviso de trial acabando pelo flow de `TRIAL_ENDING_FLOW_ID`. |
+| **MIG-461** | Backend, MiggoAI | Tarefa | Grid assíncrono: `202` + task `generations.executar_grid` e consulta pela chave. |
+| **MIG-464** | — | Investigação | Geração de imagem dos posts de um cliente. Sem código. |
+| **MIG-465** | — | Investigação | Cliente sem gerações. Sem código. |
+| **MIG-467** | MiggoAI | Resiliência | Chave já recusada por moderação devolve `422` sem chamar a OpenAI (retorno da v2.2.0). |
+| **MIG-470** | Frontend | Tracking | Microsoft Clarity no onboarding, só em produção, com consentimento e máscara. |
+| **MIG-472** | Backend, MiggoAI | Infra | Celery fase 0: filas, `core.ping`, `celery_ping`, Flower com guarda de basic auth. |
+| **MIG-473** | MiggoAI | Infra | Rodada diária, gerar/regenerar e entrega em fila (`FILA_ASYNC`), lock por cliente no Redis. |
+| **MIG-474** | Backend, Frontend, MiggoAI | Infra | Peças de perfil em fila: `202`, `ProfileCorrectionJob` e polling no front. |
+| **MIG-475** | Backend | Infra | Onboarding (análise, estratégia, primeiro post, grid) em fila. |
+| **MIG-476** | Backend, Frontend | Infra | Ingestão de link, site e documento em fila (`IngestionJob`). |
+| **MIG-477** | Backend, Frontend | Infra | Instagram (Apify) e veredito em fila; token do Apify no header, não na URL. |
+| **MIG-478** | Backend | Infra | Análise de mídia da galeria em fila `leve`. |
+| **MIG-479** | Backend | Infra | Publicação no Zernio e webhook legado em fila, com claim `pending -> sending`. |
+| **MIG-480** | Backend | Infra | Sync de assinaturas (`SyncJob`) em fila, job único por escopo. |
+| **MIG-481** | Backend | Infra | Retry do `sendFlow` do ManyChat em fila, com claim durável. |
+| **MIG-482** | Backend | Infra | `brand_knowledge` em fila, com fingerprint e claim em `ClientMeta`. |
+| **MIG-483** | Backend | Infra | Schedules do Dokploy só enfileiram (`<COMMAND>_ASYNC`), sem beat. |
+| **MIG-484** | — | Spike | Spike de escalabilidade. Sem código. |
+| **MIG-485** | Frontend | UX | Indicador do onboarding com 12 etapas. |
+| **MIG-494** | Backend, Frontend, MiggoAI | CI | Workflow que publica as imagens no ECR a partir da `main`. O deploy no Dokploy segue manual. |
+| **MIG-498** | Backend | Segurança | Fim da escalada de papel e da tomada de conta por meta e por reset de senha. |
+| **MIG-503** | Backend, Frontend, MiggoAI | Infra | `ROLE` no entrypoint sobe web ou worker com a mesma imagem; `.env.example` sem valores. |
+| **MIG-505** | Backend, MiggoAI | Tarefa | Orquestrador: dedupe de foto no carrossel, referência de design, variação de grid e guarda de texto. |
+| **MIG-506** | Backend, MiggoAI | Segurança | JWT RS256 com claims para o MiggoAI; MiggoAI aceita o token e pagina gerações. |
+| **MIG-507** | Frontend, MiggoAI | Feature | Painel de IA no `/admin` (fase 1): Gerações, Gerar e Auditoria. |
+| **MIG-508** | Frontend, MiggoAI | Feature | Painel de IA no `/admin` (fase 2): Dashboard, Prompts, IA do cliente e Financeiro. |
+| **MIG-509** | MiggoAI | Tarefa | Briefing por seções no prompt, sem dado pessoal. |
+| **MIG-510** | MiggoAI | Bugfix | Mosaico de estilo usa a identidade do cliente, não a da referência. |
+| **MIG-512** | Backend | Segurança | Escopo central de clientes visíveis (`app/account/escopo.py`) e fim dos IDORs. |
+| **MIG-513** | Backend, Frontend | Feature | App `agencia`: modelo, papéis e cadastro pelo Admin Miggo. |
+| **MIG-514** | Backend, Frontend | Feature | Área da agência no front (`/agency`): clientes, membros, preview. |
+| **MIG-515** | Backend, Frontend | Feature | Faturamento da agência por faixa (Starter 4, Agência 10, Scale 20). |
+| **MIG-516** | Backend, Frontend | Feature | Domínio próprio da agência via Cloudflare e reconhecimento pelo host. |
+| **MIG-517** | Backend, Frontend | Feature | Marca própria da agência: logo, favicon, PWA, meta-tags e paleta. |
+| **MIG-518** | Backend, Frontend | Feature | Permissões por módulo para membro Miggo e membro da agência. |
+
+</Update>
 
 <Update label="17/10/2026" description="v2.2.0">
 
