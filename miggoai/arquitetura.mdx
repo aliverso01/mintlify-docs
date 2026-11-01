@@ -26,6 +26,12 @@ flowchart LR
 - **`backend/`** fala com o `backend-miggo` (autenticado por API Key, header `Authorization: Api-Key <chave>`, ver `apps/common/miggo_client.py:19-23`) e com a OpenAI (autenticado por Bearer token, `apps/generations/services/openai_service.py:55-59`).
 - Não existe sincronização/cache de clientes ou posts no MiggoAI — cada geração busca os dados ao vivo (exceto o histórico de posts do dia, cacheado em `ClientPostHistory` — ver abaixo).
 
+### Painel no `/admin` da plataforma (MIG-507/508)
+
+O painel de operação do MiggoAI também existe dentro do `frontend-miggo`, em `/admin/miggoai` (visão geral, execuções, gerar, prompts, aba IA do cliente, uso e custos, modelos; `src/pages/Admin/MiggoAI/`). Ele chama a API do MiggoAI direto do navegador, na origem configurada em `VITE_MIGGOAI_API_URL`, com o token da plataforma. Para isso o backend ganhou APIs para o que só existia no admin do Django: config de modelo por workflow, preços, cotação manual e log de chamadas (`/api/custos/precos/`, `cotacoes/`, `chamadas/`), restauração de versão de prompt e exclusão de variável salva. Escrita de modelo, preço e cotação exige superusuário (`apps/common/permissions.py::SuperusuarioParaEscrever`). Rotas em [Referência de API](/miggoai/api-referencia).
+
+O `frontend/` deste repo continua no código e o workflow de imagens ainda o publica; o desligamento do domínio de homologação dele não está no código.
+
 ## Relação com os dados do backend-miggo
 
 Os únicos dados que o `backend-miggo` expõe e o MiggoAI consome:

@@ -21,6 +21,27 @@ Base: `backend/core/urls.py:10-18`. Todas as rotas abaixo são prefixadas por `/
 
 `/api/token/refresh/` recebe `{"refresh": "<token>"}` e devolve `{"access": "<novo token>"}`.
 
+### Classes de autenticação (`REST_FRAMEWORK.DEFAULT_AUTHENTICATION_CLASSES`)
+
+| Ordem | Classe | Aceita |
+|---|---|---|
+| 1 | `apps.common.authentication.PlataformaJWTAuthentication` | access token **do `backend-miggo`** (RS256) — MIG-506 |
+| 2 | `rest_framework_simplejwt.authentication.JWTAuthentication` | token próprio do MiggoAI (HS256, `/api/token/`) |
+| 3 | `apps.common.authentication.BackendApiKeyAuthentication` | `Authorization: Api-Key <chave>` do `backend-miggo` (usuário de serviço `backend-miggo`) |
+
+**Token da plataforma (MIG-506).** O painel de IA vive no `/admin` do `frontend-miggo` e chama o MiggoAI com o mesmo access token da plataforma. `PlataformaJWTAuthentication` só responde a `Bearer` cujo cabeçalho diz `alg: RS256` (o HS256 segue para o JWT local) e então:
+
+- valida assinatura com `MIGGO_JWT_PUBLIC_KEY` (env **obrigatória**, PEM; `\n` literal vira quebra de linha), audiência `miggoai`, `exp` e `user_id` obrigatórios, e `token_type == 'access'` — falha dá `401`;
+- exige o claim `is_management` verdadeiro — quem não é da gestão da plataforma recebe `403` e não ganha usuário local;
+- resolve um **usuário espelho**: `apps.common.models.UsuarioPlataforma` (migration `common/0001_usuario_plataforma`) liga `platform_user_id` (único) a um `User` local `plataforma-<id>`, sem senha utilizável; o e-mail é atualizado pelo claim. `created_by` de gerações, execuções e auditoria aponta para ele;
+- deixa os claims em `request.auth`.
+
+**Superusuário (MIG-508).** `apps.common.permissions.eh_superusuario` lê o claim `is_superuser` quando o acesso veio pelo token da plataforma (o usuário espelho nunca é superusuário no Django) e o `is_superuser` do Django para usuário local; a `Api-Key` nunca é superusuário. `SuperusuarioParaEscrever` (usada em `apps.custos` e `apps.prompts`): leitura para qualquer autenticado, escrita só para superusuário — configuração de modelo dos workflows, preços e cotação manual.
+
+<Warning>
+`MIGGO_JWT_PUBLIC_KEY` tem de ser a pública da `JWT_PRIVATE_KEY` do `backend-miggo` (ver [Autenticação do backend](/backend/autenticacao#token-jwt-rs256)). Par divergente: todo acesso do painel no `/admin` volta `401`.
+</Warning>
+
 <AccordionGroup>
 
 <Accordion title="apps.clients — /api/clients/">
@@ -32,6 +53,8 @@ Fonte: `backend/apps/clients/urls.py`, `backend/apps/clients/views.py`.
 | GET | `/api/clients/` | `ClientListView` | Lista clientes do backend-miggo. |
 | GET | `/api/clients/<int:client_id>/` | `ClientDetailView` | Detalhe do cliente + briefing embutido. |
 | GET | `/api/clients/<int:client_id>/variables/` | `ClientVariablesView` | Variáveis de prompt já salvas para o cliente. |
+| PUT | `/api/clients/<int:client_id>/variables/` | `ClientVariablesView` | "Salvar como padrão do cliente" (MIG-507): grava `values` como respostas salvas. |
+| DELETE | `/api/clients/<int:client_id>/variables/<str:key>/` | `ClientVariableDetailView` | Apaga uma resposta salva; a próxima geração volta ao valor automático (MIG-508). |
 
 **GET `/api/clients/`**
 <ParamField path="search" type="string">Busca livre (query param), repassada ao backend-miggo.</ParamField>
@@ -43,6 +66,12 @@ Fonte: `backend/apps/clients/urls.py`, `backend/apps/clients/views.py`.
 
 **GET `/api/clients/<client_id>/variables/`**
 <ResponseField name="[]" type="array">Lista de `{key, value}` — respostas de variável já fornecidas antes por este cliente, excluindo chaves voláteis (`views.py:36-43`).</ResponseField>
+
+**PUT `/api/clients/<client_id>/variables/`** (MIG-507)
+<ParamField body="values" type="object" required>Dict `{chave: valor}`. Mesmas regras da gravação na geração: chave volátil e valor vazio não entram. `400` se não for objeto.</ParamField>
+<ResponseField name="[]" type="array">A lista atualizada, no formato do `GET`.</ResponseField>
+
+**DELETE `/api/clients/<client_id>/variables/<key>/`** (MIG-508): `204`, ou `404` se a chave não existe para o cliente.
 
 Qualquer falha de comunicação com o backend-miggo devolve `{"error": "<mensagem>"}` com o status HTTP repassado (ou `502` se o backend-miggo não informou status).
 
@@ -75,13 +104,16 @@ Fonte: `backend/apps/prompts/urls.py`, `backend/apps/prompts/views.py`.
 
 | Método | Rota | View | Descrição |
 |---|---|---|---|
-| GET | `/api/prompts/workflows/` | `WorkflowListView` | Lista workflows ativos (com config aninhada). |
+| GET | `/api/prompts/workflows/` | `WorkflowListView` | Lista workflows ativos (com config aninhada e `modelos_sem_preco`); `?todos=1` inclui os inativos. |
+| GET | `/api/prompts/workflows/<int:pk>/` | `WorkflowDetailView` | Detalhe de um workflow (MIG-508). |
+| PATCH | `/api/prompts/workflows/<int:pk>/` | `WorkflowDetailView` | Liga/desliga, ordem e config de modelo do workflow. **Só superusuário** (MIG-508). |
 | GET | `/api/prompts/` | `PromptListCreateView` | Lista prompts (`?workflow=<key>`). |
 | POST | `/api/prompts/` | `PromptListCreateView` | Cria um novo `PromptDefinition`. |
 | GET | `/api/prompts/<int:pk>/` | `PromptDetailView` | Detalhe de um prompt. |
 | PUT | `/api/prompts/<int:pk>/` | `PromptDetailView` | Atualiza um prompt (versiona se `content` mudar). |
 | DELETE | `/api/prompts/<int:pk>/` | `PromptDetailView` | Remove um prompt. |
 | GET | `/api/prompts/<int:pk>/versions/` | `PromptVersionsView` | Histórico de versões do prompt. |
+| POST | `/api/prompts/<int:pk>/versions/<int:version>/restore/` | `PromptVersionRestoreView` | Restaura o conteúdo da versão N numa versão nova (MIG-508). |
 | POST | `/api/prompts/<int:pk>/activate/` | `PromptActivateView` | Ativa o prompt. |
 | POST | `/api/prompts/<int:pk>/deactivate/` | `PromptDeactivateView` | Desativa o prompt. |
 | GET | `/api/prompts/<int:pk>/variables/` | `PromptVariableListCreateView` | Lista variáveis do prompt. |
@@ -96,6 +128,16 @@ Fonte: `backend/apps/prompts/urls.py`, `backend/apps/prompts/views.py`.
 <ParamField path="change_note" type="string">Nota de mudança, salva na versão criada.</ParamField>
 <ResponseField name="current_version" type="integer">Incrementado automaticamente quando `content` muda.</ResponseField>
 
+Cada prompt da lista e do detalhe traz `editado_por` (MIG-508): o `username` de quem salvou a última edição do texto (autor da `PromptVersion` mais recente), ou `null`.
+
+**PATCH `/api/prompts/workflows/<pk>/`** (MIG-508; permissão `SuperusuarioParaEscrever`: leitura para qualquer autenticado, escrita só para superusuário)
+<ParamField body="is_active" type="boolean" />
+<ParamField body="order" type="integer" />
+<ParamField body="config" type="object">`{text_model?, image_model?, temperature? (0–2), max_tokens? (1–128000)}`. Valor fora da faixa é `400`. `key`, `name` e `description` não mudam pela API.</ParamField>
+<ResponseField name="modelos_sem_preco" type="array">Modelos da config sem `PrecoModelo` cadastrado. É **aviso, não erro** (MIG-441): a troca vale e a tela avisa.</ResponseField>
+
+**POST `/api/prompts/<pk>/versions/<version>/restore/`** (MIG-508): o texto atual é arquivado como versão nova (`change_note` "Restaurada da vN") e o conteúdo da vN passa a ser o atual, com `current_version` avançado. Nada do histórico é apagado. `404` se a versão não existe; `400` se ela já é a atual. Edição e restauração passam pela mesma função (`apps/prompts/services/versionamento.py::trocar_conteudo`).
+
 **POST `/api/prompts/<pk>/detect-variables/`**
 <ResponseField name="new" type="array">Chaves `{{...}}` no template que ainda não têm `PromptVariable` cadastrada.</ResponseField>
 <ResponseField name="removed" type="array">`PromptVariable` cadastradas que não aparecem mais no template.</ResponseField>
@@ -103,6 +145,7 @@ Fonte: `backend/apps/prompts/urls.py`, `backend/apps/prompts/views.py`.
 
 **POST `/api/prompts/<pk>/preview/`**
 <ParamField path="values" type="object">Dict `{chave: valor}` para renderizar o template.</ParamField>
+<ParamField path="content" type="string">Opcional (MIG-508): renderiza este texto (o rascunho ainda no editor) em vez do conteúdo salvo, sem salvar.</ParamField>
 <ResponseField name="rendered" type="string">Template com as variáveis substituídas.</ResponseField>
 <ResponseField name="structural" type="string">Bloco de formato de saída (JSON schema instruction) que o sistema anexa na hora da geração real — não editável, mas exibido para contexto (`output_contract.instruction_for_slug`).</ResponseField>
 
@@ -123,19 +166,22 @@ Fonte: `backend/apps/generations/urls.py`, `backend/apps/generations/views.py`.
 | POST | `/api/generations/gerar-card/` | `GerarCardView` | Geração completa de UM card já existente (título → imagem → legenda → hashtags). Chamado pelo `backend-miggo`. |
 | GET | `/api/generations/linhas/` | `LinhaListView` | Listagem unificada de gerações e execuções com paginação no banco e custos (MIG-468). |
 | GET | `/api/generations/execucoes/<int:pk>/` | `ExecucaoDetailView` | Detalhe de execução com passos aninhados, custo total e por etapa (MIG-468). |
-| GET | `/api/generations/` | `GenerationListView` | Lista generations (filtros legados). |
+| GET | `/api/generations/` | `GenerationListView` | Lista generations, **paginada** (MIG-506). |
+| GET | `/api/generations/resumo/` | `GenerationResumoView` | Contagem por status com os mesmos filtros da lista (MIG-506). |
 | GET | `/api/generations/<int:pk>/` | `GenerationDetailView` | Detalhe de uma generation com custo total e por etapa (MIG-468). |
 | DELETE | `/api/generations/<int:pk>/` | `GenerationDetailView` | Remove uma generation (só ambiente TEST). |
 | POST | `/api/generations/grid/` | `GridView` | Gera o mosaico 3x3 do onboarding (síncrono) e devolve a imagem em base64. Quem chama é o backend-miggo, nunca o navegador. |
 | GET | `/api/generations/grid/by-key/<str:idempotency_key>/` | `GridByKeyView` | Estado de uma geração de grid **pela chave de idempotência**, não pelo pk. |
+| GET | `/api/generations/perfil/by-key/<str:idempotency_key>/` | `PerfilByKeyView` | Estado de uma peça de perfil (bio, banner ou destaques) pela chave de idempotência (MIG-474). |
 
 **POST `/api/generations/{test,production}/`**
 <ParamField path="workflow_key" type="string" required>`title`, `image`, `caption` ou `hashtags`.</ParamField>
 <ParamField path="client_id" type="integer" required>Id do cliente no backend-miggo.</ParamField>
 <ParamField path="post_id" type="integer" required>Id do post (card) no backend-miggo.</ParamField>
 <ParamField path="variables" type="object">Overrides de variáveis desta chamada (prioridade sobre contexto automático e respostas salvas).</ParamField>
+<ParamField path="salvar_variaveis" type="boolean">Default `true`. O painel do `/admin` da plataforma manda `false` (MIG-507): o override vale só para esta execução e não vira padrão do cliente. Também aceito em `complete/`.</ParamField>
 
-Status HTTP: `201` se `Generation.status == SUCCESS`, senão `502`.
+`post_id` é dispensado nas peças de perfil (`_WORKFLOWS_DE_PERFIL`), que são do cliente e não de um card (MIG-508, aba IA do cliente). Status HTTP: `201` se `Generation.status == SUCCESS`, senão `502`.
 
 **POST `/api/generations/{test,production}/complete/`**
 <ParamField path="client_id" type="integer" required />
@@ -148,7 +194,7 @@ Status HTTP: `201` se todas tiverem `status == SUCCESS`, senão `502`.
 
 **POST `/api/generations/gerar-agora/`** e **POST `/api/generations/gerar-card/`** — disparo fora da rodada diária (MIG-379)
 
-Rodam a mesma rotina do cron (`services.rodada`), então a execução manual produz o mesmo resultado da automática. Respondem **`202` e trabalham em thread**: o resultado aparece no painel de gerações, nunca nesta requisição.
+Rodam a mesma rotina do cron (`services.rodada`), então a execução manual produz o mesmo resultado da automática. Respondem **`202` e trabalham em thread**: o resultado aparece no painel de gerações, nunca nesta requisição. Com `FILA_ASYNC=1` e fila ativa (MIG-473), a thread vira a task `generations.gerar_para_cliente_task` / `generations.gerar_card_task` na fila `ia_interativo` e o lock passa a ser por cliente no Redis (`services/locks.py`); o contrato (`202` com `aceito`/`na_fila`) não muda.
 
 <ParamField path="client_id" type="integer" required>Id do cliente no `backend-miggo`. Obrigatório nos dois endpoints.</ParamField>
 <ParamField path="post_id" type="integer" required>Só em `gerar-card/`: id do card a processar.</ParamField>
@@ -200,6 +246,8 @@ O que a chave faz em cada estado:
 
 Corrida entre duas chamadas com a mesma chave: o `unique` do banco é a guarda final; o `IntegrityError` é capturado: `SUCCESS` do vencedor → `200` `reused: true`; outro estado → `409`; vencedor de outro cliente ou inexistente → a exceção sobe (`500`). Nada foi gerado nem cobrado no perdedor.
 
+**Modo assíncrono do grid (MIG-461).** Com `GRID_ASYNC=1`, fila ativa (`REDIS_URL`) **e** `idempotency_key` no pedido, o `POST` responde `202 {status, generation_id}` e a geração roda na task `generations.executar_grid` (fila `ia_interativo`); o resultado sai pelo `GET by-key/` abaixo. Nesse modo, chave em `PENDING`/`RUNNING` devolve `202` (não `409`). Broker fora ao enfileirar: registro `FAILED` e `502`. Faltando uma das três condições, vale o fluxo síncrono acima, sem diferença.
+
 **GET `/api/generations/grid/by-key/<idempotency_key>/`**
 
 Existe porque no caso da MIG-427 o chamador **nunca recebeu o pk**: o POST estourou o read timeout de 300s do lado dele enquanto a geração seguia aqui. Sem este endpoint a única saída da plataforma era regerar — a duplicata cobrada.
@@ -210,6 +258,12 @@ Existe porque no caso da MIG-427 o chamador **nunca recebeu o pk**: o POST estou
 <ResponseField name="404 Not Found" type="object">`{error: 'chave desconhecida.'}`.</ResponseField>
 
 **Geração órfã (MIG-463).** `Generation.updated_at` é o heartbeat: `PENDING`/`RUNNING` sem atividade há mais de 15 min (`GRID_ORFA_APOS`) é órfã — o processo caiu no meio. O `POST /grid/` com chave repetida e o `GET by-key/` chamam `_expirar_se_orfa`, que marca `FAILED` com `error='expirada: sem atividade há mais de 15 min'`. A expiração é **preguiçosa** (na consulta, sem cron). Sem ela, a chave ficaria presa em `409` para sempre. Todo `save(update_fields=...)` de uma geração em andamento precisa incluir `updated_at`, senão o `auto_now` não dispara.
+
+**Peças de perfil em fila: `POST /api/generations/perfil/{bio,banner,destaques}/` (MIG-474).** Com `PERFIL_ASYNC=1`, fila ativa e `idempotency_key` no pedido, respondem `202 {status, generation_id}` e rodam na task `generations.executar_perfil` (bio em `ia_interativo`; banner e destaques em `composicao`). Sem uma das três, o corpo síncrono de sempre (a chave é ignorada). Chave existente: `SUCCESS` = `200` com `reused: true`; `PENDING`/`RUNNING` = `202` sem reenfileirar; recusa de moderação = `422`; chave de outro cliente, de outra peça ou do grid = `400`.
+
+**GET `/api/generations/perfil/by-key/<idempotency_key>/`** (MIG-474)
+<ParamField query="client_id" type="integer" required>Obrigatório (`400` sem ele). Chave de outro cliente e chave desconhecida dão o mesmo `404`.</ParamField>
+<ResponseField name="200 OK" type="object">`{status, generation_id}`; com `SUCCESS`, o **mesmo corpo** do `POST` síncrono daquela peça (`montar_corpo_da_peca`); com `FAILED`, `error` (e `error_kind: 'content_policy'` na recusa de moderação). Banner/destaques em `SUCCESS` sem imagem respondem como `FAILED`.</ResponseField>
 
 **GET `/api/generations/context/`**
 <ParamField path="client_id" type="integer" required />
@@ -255,14 +309,29 @@ Dashboard financeiro, só leitura (`DashboardFinanceiroView`, `IsAuthenticated` 
 <ParamField query="desde" type="string">`AAAA-MM-DD`, só com `periodo=intervalo`.</ParamField>
 <ParamField query="ate" type="string">`AAAA-MM-DD`, só com `periodo=intervalo`.</ParamField>
 
-Resposta: totais, série por dia e recortes por cliente, modelo e etapa (`services/agregados.py::dashboard`). **Medido e estimado vêm sempre separados**: a estimativa nunca é somada como se fosse medida. `400` para período inválido, datas fora de 2020–2100, `desde` depois de `ate`, ou intervalo de 366 dias ou mais (a série por dia vai inteira na resposta). A lista de clientes (`/api/clients/`) também traz `consumo_mes_medido`, `consumo_mes_estimado`, `consumo_total_medido` e `consumo_total_estimado`.
+Resposta: totais, série por dia e recortes por cliente, modelo e etapa (`services/agregados.py::dashboard`). **Medido e estimado vêm sempre separados**: a estimativa nunca é somada como se fosse medida. `400` para período inválido, datas fora de 2020–2100, `desde` depois de `ate`, ou intervalo de 366 dias ou mais (a série por dia vai inteira na resposta). **Preços, cotações e log de chamadas (MIG-508)**: funções que antes só existiam no admin do Django. Escrita de preço e cotação só para superusuário (`SuperusuarioParaEscrever`); as listas paginadas usam `?page=&page_size=` (padrão 50, teto 200) e devolvem `{count, page, page_size, results}`.
 
-**GET `/api/generations/`**
+| Método | Rota | View | Descrição |
+|---|---|---|---|
+| GET, POST | `/api/custos/precos/` | `PrecoModeloListView` | Lista os `PrecoModelo` por `modelo`; `POST` cria (`modelo` é único, `400` se repetido). |
+| GET, PUT, PATCH, DELETE | `/api/custos/precos/<int:pk>/` | `PrecoModeloDetailView` | Um preço. Salvar ou apagar limpa o cache do preço na hora (`signals.py`). |
+| GET, POST | `/api/custos/cotacoes/` | `CotacaoDolarListView` | Cotações USD→BRL, mais recente primeiro (paginada). `POST {data, taxa}` grava com `fonte=manual`: corrige o dia existente (`200`) ou cria (`201`); taxa fora de 1–100 é `400`. |
+| GET | `/api/custos/chamadas/` | `ChamadaIAListView` | Log de chamadas pagas (só leitura), paginado, mais nova primeiro. Filtros `modelo`, `etapa`, `client_id`, `sem_preco`, `estimado`, `from`/`to` (`AAAA-MM-DD`, inclusivos); data ou `client_id` inválido é `400`. |
+
+A lista de clientes (`/api/clients/`) também traz `consumo_mes_medido`, `consumo_mes_estimado`, `consumo_total_medido` e `consumo_total_estimado`.
+
+**GET `/api/generations/`** (paginada desde a MIG-506)
+<ParamField path="page" type="integer">Default 1.</ParamField>
+<ParamField path="page_size" type="integer">Default 50, teto 200 (`PAGE_SIZE_MAX`).</ParamField>
 <ParamField path="environment" type="string">`TEST` ou `PRODUCTION`.</ParamField>
 <ParamField path="workflow" type="string">Chave do workflow (`title`, `image`, `caption`, `hashtags`).</ParamField>
 <ParamField path="client_id" type="integer" />
 <ParamField path="post_id" type="integer" />
 <ParamField path="status" type="string">`PENDING`, `RUNNING`, `SUCCESS`, `FAILED`.</ParamField>
+
+Resposta no formato da `LinhaListView`: `{count, page, total_pages, results}`, ordenada por `-created_at`. **Mudança de contrato:** antes a rota devolvia a lista inteira, sem envelope.
+
+**GET `/api/generations/resumo/`** (MIG-506): mesmos filtros da lista; devolve `{total, por_status: {STATUS: n}}`. Existe para o dashboard não baixar todas as gerações só para contar.
 
 **GET `/api/generations/<pk>/`**
 Retorna o serializer detalhado da geração (`GenerationDetailSerializer`), acrescido de `custo` (bloco de custo total) e `custo_por_etapa` (lista detalhada por etapa).
