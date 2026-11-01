@@ -13,7 +13,7 @@ O workflow `.github/workflows/docker-ecr.yml` constrói a imagem e a publica no 
 | Item | Como está no workflow |
 | --- | --- |
 | Gatilho | `push` na `main` e `workflow_dispatch`, com `if: github.ref == 'refs/heads/main'`. A `develop` não gera imagem |
-| Matriz | `backend` (`Dockerfile.backend`, repositório em `vars.ECR_REPOSITORY_BACKEND`). A matriz também publica a imagem do painel antigo (`frontend`), que não faz parte do serviço em uso |
+| Matriz | `backend` (`Dockerfile.backend`, repositório em `vars.ECR_REPOSITORY_BACKEND`). A matriz também publica imagens fora do escopo deste serviço |
 | Environment | `production`, com `permissions: id-token: write` |
 | Autenticação na AWS | OIDC (`vars.AWS_ROLE_ARN`, `vars.AWS_REGION`; o registry da Miggo fica em `us-east-2`), sem chave guardada |
 | Tags | `<registry>/<repositório>:<sha do commit>` (imutável) e `:latest` |
@@ -36,7 +36,7 @@ gunicorn core.wsgi:application --bind 0.0.0.0:8000 --worker-class gthread \
   --access-logfile - --error-logfile -
 ```
 
-O timeout longo existe porque parte da geração ainda roda dentro do request; com o padrão de 30 s o Gunicorn aborta o worker no meio.
+O timeout longo existe porque parte da geração roda dentro do request; com o padrão de 30 s o Gunicorn aborta o worker no meio.
 
 ### Entrypoint: `ROLE`
 

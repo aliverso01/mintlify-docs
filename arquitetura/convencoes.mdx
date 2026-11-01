@@ -45,35 +45,13 @@ Os repositórios têm histórico de **mojibake** (`Ã§`, `Ã£` no lugar de `ç
 | Componentes | Funcionais com hooks. Reaproveite os componentes existentes antes de criar novos. |
 | Rotas por papel | Respeite a separação `/app` (cliente) e `/admin` (equipe). Veja [Roteamento](/web/roteamento). |
 
-## Checklist antes de considerar pronto
+## Como abrir um PR
 
-<Steps>
-  <Step title="Entender">
-    Localize o código relevante e leia só o necessário.
-  </Step>
-  <Step title="Implementar">
-    Mudança mínima, no estilo do repositório.
-  </Step>
-  <Step title="Verificar">
-    Rode o check/lint/teste do repositório tocado e relate o resultado real. Se falhou, diga que falhou.
-  </Step>
-  <Step title="Revisar">
-    Para mudanças não triviais, passe uma revisão de código antes de fechar: correção primeiro, depois segurança, regressão, simplicidade e testes.
-  </Step>
-  <Step title="Abrir o PR">
-    Branch a partir da `develop`, um PR por repositório, contra a `develop`. Veja [Ambientes](/arquitetura/ambientes) para o caminho até a produção.
-  </Step>
-</Steps>
+1. Crie a branch a partir da `develop` atualizada.
+2. Rode a verificação do repositório tocado: `manage.py check` e a suíte nos backends; `npm run lint` e `npm run build` no Web app.
+3. Abra um PR por repositório, contra a `develop`. Mudança que cruza repositórios: Plataforma primeiro, depois quem consome o contrato.
 
-## Prioridades de revisão de código
-
-Correção antes de estilo. Na ordem:
-
-1. **Correção** — faz o que promete? Casos de borda, `null`/`undefined`, erros silenciados.
-2. **Segurança** — entrada não validada, injeção, dado sensível em log, permissão e autorização.
-3. **Regressão** — quebra algo existente? Atenção especial aos contratos de API entre os três repositórios.
-4. **Simplicidade e reuso** — dá para usar o que já existe? Há duplicação?
-5. **Testes** — o caminho crítico está coberto?
+O caminho até a produção está em [Ambientes](/arquitetura/ambientes).
 
 
 ## Contratos entre repositórios

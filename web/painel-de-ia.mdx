@@ -4,7 +4,7 @@ description: "As telas do MiggoAI dentro do /admin do web app: rotas, quem acess
 icon: "sparkles"
 ---
 
-O painel de IA é a interface de operação do MiggoAI. Ele vive no `frontend-miggo`, dentro da área `/admin`, em `src/pages/Admin/MiggoAI/`. O MiggoAI não tem frontend próprio em produção: estas telas chamam a API dele direto do navegador.
+O painel de IA é a interface de operação do MiggoAI. Ele vive no `frontend-miggo`, dentro da área `/admin`, em `src/pages/Admin/MiggoAI/`. A interface do MiggoAI é este painel: as telas chamam a API dele direto do navegador.
 
 ## Quem acessa
 
@@ -15,9 +15,9 @@ O painel de IA é a interface de operação do MiggoAI. Ele vive no `frontend-mi
 | MiggoAI | Aceita o JWT da plataforma quando o claim `is_management` é `true`; fora disso responde `403`. Não confere o módulo `miggoai`. |
 | Escrita restrita | Alterar modelos, preços e cotações exige superusuário. `useIsSuperuser()` (`MiggoAI/superuser.ts`) só decide o que a tela mostra; o MiggoAI recusa a escrita com `403`. |
 
-<Note>
-Na prática, o módulo `miggoai` esconde o menu, mas qualquer usuário de gestão que abra a URL usa o painel. O MiggoAI só exige `is_management`.
-</Note>
+<Warning>
+O MiggoAI não confere o módulo `miggoai`: o módulo só esconde o menu. Quem tem `is_management` usa o painel pela URL.
+</Warning>
 
 ## Como o painel fala com o MiggoAI
 
