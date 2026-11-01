@@ -29,49 +29,62 @@ Quando a página precisar citar o que o usuário vê, diga os dois: *o módulo
 
 ## Estrutura
 
-| Pasta | Conteúdo |
-|-------|----------|
-| `arquitetura/` | visão geral, fluxos, ambientes, integrações externas, convenções |
-| `backend/` | `backend-miggo` (Django): instalação, configuração, estrutura, modelo de dados, autenticação, comandos, tarefas agendadas, testes, deploy, referência de API |
-| `backend/apps/` | uma página por app Django (`account`, `client`, `post`, `media`, `subscription`, `brandkit`, `webhooks`, …) |
-| `frontend/` | `frontend-miggo` (React 19 + Vite + TS): estrutura, roteamento, páginas, componentes, contextos, hooks, services, área admin, tema, qualidade, build |
-| `miggoai/` | serviço de IA: arquitetura, modelo de dados, prompts, workflows, integração OpenAI, referência de API |
-| `snippets/` | trechos reutilizáveis (hoje vazio) |
+Uma aba por software, cada uma no formato Diátaxis: comece aqui → guias → conceitos/domínios → referência de API → operação.
 
-São 55 páginas. **Veja se a página já existe antes de criar outra** — prefira
-editar a duplicar.
+| Pasta | Aba | Conteúdo |
+|-------|-----|----------|
+| `index.mdx`, `quickstart.mdx`, `arquitetura/` | Visão geral | arquitetura, fluxos, integrações externas, ambientes, glossário, convenções |
+| `plataforma/` | Plataforma (`backend-miggo`) | rodar localmente, variáveis, autenticação, estrutura, guias (`guias/`), filas, crons, comandos, testes, deploy, introdução à API |
+| `plataforma/apps/` | Plataforma → Domínios | uma página por app Django: propósito, models principais, regras, integrações, onde fica no código |
+| `web/` | Web app (`frontend-miggo`) | rodar localmente, estrutura, autenticação, guias (`guias/`), roteamento, estado e dados, áreas (`/app`, `/admin`, painel de IA), qualidade, build e deploy |
+| `miggoai/` | MiggoAI (só o backend de `miggoai_v2`) | rodar localmente, variáveis, autenticação, arquitetura, guias (`guias/`), workflows, prompts, OpenAI, custos, modelo de dados, introdução à API, testes, deploy |
+| `releases/` | Changelog | uma entrada por release; versionamento |
+| `api-reference/<software>/openapi.json` | Referência de API | specs gerados do código; viram as páginas de endpoint |
+| `scripts/openapi_tags.py` | — | pós-processa os specs (tags por recurso, em pt-BR) |
+| `snippets/` | — | trechos reutilizáveis (hoje vazio) |
+
+O frontend próprio do `miggoai_v2` e o protótipo `modules/` **não** são documentados: a interface de IA é o painel do `/admin` no `frontend-miggo` (`web/painel-de-ia`).
+
+**Veja se a página já existe antes de criar outra** — prefira editar a duplicar.
+
+### O que não entra nas páginas
+
+- Número de card (`MIG-nnn`): só no changelog.
+- `arquivo.py:linha`: cite o caminho do arquivo ou `modulo.py::simbolo`, nunca a linha.
+- Tabela manual de rotas, parâmetros e respostas: a referência OpenAPI cobre. A página de domínio linka para a introdução da API (`plataforma/api-referencia`).
+- Narração de processo do time, passos de Jira, seções "Pontos de atenção" e dívida técnica (isso é backlog). Fica só aviso que muda o uso (`<Warning>`).
+- O que está "planejado": a doc descreve a `main`.
 
 ## Frontmatter
 
-Siga o padrão das páginas existentes: três campos, nesta ordem.
+Três campos, nesta ordem:
 
 ```mdx
 ---
-title: "Suíte de testes"
-description: "Como rodar os testes automatizados do backend-miggo e o que cada app cobre"
+title: "Testes da Plataforma"
+description: "Como rodar a suíte do backend-miggo e o que fazer quando o banco de teste não sobe."
 icon: "flask-conical"
 ---
 ```
 
-- `title`: curto, substantivo, sem o nome do repo quando a pasta já diz.
-- `description`: uma frase dizendo o que a página resolve. É o subtítulo no site.
-- `icon`: nome de ícone [Lucide](https://lucide.dev) (ex.: `flask-conical`).
+- `title`: curto, sentence case, distinguível na busca (evite três páginas chamadas só "Configuração").
+- `description`: uma frase com ponto final dizendo o que a página resolve.
+- `icon`: nome de ícone [Lucide](https://lucide.dev/icons) (o `docs.json` declara `"icons": {"library": "lucide"}`). Não use nomes do Font Awesome.
 
 ## `docs.json` — navegação
 
-Página nova **só é alcançável se entrar na navegação**. As abas são *Visão geral*
-(com os grupos "Comece por aqui" e "Arquitetura"), *Backend*, *Frontend* e
-*MiggoAI*. Os caminhos nas `pages` são sem extensão (`backend/testes`).
+Página nova **só é alcançável se entrar na navegação**. As abas são *Visão geral*, *Plataforma*, *Web app*, *MiggoAI* e *Changelog*. Os caminhos nas `pages` são sem extensão (`plataforma/testes`).
 
+- Os endpoints vêm dos grupos com `"openapi"` (`Endpoints da Plataforma`, `Endpoints do MiggoAI`); cada tag do spec vira um subgrupo. Não liste endpoint à mão.
 - Acrescentar uma entrada ao grupo certo: ok, é o fluxo normal.
-- Mudar tema, cores, nome do site, domínio ou reordenar abas: **só por pedido
-  explícito.** Um erro ali derruba a navegação de todo o site.
+- **Renomeou ou removeu uma página? Acrescente o `redirects`** do caminho antigo para o novo. Link compartilhado não pode quebrar.
+- Nenhuma entrada sem arquivo e nenhum `.mdx` fora da navegação. Antes de commitar: `npx -y mint broken-links`.
+- Mudar tema, cores, nome do site, domínio ou reordenar abas: **só por pedido explícito.**
+- A versão no `navbar` acompanha a última release do changelog.
 
-**Pendência conhecida (verificada em 08/10/2026; `miggoai/deploy` criada em 01/11/2026):**
-**duas** entradas da navegação não têm arquivo — `arquitetura/glossario` e
-`miggoai/frontend`. São links quebrados no site. Ou crie a página, ou remova a
-entrada; não deixe como está. Nenhum `.mdx` do repo está fora da navegação, então
-o inverso (página órfã) não é um problema hoje — mantenha assim.
+## Referência de API (OpenAPI)
+
+Os specs em `api-reference/` são gerados do código da `main` com `drf-spectacular` e passam pelo `scripts/openapi_tags.py`. O passo a passo para regenerar está no `README.md`. Regenere a cada release que mexer em rota ou serializer e atualize `--versao`. Prefixo de caminho novo sem regra faz o script sair com código 1 e listar o caminho: acrescente a regra em `REGRAS_POR_CAMINHO`.
 
 ## Verifique no código antes de escrever
 
@@ -90,7 +103,8 @@ ponto, `Read` só no trecho. Fatos úteis já verificados do workspace:
 | Modelo de usuário | `account.CustomUser` (login por e-mail, campo `role`: `admin`/`client`) |
 
 **Suíte do backend:** o Postgres local não cria o DB de teste (morre com
-`EOFError`), então roda com sqlite em memória via um settings do workspace:
+`EOFError`), então roda com sqlite em memória via um settings do workspace
+(documentado em `plataforma/testes`):
 
 ```bash
 PYTHONPATH=D:/Projetos/Miggo/.maestri \

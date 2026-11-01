@@ -9,13 +9,17 @@
     "dark": "#174c54"
   },
   "favicon": "/favicon.svg",
+  "icons": {
+    "library": "lucide"
+  },
   "navigation": {
     "tabs": [
       {
         "tab": "Visão geral",
+        "icon": "compass",
         "groups": [
           {
-            "group": "Comece por aqui",
+            "group": "Comece aqui",
             "pages": [
               "index",
               "quickstart"
@@ -26,143 +30,193 @@
             "pages": [
               "arquitetura/visao-geral",
               "arquitetura/fluxos",
-              "arquitetura/ambientes",
               "arquitetura/integracoes-externas",
-              "arquitetura/convencoes",
-              "arquitetura/glossario"
+              "arquitetura/ambientes"
+            ]
+          },
+          {
+            "group": "Referência",
+            "pages": [
+              "arquitetura/glossario",
+              "arquitetura/convencoes"
             ]
           }
         ]
       },
       {
-        "tab": "Backend",
+        "tab": "Plataforma",
+        "icon": "server",
         "groups": [
           {
-            "group": "Fundamentos",
+            "group": "Comece aqui",
             "pages": [
-              "backend/instalacao",
-              "backend/configuracao",
-              "backend/estrutura",
-              "backend/autenticacao",
-              "backend/modelo-de-dados",
-              "backend/api-referencia"
+              "plataforma/rodar-localmente",
+              "plataforma/configuracao",
+              "plataforma/autenticacao",
+              "plataforma/estrutura"
             ]
           },
           {
-            "group": "Aplicações",
+            "group": "Guias",
             "pages": [
-              "backend/apps/account",
-              "backend/apps/client",
-              "backend/apps/agencia",
-              "backend/apps/onboarding",
-              "backend/apps/brandkit",
-              "backend/apps/post",
-              "backend/apps/editorial-calendar",
-              "backend/apps/media",
-              "backend/apps/agenda",
-              "backend/apps/subscription",
-              "backend/apps/conversation",
-              "backend/apps/emailmarketing",
-              "backend/apps/notification",
-              "backend/apps/history",
-              "backend/apps/integration",
-              "backend/apps/webhooks"
+              "plataforma/guias/ciclo-do-conteudo",
+              "plataforma/guias/webhooks",
+              "plataforma/filas-e-celery",
+              "plataforma/tarefas-agendadas",
+              "plataforma/comandos"
             ]
+          },
+          {
+            "group": "Domínios",
+            "pages": [
+              "plataforma/modelo-de-dados",
+              "plataforma/apps/account",
+              "plataforma/apps/client",
+              "plataforma/apps/agencia",
+              "plataforma/apps/onboarding",
+              "plataforma/apps/brandkit",
+              "plataforma/apps/post",
+              "plataforma/apps/editorial-calendar",
+              "plataforma/apps/media",
+              "plataforma/apps/agenda",
+              "plataforma/apps/subscription",
+              "plataforma/apps/benefits",
+              "plataforma/apps/conversation",
+              "plataforma/apps/emailmarketing",
+              "plataforma/apps/notification",
+              "plataforma/apps/history",
+              "plataforma/apps/integration"
+            ]
+          },
+          {
+            "group": "Referência de API",
+            "pages": [
+              "plataforma/api-referencia"
+            ]
+          },
+          {
+            "group": "Endpoints da Plataforma",
+            "openapi": {
+              "source": "api-reference/backend-miggo/openapi.json",
+              "directory": "api-reference/plataforma"
+            }
           },
           {
             "group": "Operação",
             "pages": [
-              "backend/comandos",
-              "backend/tarefas-agendadas",
-              "backend/testes",
-              "backend/deploy"
+              "plataforma/testes",
+              "plataforma/deploy"
             ]
           }
         ]
       },
       {
-        "tab": "Frontend",
+        "tab": "Web app",
+        "icon": "monitor",
         "groups": [
           {
-            "group": "Fundamentos",
+            "group": "Comece aqui",
             "pages": [
-              "frontend/instalacao",
-              "frontend/configuracao",
-              "frontend/estrutura",
-              "frontend/roteamento",
-              "frontend/autenticacao"
+              "web/rodar-localmente",
+              "web/estrutura",
+              "web/autenticacao"
             ]
           },
           {
-            "group": "Camadas",
+            "group": "Guias",
             "pages": [
-              "frontend/contextos",
-              "frontend/hooks",
-              "frontend/services",
-              "frontend/componentes",
-              "frontend/layout-e-tema"
+              "web/guias/criar-uma-tela",
+              "web/guias/consumir-a-api"
             ]
           },
           {
-            "group": "Telas",
+            "group": "Conceitos",
             "pages": [
-              "frontend/paginas",
-              "frontend/onboarding",
-              "frontend/area-admin"
+              "web/roteamento",
+              "web/estado-e-dados",
+              "web/componentes",
+              "web/layout-e-tema"
+            ]
+          },
+          {
+            "group": "Áreas",
+            "pages": [
+              "web/paginas",
+              "web/onboarding",
+              "web/area-admin",
+              "web/painel-de-ia"
             ]
           },
           {
             "group": "Operação",
             "pages": [
-              "frontend/qualidade",
-              "frontend/build-e-deploy"
+              "web/qualidade",
+              "web/build-e-deploy"
             ]
           }
         ]
       },
       {
         "tab": "MiggoAI",
+        "icon": "sparkles",
         "groups": [
           {
-            "group": "Fundamentos",
+            "group": "Comece aqui",
             "pages": [
-              "miggoai/instalacao",
+              "miggoai/rodar-localmente",
               "miggoai/configuracao",
+              "miggoai/autenticacao",
               "miggoai/arquitetura"
             ]
           },
           {
-            "group": "Serviço",
+            "group": "Guias",
             "pages": [
-              "miggoai/api-referencia",
-              "miggoai/modelo-de-dados",
-              "miggoai/prompts",
-              "miggoai/workflows",
-              "miggoai/integracao-openai"
+              "miggoai/guias/gerar-conteudo",
+              "miggoai/guias/integracao-com-a-plataforma"
             ]
           },
           {
-            "group": "Interface e operação",
+            "group": "Conceitos",
             "pages": [
-              "miggoai/frontend",
+              "miggoai/workflows",
+              "miggoai/prompts",
+              "miggoai/integracao-openai",
+              "miggoai/custos",
+              "miggoai/modelo-de-dados"
+            ]
+          },
+          {
+            "group": "Referência de API",
+            "pages": [
+              "miggoai/api-referencia"
+            ]
+          },
+          {
+            "group": "Endpoints do MiggoAI",
+            "openapi": {
+              "source": "api-reference/miggoai/openapi.json",
+              "directory": "api-reference/miggoai"
+            }
+          },
+          {
+            "group": "Operação",
+            "pages": [
+              "miggoai/testes",
               "miggoai/deploy"
             ]
           }
         ]
       },
       {
-        "tab": "Releases",
+        "tab": "Changelog",
+        "icon": "history",
         "groups": [
           {
-            "group": "Histórico de releases",
+            "group": "Releases",
             "pages": [
-              "releases/index"
-            ]
-          },
-          {
-            "group": "Governança e versionamento",
-            "pages": [
-              "releases/proposta-versionamento"
+              "releases/index",
+              "releases/versionamento"
             ]
           }
         ]
@@ -174,11 +228,6 @@
           "anchor": "Docs do produto",
           "href": "https://docs.miggomkt.com.br",
           "icon": "book-open"
-        },
-        {
-          "anchor": "Jira (MIG)",
-          "href": "https://miggomkt.atlassian.net",
-          "icon": "list-checks"
         }
       ]
     }
@@ -190,7 +239,7 @@
   "navbar": {
     "links": [
       {
-        "label": "v2.1.0",
+        "label": "v2.3.0",
         "href": "/releases"
       },
       {
@@ -200,11 +249,241 @@
     ]
   },
   "contextual": {
-    "options": ["copy", "view", "chatgpt", "claude", "mcp", "cursor", "vscode"]
+    "options": [
+      "copy",
+      "view",
+      "chatgpt",
+      "claude",
+      "mcp",
+      "cursor",
+      "vscode"
+    ]
   },
   "footer": {
     "socials": {
       "website": "https://miggomkt.com.br"
     }
-  }
+  },
+  "redirects": [
+    {
+      "source": "/backend/instalacao",
+      "destination": "/plataforma/rodar-localmente",
+      "permanent": true
+    },
+    {
+      "source": "/backend/configuracao",
+      "destination": "/plataforma/configuracao",
+      "permanent": true
+    },
+    {
+      "source": "/backend/estrutura",
+      "destination": "/plataforma/estrutura",
+      "permanent": true
+    },
+    {
+      "source": "/backend/autenticacao",
+      "destination": "/plataforma/autenticacao",
+      "permanent": true
+    },
+    {
+      "source": "/backend/modelo-de-dados",
+      "destination": "/plataforma/modelo-de-dados",
+      "permanent": true
+    },
+    {
+      "source": "/backend/api-referencia",
+      "destination": "/plataforma/api-referencia",
+      "permanent": true
+    },
+    {
+      "source": "/backend/comandos",
+      "destination": "/plataforma/comandos",
+      "permanent": true
+    },
+    {
+      "source": "/backend/tarefas-agendadas",
+      "destination": "/plataforma/tarefas-agendadas",
+      "permanent": true
+    },
+    {
+      "source": "/backend/testes",
+      "destination": "/plataforma/testes",
+      "permanent": true
+    },
+    {
+      "source": "/backend/deploy",
+      "destination": "/plataforma/deploy",
+      "permanent": true
+    },
+    {
+      "source": "/backend/apps/account",
+      "destination": "/plataforma/apps/account",
+      "permanent": true
+    },
+    {
+      "source": "/backend/apps/client",
+      "destination": "/plataforma/apps/client",
+      "permanent": true
+    },
+    {
+      "source": "/backend/apps/agencia",
+      "destination": "/plataforma/apps/agencia",
+      "permanent": true
+    },
+    {
+      "source": "/backend/apps/onboarding",
+      "destination": "/plataforma/apps/onboarding",
+      "permanent": true
+    },
+    {
+      "source": "/backend/apps/brandkit",
+      "destination": "/plataforma/apps/brandkit",
+      "permanent": true
+    },
+    {
+      "source": "/backend/apps/post",
+      "destination": "/plataforma/apps/post",
+      "permanent": true
+    },
+    {
+      "source": "/backend/apps/editorial-calendar",
+      "destination": "/plataforma/apps/editorial-calendar",
+      "permanent": true
+    },
+    {
+      "source": "/backend/apps/media",
+      "destination": "/plataforma/apps/media",
+      "permanent": true
+    },
+    {
+      "source": "/backend/apps/agenda",
+      "destination": "/plataforma/apps/agenda",
+      "permanent": true
+    },
+    {
+      "source": "/backend/apps/subscription",
+      "destination": "/plataforma/apps/subscription",
+      "permanent": true
+    },
+    {
+      "source": "/backend/apps/conversation",
+      "destination": "/plataforma/apps/conversation",
+      "permanent": true
+    },
+    {
+      "source": "/backend/apps/emailmarketing",
+      "destination": "/plataforma/apps/emailmarketing",
+      "permanent": true
+    },
+    {
+      "source": "/backend/apps/notification",
+      "destination": "/plataforma/apps/notification",
+      "permanent": true
+    },
+    {
+      "source": "/backend/apps/history",
+      "destination": "/plataforma/apps/history",
+      "permanent": true
+    },
+    {
+      "source": "/backend/apps/integration",
+      "destination": "/plataforma/apps/integration",
+      "permanent": true
+    },
+    {
+      "source": "/backend/apps/webhooks",
+      "destination": "/plataforma/guias/webhooks",
+      "permanent": true
+    },
+    {
+      "source": "/frontend/instalacao",
+      "destination": "/web/rodar-localmente",
+      "permanent": true
+    },
+    {
+      "source": "/frontend/configuracao",
+      "destination": "/web/qualidade",
+      "permanent": true
+    },
+    {
+      "source": "/frontend/contextos",
+      "destination": "/web/estado-e-dados",
+      "permanent": true
+    },
+    {
+      "source": "/frontend/hooks",
+      "destination": "/web/estado-e-dados",
+      "permanent": true
+    },
+    {
+      "source": "/frontend/services",
+      "destination": "/web/estado-e-dados",
+      "permanent": true
+    },
+    {
+      "source": "/frontend/estrutura",
+      "destination": "/web/estrutura",
+      "permanent": true
+    },
+    {
+      "source": "/frontend/roteamento",
+      "destination": "/web/roteamento",
+      "permanent": true
+    },
+    {
+      "source": "/frontend/autenticacao",
+      "destination": "/web/autenticacao",
+      "permanent": true
+    },
+    {
+      "source": "/frontend/componentes",
+      "destination": "/web/componentes",
+      "permanent": true
+    },
+    {
+      "source": "/frontend/layout-e-tema",
+      "destination": "/web/layout-e-tema",
+      "permanent": true
+    },
+    {
+      "source": "/frontend/paginas",
+      "destination": "/web/paginas",
+      "permanent": true
+    },
+    {
+      "source": "/frontend/onboarding",
+      "destination": "/web/onboarding",
+      "permanent": true
+    },
+    {
+      "source": "/frontend/area-admin",
+      "destination": "/web/area-admin",
+      "permanent": true
+    },
+    {
+      "source": "/frontend/qualidade",
+      "destination": "/web/qualidade",
+      "permanent": true
+    },
+    {
+      "source": "/frontend/build-e-deploy",
+      "destination": "/web/build-e-deploy",
+      "permanent": true
+    },
+    {
+      "source": "/miggoai/instalacao",
+      "destination": "/miggoai/rodar-localmente",
+      "permanent": true
+    },
+    {
+      "source": "/miggoai/frontend",
+      "destination": "/web/painel-de-ia",
+      "permanent": true
+    },
+    {
+      "source": "/releases/proposta-versionamento",
+      "destination": "/releases/versionamento",
+      "permanent": true
+    }
+  ]
 }
