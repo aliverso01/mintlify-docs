@@ -10,10 +10,60 @@ O backend tem duas formas de agendamento, e é importante não confundi-las:
 | --- | --- | --- |
 | **Schedule do Dokploy** | Infraestrutura de produção | Chama os management commands nos intervalos reais |
 | **`run_cron.py`** | Script na raiz do repositório | Substituto local do `django-crontab` para desenvolvimento no Windows |
+| **Worker Celery** | Container próprio (mesma imagem, `ROLE=worker`) | Executa as tasks que a API e os Schedules enfileiram. Não agenda nada: **não há Celery beat** |
 
 <Warning>
   Em produção, quem dispara as rotinas é o **Dokploy**, chamando `manage.py <comando>`. O `CRONJOBS` de `core/settings.py:374` declara apenas um job e o `run_cron.py` roda um subconjunto — nenhum dos dois é a fonte da verdade do agendamento de produção. Ao adicionar rotina nova, cadastre o schedule no Dokploy.
 </Warning>
+
+## Filas Celery
+
+Infra do MIG-472 (fase 0) e fluxos em fila dos MIG-474 a MIG-483. Referência completa no repo: `docs/celery.md`.
+
+| Peça | Onde | O que faz |
+| --- | --- | --- |
+| App Celery | `core/celery.py`, `core/celery_config.py` | Filas `interativo`, `integracoes` e `leve` (padrão `leve`), cada uma com exchange `direct` e routing key própria; chaves no Redis com prefixo `backend-miggo:` |
+| Gatilhos | `core/fila.py` | `fila_ativa()` (há broker de verdade) e uma função por fluxo, cada uma lendo sua flag `*_ASYNC` |
+| Tasks | `core/tasks.py`, `app/*/tasks.py` | `core.ping`, `core.rodar_rotina` e as tasks de negócio (`brandkit.*`, `client.atualizar_brand_knowledge`, `media.analisar_midia`, `onboarding.*`, `post.*`, `subscription.executar_sync`) |
+| Worker | `docker-entrypoint.sh` com `ROLE=worker` | `celery -A core worker -Q interativo,integracoes,leve -E -n backend@%h`, concorrência em `CELERY_WORKER_CONCURRENCY` (padrão 2); sem migrate, collectstatic nem Flower. `ROLE` ausente ou `web` sobe a API; outro valor recusa subir (exit 64) |
+| Flower | `core/flower_guard.py` | Sobe em segundo plano no container do web (porta `FLOWER_PORT`, padrão 5555). Sem `FLOWER_BASIC_AUTH` válida (`usuario:senha`, senha ≥ 12 caracteres) ele não sobe e o web segue. `FLOWER_ENABLED=0` desliga |
+
+<Warning>
+  **Tudo vem desligado por padrão.** Sem `REDIS_URL` o Celery roda *eager* (em memória, no próprio processo) e `fila_ativa()` é falso. Com `REDIS_URL`, cada fluxo ainda exige a própria flag `=1`; sem ela o código segue pelo caminho anterior (thread ou inline). Broker fora na hora de enfileirar também cai no caminho anterior.
+</Warning>
+
+| Flag | Fluxo | Fila |
+| --- | --- | --- |
+| `ONBOARDING_ASYNC` | Análise, estratégia, primeiro post e grid do onboarding (MIG-475) | `interativo` |
+| `PERFIL_ASYNC` | Correção de peça de perfil, `post.executar_correcao_perfil` (MIG-474) | `interativo` |
+| `INGESTAO_ASYNC` | Análise de design reference (MIG-476) | `interativo` |
+| `INGESTAO_JOBS_ASYNC` | Transmute por URL e import-website viram `202 {job_id, status}` (MIG-476) | `interativo` |
+| `APIFY_ASYNC` | Veredito do Instagram **e** troca o `CACHES` para Redis (MIG-477) | `integracoes` |
+| `APIFY_JOBS_ASYNC` | `instagram-scrape/` vira `202` + job (MIG-477) | `integracoes` |
+| `MIDIA_ASYNC` | Análise de mídia da galeria (MIG-478) | `leve` |
+| `ZERNIO_ASYNC` | Publicação por rede e webhook legado do Zernio (MIG-479) | `integracoes` |
+| `SYNCJOB_ASYNC` | Sync de assinaturas (`SyncJob`) (MIG-480) | `integracoes` |
+| `MANYCHAT_ASYNC` | Retry do flow do código de verificação (MIG-481) | `integracoes` |
+| `BRANDKNOWLEDGE_ASYNC` | Resumo `brand_knowledge` (MIG-482) | `leve` |
+| `<COMMAND>_ASYNC` | Schedule do Dokploy só enfileira (MIG-483, abaixo) | `integracoes` / `leve` |
+
+<Warning>
+  `INGESTAO_JOBS_ASYNC` e `APIFY_JOBS_ASYNC` mudam o contrato (200 vira 202 + polling em `GET /api/v1/brandkit/ingestion-job/<id>/`). Ordem: front que trata o 202, backend com as migrations do `brandkit`, worker, e só então a flag.
+</Warning>
+
+Teste de fumaça: `python manage.py celery_ping` imprime `OK [broker] {"pong": true, ...}` com worker no ar, `FALHA (<tipo>)` sem ele. Nunca imprime a URL do Redis.
+
+### Schedules que só enfileiram (MIG-483)
+
+Os Schedules do Dokploy continuam com o mesmo comando e o mesmo cron. Com `<NOME_DO_COMMAND>_ASYNC=1` (ex.: `EXPIRE_TRIALS_ASYNC=1`) na env do schedule **e** fila ativa, o command enfileira `core.rodar_rotina(nome, opcoes)` e sai; sem isso, roda no processo como antes. A tabela de rotinas fica em `core/rotinas.py`.
+
+- **Dry-run nunca enfileira** (`disconnect_inactive_zernio_accounts` sem `--apply`, `send_marketing_emails --dry-run`, `pedir_primeira_geracao --dry-run`).
+- **Sem retry** e `acks_late=False`: quem reexecuta é o próximo schedule. Advisory lock do Postgres por nome garante uma execução por rotina.
+- **`expires` por rotina:** disparo parado na fila além do intervalo é descartado (5 min → 10 min; 15 min → 20 min; horária → 30 min; 6 h → 3 h; diária → 6 h).
+- Limites: `ROTINAS_TASK_TIME_LIMIT` (1800 s) e `ROTINAS_TASK_SOFT_TIME_LIMIT` (1700 s).
+- O log do Dokploy mostra só `[rotina] <nome> enfileirada na fila '<fila>'.`; o resumo vai para o log do worker.
+
+Cobertos: `notify_trial_ending`, `expire_trials`, `check_invoices`, `check_subscriptions`, `sync_stripe_billing`, `sync_asaas_billing`, `scan_gateway_orphans`, `disconnect_inactive_zernio_accounts`, `reconcile_zernio_posts`, `send_grid_approval_reminders`, `send_marketing_emails`, `generate_pending_grids` e `pedir_primeira_geracao`. `analyze_media_library` e `sync_jira_ticket_status` seguem no processo.
 
 ## Rotinas de cobrança
 
@@ -27,7 +77,7 @@ Todos são idempotentes e devolvem um resumo em `dict`.
 
 | Comando | Frequência | Função | O que faz |
 | --- | --- | --- | --- |
-| `notify_trial_ending` | 1x/dia | `notify_trial_ending()` | Avisa o cliente de que o teste está acabando |
+| `notify_trial_ending` | 1x/dia | `notify_trial_ending()` | Avisa o cliente de que o teste está acabando; o aviso no WhatsApp usa o flow `TRIAL_ENDING_FLOW_ID` (vazia, não sai) |
 | `expire_trials` | 1x/dia | `expire_trials()` | Encerra os testes vencidos, avisa o cliente (in-app e WhatsApp) e notifica os admins (`role='admin'`) com link para a lista filtrada (`/admin/clients?suspenso_por_trial=1`) |
 | `check_invoices` | 1x/dia | `check_invoices()` | Reconcilia o estado das faturas |
 | `check_subscriptions` | 1x/dia | `check_subscriptions()` | Reconcilia o estado das assinaturas |

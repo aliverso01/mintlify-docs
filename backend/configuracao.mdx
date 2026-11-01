@@ -25,7 +25,9 @@ Toda a configuração global do `backend-miggo` vive em `core/settings.py` (480 
 'django_filters',
 ```
 
-15 apps de negócio próprios, mais `rest_framework`, `rest_framework_api_key` (autenticação por API key para chamadas máquina-a-máquina), `corsheaders`, `drf_spectacular` (schema/Swagger/Redoc), `django_crontab` (agendamento) e `django_filters` (filtros DRF).
+Desde a release de 01/11/2026 a lista também tem `'core'` (para os management commands de `core/management/`, como `celery_ping`) e `'app.agencia.apps.AgenciaConfig'` (MIG-513).
+
+16 apps de negócio próprios, mais `rest_framework`, `rest_framework_api_key` (autenticação por API key para chamadas máquina-a-máquina), `corsheaders`, `drf_spectacular` (schema/Swagger/Redoc), `django_crontab` (agendamento) e `django_filters` (filtros DRF).
 
 ## Middleware
 
@@ -77,6 +79,16 @@ Toda a configuração global do `backend-miggo` vive em `core/settings.py` (480 
 | `REFRESH_TOKEN_LIFETIME` | 7 dias | |
 | `ROTATE_REFRESH_TOKENS` | `True` | |
 | `BLACKLIST_AFTER_ROTATION` | `False` | Refresh antigo continua válido após rotação — não há blacklist de token ativa |
+| `ALGORITHM` | `RS256` | Assinatura assimétrica (MIG-506): o MiggoAI valida o token só com a chave pública |
+| `SIGNING_KEY` | `JWT_PRIVATE_KEY` | PEM da chave privada, **obrigatória** (sem ela as settings não carregam). Na env, `
+` vira quebra de linha |
+| `VERIFYING_KEY` | derivada | `core.jwt_keys.chave_publica_pem(JWT_PRIVATE_KEY)` |
+| `AUDIENCE` | `['miggo', 'miggoai']` | O mesmo token vale na plataforma e no MiggoAI |
+| `TOKEN_OBTAIN_SERIALIZER` | `app.account.tokens.MiggoTokenObtainPairSerializer` | Acrescenta as claims do usuário ao token — ver [Autenticação](/backend/autenticacao) |
+
+<Warning>
+  A troca para RS256 invalida os tokens HS256 emitidos antes do deploy. A `JWT_PRIVATE_KEY` do backend e a `MIGGO_JWT_PUBLIC_KEY` do MiggoAI são **um par**: gere a pública a partir da privada e publique as duas juntas.
+</Warning>
 
 ## CORS / CSRF
 
@@ -112,6 +124,37 @@ Rotas em `core/urls.py:44-46` — ver [Referência de API](/backend/api-referenc
 [('* * * * *', 'app.post.cron.send_scheduled_reviews')]
 ```
 O comentário no código (`core/settings.py:369-373`) explica que os jobs de cobrança (trial/faturas/reconciliação Stripe) **não** ficam aqui — rodam como management commands agendados externamente (Dokploy). Duas entradas antigas usavam formato de 6 campos (`*/30 * * * * *`), que o crontab do Linux recusa, e nunca chegaram a rodar em produção.
+
+## Celery, Redis e Flower
+
+Infra do MIG-472 em `core/celery.py` e `core/celery_config.py`; o worker e as flags de cada fluxo estão em [Tarefas agendadas](/backend/tarefas-agendadas#filas-celery). Todas opcionais: **sem `REDIS_URL` o Celery roda eager** e nada conecta.
+
+| Variável | Padrão | Efeito |
+|---|---|---|
+| `REDIS_URL` | vazio (eager) | Broker e result backend. Segredo |
+| `CELERY_REDIS_DB` | `1` | DB index do Redis. Use `0` em Redis gerenciado de DB único (o prefixo `backend-miggo:` separa as chaves) |
+| `CELERY_TASK_TIME_LIMIT` / `CELERY_TASK_SOFT_TIME_LIMIT` | `900` / `840` s | Limite padrão de uma task |
+| `CELERY_VISIBILITY_TIMEOUT` | `max(7200, 2 × time limit)` | Tem de ser maior que o time limit; se não for, a app recusa subir |
+| `CELERY_BROKER_POOL_LIMIT` / `CELERY_REDIS_MAX_CONNECTIONS` | `3` / `10` | Conexões por processo com o Redis; valor inválido recusa subir |
+| `CELERY_WORKER_CONCURRENCY` | `2` | Concorrência do worker (`ROLE=worker`) |
+| `ROLE` | `web` | `web` sobe gunicorn + Flower; `worker` sobe o Celery na mesma imagem; outro valor recusa subir |
+| `FLOWER_BASIC_AUTH` | — | `usuario:senha` (senha ≥ 12 caracteres). Sem ela o Flower não sobe; o web segue. Segredo |
+| `FLOWER_ENABLED` / `FLOWER_PORT` / `FLOWER_ADDRESS` | `1` / `5555` / `0.0.0.0` no container | Liga e posiciona o Flower |
+| `CACHE_REDIS_DB` | `3` | DB do cache compartilhado (`RedisCache`), usado só com `APIFY_ASYNC=1` |
+| `*_ASYNC` | vazio (desligado) | Uma flag por fluxo e uma por command agendado; ver [Tarefas agendadas](/backend/tarefas-agendadas#filas-celery) |
+| `*_TASK_TIME_LIMIT` / `*_TASK_SOFT_TIME_LIMIT` | por fluxo | Limites de cada task (`ONBOARDING_*`, `INGESTAO_*`, `MIDIA_*`, `ZERNIO_*`, `SYNCJOB_*`, `MANYCHAT_*`, `BRANDKNOWLEDGE_*`, `PERFIL_*`, `ROTINAS_*`), validados na carga |
+
+## Domínio de agência e host de origem
+
+Settings do MIG-516/517 (`core/settings.py`). O front (nginx) repassa o host que o navegador usou em `X-Miggo-Host`, junto com `X-Miggo-Proxy-Token`; o backend só confia no host quando o token confere.
+
+| Variável | Padrão | Efeito |
+|---|---|---|
+| `PROXY_HOST_TOKEN` | vazio | Segredo compartilhado com o nginx do `frontend-miggo` (mesmo valor nos dois). Vazio, todo host é tratado como host Miggo |
+| `PLATFORM_BASE_DOMAIN` | `localhost` com `DEBUG`, senão vazio | Domínio base: `<slug>.<base>` reconhece a agência pelo subdomínio (`app/agencia/host.py`). Entra em `HOSTS_PLATAFORMA` com a variante `www.` |
+| `HOSTS_PLATAFORMA` | — | CSV de hosts extras da Miggo, que não podem ser cadastrados como domínio de agência (`validar_hostname`). O conjunto final soma `FRONTEND_URL`, `BACKEND_URL`, `AGENCIA_CNAME_ALVO`, `PLATFORM_BASE_DOMAIN` e os domínios fixos da Miggo |
+| `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ZONE_ID` | vazio | Credencial e zona do Cloudflare for SaaS para cadastrar o domínio próprio da agência. Segredo |
+| `AGENCIA_CNAME_ALVO` | vazio | Host para onde o CNAME do domínio da agência deve apontar |
 
 ## Timezone e i18n
 
@@ -158,10 +201,14 @@ Demais integrações (ManyChat, Asaas, GetLate/Zernio, Apify, HtmlToCssImage, Mi
 | Uploads | `FILE_UPLOAD_MAX_MEMORY_SIZE`, `DATA_UPLOAD_MAX_MEMORY_SIZE`, `TRIAL_MEDIA_MAX_FILES`, `UPLOAD_MAX_IMAGE_SIZE_MB`, `UPLOAD_MAX_VIDEO_SIZE_MB` |
 | Acervo / Bancos de imagem | `PIXABAY_API_KEY` |
 | Billing | `STRIPE_API_KEY`, `STRIPE_PROD_API_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_TRIAL_DAYS`, `BILLING_GRACE_DAYS`, `ASAAS_API_KEY`, `ASAAS_BASE_URL` |
-| IA | `OPENAI_API_KEY`, `OPENAI_API_URL`, `OPENAI_MODEL`, `OPENAI_IMAGE_MODEL`, `MEDIA_ANALYSIS_MODEL` |
+| IA | `OPENAI_API_KEY`, `OPENAI_API_URL`, `OPENAI_MODEL`, `OPENAI_MODEL_ESTRATEGIA` (modelo próprio da estratégia do onboarding; sem ela vale `OPENAI_MODEL`), `OPENAI_IMAGE_MODEL`, `MEDIA_ANALYSIS_MODEL` |
+| Auth (JWT) | `JWT_PRIVATE_KEY` (obrigatória, RS256), `JWT_REFRESH_COOKIE_NAME`, `JWT_REFRESH_COOKIE_SAMESITE` |
+| Celery/Redis/Flower | `REDIS_URL`, `ROLE`, `CELERY_*`, `FLOWER_*`, `CACHE_REDIS_DB`, flags `*_ASYNC` — ver [Celery, Redis e Flower](#celery-redis-e-flower) |
+| Agência/proxy | `PROXY_HOST_TOKEN`, `PLATFORM_BASE_DOMAIN`, `HOSTS_PLATAFORMA`, `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ZONE_ID`, `AGENCIA_CNAME_ALVO` |
+| MiggoAI (espera do 202) | `GRID_ASYNC_ESPERA_MAXIMA` (teto de espera do grid aceito com 202, padrão 300 s), `PERFIL_ESPERA_NA_REQUEST` (padrão 30 s), `PERFIL_ESPERA_NA_TASK` (padrão 840 s) |
 | Auth social | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_AUTH_CLOCK_SKEW` |
 | Suporte/Jira | `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_PROJECT_KEY`, `JIRA_ISSUE_TYPE` |
-| WhatsApp/ManyChat | `MANYCHAT_API_KEY`, `MANYCHAT_WEBHOOK_TOKEN`, `CONTENT_APPROVATION_FLOW_ID`, `CONTENT_APPROVATION_CONNECTED_FLOW_ID`, `GRID_APPROVAL_FLOW_ID`, `GRID_APPROVAL_REMINDER_INTERVAL_HOURS`, `GRID_APPROVAL_MAX_REMINDERS`, `DYNAMIC_FLOW_STARTER_FLOW_ID`, `TRIAL_ENDED_FLOW_ID`, `WHATSAPP_SEND_FLOW_DELAY`, `WHATSAPP_FLOW_RETRY_ATTEMPTS`, `WHATSAPP_FLOW_RETRY_BACKOFF` |
+| WhatsApp/ManyChat | `MANYCHAT_API_KEY`, `MANYCHAT_WEBHOOK_TOKEN`, `CONTENT_APPROVATION_FLOW_ID`, `CONTENT_APPROVATION_CONNECTED_FLOW_ID`, `GRID_APPROVAL_FLOW_ID`, `GRID_APPROVAL_REMINDER_INTERVAL_HOURS`, `GRID_APPROVAL_MAX_REMINDERS`, `DYNAMIC_FLOW_STARTER_FLOW_ID`, `TRIAL_ENDED_FLOW_ID`, `TRIAL_ENDING_FLOW_ID` (flow de "seu teste está acabando"; vazia, o aviso não sai), `WHATSAPP_SEND_FLOW_DELAY`, `WHATSAPP_FLOW_RETRY_ATTEMPTS`, `WHATSAPP_FLOW_RETRY_BACKOFF` |
 | Acervo Miggo | `ACERVO_SERVICE_TOKEN` (credencial de serviço das rotas `media/acervo/{elegiveis,uso}/`, default `''` — vazia, o caminho de serviço é recusado) |
 | Redes sociais | `LATE_API_KEY` (GetLate/Zernio), `ZERNIO_PUBLISH_TIMEOUT` (segundos de espera nas chamadas de publicação — presign e `POST /v1/posts`; default `120`, era 25s fixo), `ZERNIO_WEBHOOK_TOKEN` (token do header `Zernio-Webhook-Token` em `/webhooks/zernio/status/`; **sem ele o webhook devolve `503` e recusa todo evento**) |
 | Onboarding/scraping | `APIFY_TOKEN`, `ONBOARDING_IG_MIN_POSTS`, `ONBOARDING_WEBSITE_BUDGET`, `ONBOARDING_ANALYSIS_STALL`, `HTMLTOCSSIMAGE_ID`, `HTMLTOCSSIMAGE_API_KEY` |
@@ -169,6 +216,10 @@ Demais integrações (ManyChat, Asaas, GetLate/Zernio, Apify, HtmlToCssImage, Mi
 | URLs base | `FRONTEND_URL`, `BACKEND_URL` |
 | Logging | `LOG_LEVEL`, `DJANGO_LOG_LEVEL`, `LOG_FILE` |
 | API interna | `MIGGO_API_KEY` |
+
+<Note>
+  A lista completa de chaves lidas pelo código, sem valores, está em `.env.example` na raiz do repo (desde a release de 01/11/2026).
+</Note>
 
 <Note>
   Descrição de cada variável (o que faz, obrigatoriedade) está em [Instalação](/backend/instalacao) para evitar duplicação.

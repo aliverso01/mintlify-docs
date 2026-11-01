@@ -21,6 +21,7 @@ INSTALLED_APPS = [
 
     # Django REST Framework
     'rest_framework',
+    'rest_framework_api_key',
     'corsheaders',
     'drf_spectacular',
 
@@ -30,8 +31,11 @@ INSTALLED_APPS = [
     'apps.prompts',
     'apps.generations',
     'apps.custos',
+    'apps.common',
 ]
 ```
+
+A lista também tem `rest_framework_api_key` (chave do backend-miggo, MIG-379) e, desde a release de 01/11/2026, `apps.common` (modelo `UsuarioPlataforma`, que espelha localmente o usuário da gestão que entra pelo token da plataforma, MIG-506).
 
 | App | Responsabilidade |
 |---|---|
@@ -40,7 +44,7 @@ INSTALLED_APPS = [
 | `apps.prompts` | CMS de prompts/workflows/variáveis, versionamento. |
 | `apps.generations` | Execução dos workflows de IA e registro de auditoria (`Generation`, `Execucao`). |
 | `apps.custos` | Auditoria granular de tokens, tabela de preços dos modelos da OpenAI e cotação USD/BRL (MIG-411, MIG-468). |
-| `apps.common` | Módulo compartilhado (`miggo_client.py`) sem app Django próprio — não está em `INSTALLED_APPS` porque não define models. |
+| `apps.common` | Cliente da API do backend-miggo (`miggo_client.py`), autenticação (`authentication.py`: token da plataforma e chave do backend) e permissões (`permissions.py`). Entrou em `INSTALLED_APPS` com a migration `0001_usuario_plataforma` (MIG-506). |
 
 ## Middleware
 
@@ -114,6 +118,9 @@ SIMPLE_JWT = {
 - Access token expira em 30 minutos, refresh em 7 dias.
 - `ROTATE_REFRESH_TOKENS: True` — cada refresh emite um novo refresh token, mas `BLACKLIST_AFTER_ROTATION: False` significa que o token antigo **não** é invalidado (não há blacklist app instalado).
 - Endpoints: `POST /api/token/` (obtenção) e `POST /api/token/refresh/` (renovação) — `backend/core/urls.py:12-13`.
+
+**Token da plataforma (MIG-506).** `DEFAULT_AUTHENTICATION_CLASSES` tem, nesta ordem: `apps.common.authentication.PlataformaJWTAuthentication` (JWT RS256 emitido pelo backend-miggo, validado com `MIGGO_JWT_PUBLIC_KEY`), o `JWTAuthentication` local (HS256, acima) e `BackendApiKeyAuthentication` (`Authorization: Api-Key`, MIG-379). É pelo primeiro que o painel de IA no `/admin` do frontend-miggo entra. `MIGGO_JWT_PUBLIC_KEY` é **obrigatória** (as settings não carregam sem ela) e precisa ser a pública do par da `JWT_PRIVATE_KEY` do backend-miggo; na env, `
+` vira quebra de linha.
 
 ## CORS e CSRF
 
@@ -199,6 +206,33 @@ OPENAI_API_KEY = config('OPENAI_API_KEY', default='')
 
 Consumidas por `apps/common/miggo_client.py` e `apps/generations/services/openai_service.py` — ver <a href="/miggoai/arquitetura">Arquitetura</a>.
 
+## Celery, Redis e Flower
+
+Infra do MIG-472 em `backend/core/celery.py`; filas `ia_interativo` (padrão), `ia_lote`, `composicao` e `entrega`, com prefixo de chave `miggoai:` no Redis. Referência completa no repo: `docs/celery.md`.
+
+<Warning>
+  **Tudo vem desligado por padrão.** Sem `REDIS_URL` o Celery roda eager (broker em memória) e nada conecta. Com ela, cada fluxo ainda exige a própria flag `=1`; sem a flag, o caminho é o síncrono de antes.
+</Warning>
+
+| Variável | Padrão | Efeito |
+|---|---|---|
+| `REDIS_URL` | ausente (eager) | Broker e result backend. Segredo |
+| `CELERY_REDIS_DB` | `2` | DB index; `0` em Redis de DB único |
+| `CELERY_TASK_TIME_LIMIT` / `CELERY_TASK_SOFT_TIME_LIMIT` | `900` / hard − 60 s | Limite padrão de uma task |
+| `CELERY_VISIBILITY_TIMEOUT` | `7200` s | Tem de ser maior que o time limit mais longo; se não for, a app recusa subir |
+| `CELERY_RESULT_EXPIRES` | `3600` s | Validade do resultado no Redis |
+| `CELERY_BROKER_POOL_LIMIT` / `CELERY_REDIS_MAX_CONNECTIONS` | `3` / `10` | Conexões por processo com o Redis |
+| `ROLE` | `web` | `web`: migrate, `seed_prompts`, collectstatic, gunicorn e Flower. `worker`: `celery -A core worker -Q ia_interativo,ia_lote,composicao,entrega -E -n ia@%h`, sem migrate nem Flower. Outro valor recusa subir |
+| `CELERY_WORKER_CONCURRENCY` | `2` | Concorrência do worker |
+| `FLOWER_BASIC_AUTH` | — | `usuario:senha` (senha ≥ 12 caracteres). Sem ela o Flower não sobe; o web segue. Segredo |
+| `FLOWER_ENABLED` / `FLOWER_PORT` / `FLOWER_ADDRESS` | `1` / `5555` / `0.0.0.0` no container | Liga e posiciona o Flower |
+| `GRID_ASYNC` | desligado | `POST /api/generations/grid/` com `idempotency_key` responde `202` e roda em `generations.executar_grid` (`ia_interativo`); resultado em `grid/by-key/<chave>/` (MIG-461) |
+| `FILA_ASYNC` | desligado | Rodada diária (`ia_lote`), gerar agora, gerar card e regenerar (`ia_interativo`) e entrega ao backend (`entrega`) em fila, com lock por cliente no Redis (MIG-473) |
+| `PERFIL_ASYNC` | desligado | Bio (`ia_interativo`), banner e destaques (`composicao`) respondem `202`; resultado em `perfil/by-key/<chave>/` (MIG-474) |
+| `GRID_TASK_TIME_LIMIT`, `REGENERAR_TASK_TIME_LIMIT`, `GERAR_CARD_TASK_TIME_LIMIT`, `GERAR_CLIENTE_TASK_TIME_LIMIT`, `ENTREGA_TASK_TIME_LIMIT`, `PERFIL_TASK_TIME_LIMIT` | 600, 1800, 1800, 3600, 600, 780 s | Limites por task, validados na carga |
+
+Teste de fumaça: `python manage.py celery_ping [--fila ia_lote]` imprime `OK {"pong": true, ...}` com worker no ar e `FALHA (<tipo>)` sem ele.
+
 ## Tabela consolidada de variáveis
 
 | Variável | Setting | Obrigatória |
@@ -208,6 +242,8 @@ Consumidas por `apps/common/miggo_client.py` e `apps/generations/services/openai
 | `ALLOWED_HOSTS` | `ALLOWED_HOSTS` | Não |
 | `DB_NAME` / `DB_USER` / `DB_PASSWORD` / `DB_HOST` / `DB_PORT` | `DATABASES` | Sim |
 | `MIGGO_API_KEY` / `MIGGO_API_BASE_URL` | `MIGGO_API_KEY` / `MIGGO_API_BASE_URL` | Sim |
+| `MIGGO_JWT_PUBLIC_KEY` | `MIGGO_JWT_PUBLIC_KEY` | Sim — chave pública (PEM) do JWT RS256 do backend-miggo (MIG-506) |
+| `REDIS_URL`, `CELERY_*`, `FLOWER_*`, `ROLE`, `GRID_ASYNC`, `FILA_ASYNC`, `PERFIL_ASYNC` | ver [Celery, Redis e Flower](#celery-redis-e-flower) | Não |
 | `ACERVO_SERVICE_TOKEN` | `ACERVO_SERVICE_TOKEN` | Não (`default=''`) — sem ela o banco de imagens da Miggo não é consultado e a geração segue só com a galeria do cliente |
 | `OPENAI_API_KEY` | `OPENAI_API_KEY` | Não (`default=''`) |
 | `CORS_ALLOWED_ORIGINS` | `CORS_ALLOWED_ORIGINS` | Não |
