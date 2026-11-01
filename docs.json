@@ -53,6 +53,7 @@
             "pages": [
               "backend/apps/account",
               "backend/apps/client",
+              "backend/apps/agencia",
               "backend/apps/onboarding",
               "backend/apps/brandkit",
               "backend/apps/post",

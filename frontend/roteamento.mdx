@@ -4,16 +4,19 @@ description: "Todas as rotas do app, separação por área (/admin e /app) e os 
 icon: "route"
 ---
 
-O roteamento inteiro é declarado em `src/App.tsx` com `react-router` (`BrowserRouter`, `Routes`, `Route`). Desde a separação por papel, o app tem **duas áreas simétricas e mutuamente exclusivas**: `/admin/*` (equipe Miggo) e `/app/*` (cliente) — documentado em `src/routes/rolePaths.ts:1-14`.
+O roteamento inteiro é declarado em `src/App.tsx` com `react-router` (`BrowserRouter`, `Routes`, `Route`). O app tem **três áreas mutuamente exclusivas**: `/admin/*` (equipe Miggo), `/agency/*` (agência, MIG-514) e `/app/*` (cliente) — documentado em `src/routes/rolePaths.ts`. Paths de rota são em inglês.
 
 ## Separação por área
 
-- `ADMIN_PREFIX = "/admin"`, `CLIENT_PREFIX = "/app"` (`src/routes/rolePaths.ts:26-27`).
-- `isManagementUser(user)`: `true` se `is_superuser`, `is_staff`, `role === "admin"` ou `role === "manager"` — dá acesso a `/admin/*` (`rolePaths.ts:30-35`).
-- `isFullAdminUser(user)`: `true` se `is_superuser`, `is_staff` ou `role === "admin"` — subconjunto mais restrito, usado só nas rotas financeiras (`rolePaths.ts:38-41`).
-- `isClientUser(user)`: `true` se `role === "client"` (`rolePaths.ts:44-46`).
-- `areaPrefixFor(user)` / `homePathFor(user)` / `pathFor(user, subpath)`: resolvem, respectivamente, o prefixo da área, a rota inicial e um caminho absoluto dentro da área do usuário logado (`rolePaths.ts:49-66`). Telas devem usar esses helpers (ou o hook `useRoleArea`, ver `hooks.mdx`) em vez de escrever `/admin/...` ou `/app/...` fixo no JSX.
-- **Preview mode**: quando um admin ativa o "visualizar como cliente" (`PreviewContext`), o `AuthContext` devolve um `effectiveUser` com `role: 'client'` e `id` trocado pelo `previewClientId` (`src/context/AuthContext.tsx:399-405`). Toda a lógica de área/guards passa a tratar o admin como cliente automaticamente, sem checagem especial.
+- `ADMIN_PREFIX = "/admin"`, `CLIENT_PREFIX = "/app"`, `AGENCY_PREFIX = "/agency"` (`src/routes/rolePaths.ts`).
+- `isManagementUser(user)`: `true` se `is_superuser`, `is_staff`, `role === "admin"` ou `role === "manager"`, e `false` para papéis de agência — dá acesso a `/admin/*`.
+- `isFullAdminUser(user)`: `true` se `is_superuser` ou `role === "admin"` (sem `is_staff` desde a MIG-518) — hoje só guarda `/admin/agencies`.
+- `isAgencyUser(user)`: `true` se `role` é `agencia_admin` ou `agencia_membro` — dá acesso a `/agency/*`.
+- `canManageClients(user)`: equipe Miggo ou agência; habilita as telas de carteira.
+- `isClientUser(user)`: `true` se `role === "client"`.
+- `areaPrefixFor(user)` / `homePathFor(user)` / `pathFor(user, subpath)`: resolvem, respectivamente, o prefixo da área, a rota inicial e um caminho absoluto dentro da área do usuário logado. Telas devem usar esses helpers (ou o hook `useRoleArea`, ver `hooks.mdx`) em vez de escrever o prefixo fixo no JSX.
+- **Módulos (MIG-518)**: `ModuloRoute modulo="..."` envolve as telas que dependem de permissão por módulo; `temModulo()` (`src/routes/modulos.ts`) decide. Ver [Área administrativa](/frontend/area-admin#níveis-de-acesso).
+- O preview mode ("visualizar como cliente", `PreviewContext`) foi removido.
 
 ## Árvore de rotas (`src/App.tsx`)
 
@@ -28,7 +31,7 @@ O roteamento inteiro é declarado em `src/App.tsx` com `react-router` (`BrowserR
 | `/admin` (index) | `Home` | `ProtectedRoute > OnboardingGuard > SubscriptionGuard > AppLayout > ManagementRoute` | Dashboard da equipe |
 | `/admin/analytics` | `AnalyticsDashboard` | idem | |
 | `/admin/profile` | `UserProfiles` | idem | |
-| `/admin/content` | `ContentKanban` | idem | |
+| `/admin/content` | `ContentKanban` | idem + `ModuloRoute conteudo` | Mesmo módulo em `editorial-calendar`, `agenda/sugestao`, `media-library`, `brandkit` e `content/parados` |
 | `/admin/editorial-calendar` | `EditorialCalendar` | idem | |
 | `/admin/agenda/sugestao` | `AgendaSugestao` | idem | |
 | `/admin/media-library` | `MediaLibrary` | idem | |
@@ -49,12 +52,19 @@ O roteamento inteiro é declarado em `src/App.tsx` com `react-router` (`BrowserR
 | `/admin/email-marketing` | `EmailMarketingPage` | idem | MIG-264 |
 | `/admin/design-references` | `DesignReferences` | idem | Referências de design (abas: Grids visuais, Referências de Títulos/Copies e Acervo Miggo — MIG-382, MIG-371) |
 | `/admin/benefits` | `Admin/BenefitsAdmin` | idem | Cadastro dos benefícios oficiais e fila de moderação |
-| `/admin/platform-config` | `PlatformProfileConfigPage` | idem | |
-| `/admin/plans` | `PlanManagement` | idem | |
-| `/admin/billing` | `BillingManagement` | ... `> ManagementRoute > AdminRoute` | Admin pleno, gestor não entra |
-| `/admin/financial` | `FinancialDashboard` | idem | |
-| `/admin/team` | `TeamManagement` | idem | |
-| `/app` (index) | `Home` | `ProtectedRoute > OnboardingGuard > SubscriptionGuard > AppLayout > ClientRoute` | Dashboard do cliente (e do admin em preview) |
+| `/admin/plans` | `PlansEntry` | idem | Com módulo `financeiro`, abre a aba Planos de `/admin/billing` |
+| `/admin/miggoai` | `MiggoAI/Overview` | idem | MIG-507/508; demais telas em `miggoai/runs`, `miggoai/runs/:tipo/:id`, `miggoai/generate/:clientId/:postId`, `miggoai/prompts`, `miggoai/prompts/:id`, `miggoai/clients/:id`, `miggoai/usage`, `miggoai/models` |
+| `/admin/billing` | `BillingModule` | ... `> ManagementRoute > ModuloRoute financeiro` | Gestor entra com o módulo |
+| `/admin/financial` | `<Navigate to="/admin/billing" replace />` | idem | |
+| `/admin/team` | `TeamManagement` | ... `> ManagementRoute > ModuloRoute time` | |
+| `/admin/agencies` | `AgenciasList` | ... `> ManagementRoute > AdminRoute` | Só admin pleno — MIG-513 |
+| `/admin/agencies/:id` | `AgenciaDetalhe` | idem | Usuários, domínios e marca da agência |
+| `/agency` (index) | `Agencia/AgenciaHome` | `ProtectedRoute > OnboardingGuard > SubscriptionGuard > AppLayout > AgencyRoute` | MIG-514 |
+| `/agency/{analytics,profile,content,content/parados,editorial-calendar,agenda/sugestao,media-library,brandkit,briefing,history,social-networks,notifications,clients}` | mesmos componentes do `/admin` | idem (+ `ModuloRoute` `conteudo` ou `clientes`) | Backend escopa aos clientes da agência |
+| `/agency/members` | `Agencia/Membros` | idem + `ModuloRoute membros` | |
+| `/agency/plan` | `Agencia/Plano` | idem + `ModuloRoute plano` | |
+| `/agency/brand` | `Agencia/Marca` | idem + `ModuloRoute marca` | MIG-517 |
+| `/app` (index) | `Home` | `ProtectedRoute > OnboardingGuard > SubscriptionGuard > AppLayout > ClientRoute` | Dashboard do cliente |
 | `/app/analytics` | `AnalyticsDashboard` | idem | |
 | `/app/profile` | `UserProfiles` | idem | |
 | `/app/content` | `ContentKanban` | idem | |
@@ -76,6 +86,7 @@ O roteamento inteiro é declarado em `src/App.tsx` com `react-router` (`BrowserR
 | `/app/instagram/success/:clientId/*` | `InstagramSuccess` | idem | |
 | `/app/linkedin/success/:clientId/*` | `InstagramSuccess` | idem | Reusa o mesmo componente |
 | `/app/whatsapp/success/:clientId/*` | `InstagramSuccess` | idem | Reusa o mesmo componente |
+| `/app/tiktok/success/:clientId/*`, `/app/facebook/success/:clientId/*` | `InstagramSuccess` | idem | Reusa o mesmo componente |
 | `/signin` | `SignIn` | Pública | |
 | `/signup` | `<Navigate to="/onboarding" replace />` | Pública | MIG-154: `/signup` foi substituída pelo onboarding como registro oficial |
 | `/reset-password` | `ResetPassword` | Pública | |
@@ -85,7 +96,7 @@ O roteamento inteiro é declarado em `src/App.tsx` com `react-router` (`BrowserR
 
 ## Cadeia de guards (rotas autenticadas)
 
-Ordem exata em `App.tsx:76-184`:
+Ordem exata em `App.tsx`:
 
 ```
 ProtectedRoute
@@ -94,7 +105,10 @@ ProtectedRoute
         └── SubscriptionGuard
               └── AppLayout
                     ├── ManagementRoute → rotas /admin/*
-                    │     └── AdminRoute → /admin/billing, /admin/financial, /admin/team
+                    │     ├── ModuloRoute → telas por módulo
+                    │     └── AdminRoute → /admin/agencies, /admin/agencies/:id
+                    ├── AgencyRoute → rotas /agency/*
+                    │     └── ModuloRoute → telas por módulo
                     └── ClientRoute → rotas /app/*
 ```
 
@@ -103,8 +117,10 @@ ProtectedRoute
 3. **`SubscriptionGuard`** (`src/components/SubscriptionGuard.tsx:10-141`): também só filtra clientes. Permite sempre um conjunto de rotas (`/app/plans`, `/app/billing`, `/app/subscription*`, `/app/profile`, `/app/support`, os equivalentes legados sem prefixo, e `/onboarding`). Sem assinatura ativa fora dessas rotas, renderiza uma tela de bloqueio com CTA para assinar ou (se aplicável) abrir o portal de cobrança da Stripe. Se `subscription.status === 'UNPAID'`, mostra um banner de aviso mas libera o acesso.
 4. **`AppLayout`**: casca visual (sidebar/header) — ver `layout-e-tema.mdx`.
 5. **`ManagementRoute`** (`src/components/ManagementRoute.tsx:12-22`): bloqueia quem não é `isManagementUser`, redirecionando para `homePathFor(user)`.
-6. **`ClientRoute`** (`src/components/ClientRoute.tsx:17-27`): bloqueia quem é `isManagementUser` (checagem por exclusão, não por `role === 'client'`, para não gerar ping-pong de redirect com `ManagementRoute` em roles inesperados), mandando para `/admin`.
-7. **`AdminRoute`** (`src/components/AdminRoute.tsx:10-20`): dentro de `/admin`, restringe ainda mais para `isFullAdminUser` (billing/financial/team) — gestor (`role === 'manager'`) não passa.
+6. **`ClientRoute`** (`src/components/ClientRoute.tsx`): manda usuário de agência para `/agency/clients` e bloqueia quem é `isManagementUser` (checagem por exclusão, não por `role === 'client'`, para não gerar ping-pong de redirect com `ManagementRoute` em roles inesperados), mandando para `/admin`.
+7. **`AdminRoute`** (`src/components/AdminRoute.tsx`): dentro de `/admin`, restringe para `isFullAdminUser` (hoje só agências) — gestor (`role === 'manager'`) não passa.
+8. **`AgencyRoute`** (`src/components/AgencyRoute.tsx`): libera `/agency/*` só para `isAgencyUser`; os demais voltam para `homePathFor(user)`.
+9. **`ModuloRoute`** (`src/components/ModuloRoute.tsx`): recebe `modulo` e libera se `temModulo(user, modulo)`; senão volta para `homePathFor(user)`. Billing e time deixaram o `AdminRoute` e passaram a ser por módulo (`financeiro`, `time`).
 
 Todos os guards de role usam `RouteLoader` como estado de carregamento enquanto `useAuth().loading` é `true`.
 

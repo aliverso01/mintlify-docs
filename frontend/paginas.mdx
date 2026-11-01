@@ -79,7 +79,7 @@ Modo equipe (`!isClient`), em paralelo:
 | `GET /api/v1/history/admin-dashboard/` | painel completo (leads, clientes, alerts) |
 | `GET /api/v1/history/admin-dashboard/charts/` | séries para `AdminCharts` |
 
-Modo cliente (`isClient`), primeiro resolve o `Client` (por `previewClientId` em preview mode via `GET /api/v1/client/retrieve/:id/`, ou por `?user=` via `GET /api/v1/client/list/?user=:id`), depois em paralelo:
+Modo cliente (`isClient`), primeiro resolve o `Client` (por `?user=` via `GET /api/v1/client/list/?user=:id`), depois em paralelo:
 | Endpoint | Uso |
 |---|---|
 | `GET /api/v1/client/retrieve/:id/` | detalhe (flag `active`) |
@@ -108,7 +108,7 @@ Renderizado só dentro de `/admin/*`. Mostra `AdminCharts` (KPIs com tendência)
 ### DashboardClient — visão do cliente
 **Arquivo:** `src/pages/Dashboard/DashboardClient.tsx`
 
-Renderizado só dentro de `/app/*` (inclusive preview mode do admin). Mostra `WelcomeTour` (primeiro acesso, só após onboarding completo e fora de preview), aviso de "Conta não ativada" com formulário de código, `OnboardingGamificationWidget`, cards de marca/posts, atalhos de mídia e sugestão de pauta, lista de redes sociais conectadas, status do plano (com estado "teste encerrado" via `isTrialOver`), posts aguardando aprovação e próximos posts, e o calendário editorial semanal.
+Renderizado só dentro de `/app/*`. Mostra `WelcomeTour` (primeiro acesso, só após onboarding completo), aviso de "Conta não ativada" com formulário de código, `OnboardingGamificationWidget`, cards de marca/posts, atalhos de mídia e sugestão de pauta, lista de redes sociais conectadas, status do plano (com estado "teste encerrado" via `isTrialOver`), posts aguardando aprovação e próximos posts, e o calendário editorial semanal.
 
 - **Hooks:** `useWelcomeTour`, `useRoleArea`.
 - **Estados vazio:** "Nenhuma rede social conectada ainda.", "Nenhuma assinatura ativa.", "Nenhum post agendado para os próximos dias.", "Nenhuma regra ativa no calendário."
@@ -238,7 +238,7 @@ Galeria de mídias do cliente com upload, edição de descrição, seleção mú
 | POST | `/api/v1/media/create/` | upload (`FormData`) |
 | DELETE | `/api/v1/media/:id/` | exclusão |
 
-- **Hooks:** `useAuth`, `usePreview` (preview mode resolve `previewClientId` direto).
+- **Hooks:** `useAuth`.
 - **Componentes:** `ClientSearchSelect` (admin escolhe o cliente via `?client_id=` na URL).
 - **Estados:** `SkeletonMediaGrid` no carregamento inicial; `loadingMore` no scroll infinito; `uploadError`/`uploadSuccess`.
 
@@ -320,7 +320,7 @@ Configura as regras recorrentes do calendário editorial por dia da semana (assu
 
 Container: `useBrandkitPage()`, bloqueia cliente com onboarding incompleto, escolhe `BrandkitAdmin`/`BrandkitClient`.
 
-**`useBrandkitPage` (`src/pages/Brandkit/useBrandkitPage.ts`)** resolve o `clientId` (deep-link `?client_id=` para admin; para cliente/preview via `GET /api/v1/client/list/?user=` ou sem filtro em preview) e delega o CRUD de brand kit ao hook `useBrandkit` (`src/hooks/useBrandkit.ts` — não documentado aqui, é hook compartilhado): `useBrandkits`, `createBrandkit`, `deleteBrandkit`, `uploadLogo`, `createColor`, `createTypography`, `uploadAsset`, `fetchGrids`, `createGrid`, `deleteGrid`, `regenerateGrid`, `fetchGridStatus`.
+**`useBrandkitPage` (`src/pages/Brandkit/useBrandkitPage.ts`)** resolve o `clientId` (deep-link `?client_id=` para admin; para cliente via `GET /api/v1/client/list/?user=`) e delega o CRUD de brand kit ao hook `useBrandkit` (`src/hooks/useBrandkit.ts` — não documentado aqui, é hook compartilhado): `useBrandkits`, `createBrandkit`, `deleteBrandkit`, `uploadLogo`, `createColor`, `createTypography`, `uploadAsset`, `fetchGrids`, `createGrid`, `deleteGrid`, `regenerateGrid`, `fetchGridStatus`.
 
 Endpoint próprio da tela:
 - `POST /api/v1/client/analyze-profile/` — `{ username, client_id }`, dispara análise de perfil (Instagram) que preenche o briefing; em sucesso navega para `briefing?client_id=`.
@@ -363,7 +363,7 @@ Ficha de briefing da marca (identidade, público, tom, etc.), organizada em seç
 | PATCH | `/api/v1/client/client-meta/update/:id/` | atualizar resposta existente na edição manual |
 | POST | `/api/v1/client/client-meta/create/` | criar nova resposta na edição manual |
 
-- **Hooks:** `useAuthContext`, `usePreview`, `useClient`, `useNotification`.
+- **Hooks:** `useAuthContext`, `useClient`, `useNotification`.
 - **Componentes:** `BriefingReviewModal`, `BrandMaterialsPanel`, `PlatformProfileConfigPanel`, `Field`/`ListEditor`/`Section`/`TargetPicker` (`src/components/briefing/ReviewFields.tsx`).
 - **Estados:** `loading`, `saving`, `scraping`, `applying`, `proposal` (proposta ativa para o modal), `viewMode` (somente leitura), progresso calculado (`answeredCount / totalFields`).
 
