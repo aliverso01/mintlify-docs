@@ -38,7 +38,7 @@ cp .env.example .env    # preencha conforme /plataforma/configuracao
 ./venv/Scripts/python.exe manage.py runserver 8000
 ```
 
-Para a Plataforma falar com o MiggoAI local, defina `MIGGOAI_V2_API_URL=http://localhost:8010` no `.env`. Detalhes em [Rodar a Plataforma localmente](/plataforma/rodar-localmente).
+O `.env.example` não traz a `JWT_PRIVATE_KEY`, obrigatória: gere uma chave RSA e acrescente (veja [Rodar a Plataforma localmente](/plataforma/rodar-localmente)). Para a Plataforma falar com o MiggoAI local, defina `MIGGOAI_V2_API_URL=http://localhost:8010` no `.env`. Detalhes em [Rodar a Plataforma localmente](/plataforma/rodar-localmente).
 
 ## 2. MiggoAI
 
@@ -48,10 +48,11 @@ python -m venv venv
 ./venv/Scripts/python.exe -m pip install -r requirements.txt
 cp .env.example .env    # MIGGO_API_BASE_URL=http://localhost:8000/api/v1/
 ./venv/Scripts/python.exe manage.py migrate
+./venv/Scripts/python.exe manage.py seed_prompts   # sem os prompts, toda geração falha
 ./venv/Scripts/python.exe manage.py runserver 8010
 ```
 
-O MiggoAI valida o token da Plataforma com a chave pública (`MIGGO_JWT_PUBLIC_KEY`), par da `JWT_PRIVATE_KEY` da Plataforma. Detalhes em [Rodar o MiggoAI localmente](/miggoai/rodar-localmente) e [Autenticação no MiggoAI](/miggoai/autenticacao).
+O MiggoAI valida o token da Plataforma com a chave pública `MIGGO_JWT_PUBLIC_KEY`, par da `JWT_PRIVATE_KEY` da Plataforma. Ela é obrigatória e não está no `backend/.env.example`: acrescente-a ao `.env`. Detalhes em [Rodar o MiggoAI localmente](/miggoai/rodar-localmente) e [Autenticação no MiggoAI](/miggoai/autenticacao).
 
 ## 3. Web app
 
@@ -68,8 +69,8 @@ Abra `http://localhost:5173`. Detalhes em [Rodar o Web app localmente](/web/roda
 
 | Serviço | Sinal de saúde |
 | --- | --- |
-| Plataforma | `manage.py check` sem erros e login em `POST /api/v1/account/token/` devolvendo `access` |
-| MiggoAI | `manage.py check` sem erros e o painel de IA (`/admin`) do Web app carregando |
+| Plataforma | `curl http://localhost:8000/health/` devolve `200` e `POST /api/v1/account/token/` devolve `access` |
+| MiggoAI | `curl http://localhost:8010/health/` devolve `200` |
 | Web app | `npm run lint` e `npm run build` sem erros e o login funcionando contra a API local |
 
 ## Próximos passos

@@ -4,16 +4,17 @@ description: "Base URL, autenticação, formato de erro, paginação, idempotên
 icon: "plug"
 ---
 
-A API do MiggoAI é REST + JSON, servida pelo Django REST Framework. Cada endpoint está na referência gerada do OpenAPI, nesta mesma aba, agrupada por recurso (Gerações, Prompts, Custos, Clientes, Posts, Token).
+A API do MiggoAI é REST + JSON, servida pelo Django REST Framework. Cada endpoint está na referência gerada do OpenAPI, nesta mesma aba, agrupada por recurso (Autenticação, Clientes, Custos, Gerações, Posts e Prompts).
 
 ## Base URL
 
 | Ambiente | URL |
 |---|---|
 | Produção | `https://backend-ai.miggomkt.com.br` |
+| Homologação | `https://backend-test-ai.miggomkt.com.br` |
 | Local | `http://localhost:8010` |
 
-Homologação roda em serviço e banco próprios no Dokploy (ver [Ambientes](/arquitetura/ambientes)). Todas as rotas ficam sob `/api/`, sem versão no caminho. Fora dela só há `/health/` (sem autenticação, para o healthcheck) e `/admin/` (Django admin).
+Homologação roda em serviço e banco próprios (ver [Ambientes](/arquitetura/ambientes)). Todas as rotas ficam sob `/api/`, sem versão no caminho. Fora dela só há `/health/` (sem autenticação, para o healthcheck) e `/admin/` (Django admin).
 
 | Prefixo | Recurso |
 |---|---|
@@ -82,4 +83,4 @@ Grid e peças de perfil aceitam `idempotency_key` (até 64 caracteres). Ela iden
 
 ## Schema
 
-O serviço não expõe rota de schema. A referência desta aba é gerada do código da `main` com `python manage.py spectacular`; o passo a passo de regeneração está no `README.md` deste repositório de documentação.
+O serviço não expõe rota de schema. A referência desta aba é gerada do código da `main` com `python manage.py spectacular` e regenerada a cada release que muda rota ou serializer.

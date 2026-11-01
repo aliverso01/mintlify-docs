@@ -10,13 +10,14 @@ icon: "globe"
 | --- | --- | --- |
 | Web app (`frontend-miggo`) | `app.miggomkt.com.br` | `teste.miggomkt.com.br` |
 | Plataforma (`backend-miggo`) | `api.miggomkt.com.br` | `test-api.miggomkt.com.br` |
-| MiggoAI (`miggoai_v2`) | `backend-ai.miggomkt.com.br` | `test-ai.miggomkt.com.br` |
+| MiggoAI (`miggoai_v2`) | `backend-ai.miggomkt.com.br` | `backend-test-ai.miggomkt.com.br` |
 
 Outros domínios que aparecem no código:
 
 - `plataforma.miggomkt.com.br` — domínio anterior do Web app, ainda reconhecido como host da Miggo (`HOSTS_PLATAFORMA` em `core/settings.py`).
 - `<slug>.<PLATFORM_BASE_DOMAIN>` e domínios próprios cadastrados por agências — servidos pelo mesmo Web app; veja [Agências](/plataforma/apps/agencia).
-- `docs.miggomkt.com.br` — documentação de produto, para clientes.
+- `test-ai.miggomkt.com.br` — front antigo do MiggoAI em homologação. Não é a API: a API de homologação é `backend-test-ai.miggomkt.com.br`.
+- `ajuda.miggomkt.com.br` — central de ajuda, para clientes.
 
 <Note>
   Em desenvolvimento os três rodam na máquina: Plataforma em `localhost:8000`, MiggoAI em `localhost:8010` e Web app em `localhost:5173`. Veja o [Quickstart](/quickstart).
@@ -34,7 +35,7 @@ Homologação é uma cópia completa: banco próprio para cada serviço, mesmas 
 | `MIGGOAI_V2_API_URL`, `MIGGOAI_V2_API_KEY` | Plataforma | Apontam para o MiggoAI do mesmo ambiente. |
 | `MIGGO_API_BASE_URL`, `MIGGO_API_KEY` | MiggoAI | Apontam para a Plataforma do mesmo ambiente. |
 | `JWT_PRIVATE_KEY` / `MIGGO_JWT_PUBLIC_KEY` | Plataforma / MiggoAI | Par de chaves por ambiente: o MiggoAI só aceita o token da Plataforma do seu ambiente. |
-| `STRIPE_API_KEY`, `STRIPE_WEBHOOK_SECRET` | Plataforma | Chave de teste em homologação; o segredo do webhook casa com o endpoint cadastrado na Stripe para aquele ambiente. |
+| `STRIPE_API_KEY` (ou `STRIPE_PROD_API_KEY`), `STRIPE_WEBHOOK_SECRET` | Plataforma | Chave do modo de teste da Stripe em homologação; o segredo do webhook casa com o endpoint cadastrado na Stripe para aquele ambiente. |
 | `LATE_API_KEY` | Plataforma | Publica de verdade nas redes do cliente: em homologação, não use a chave de produção. |
 | `OPENAI_API_KEY` | Plataforma e MiggoAI | Chave separada por ambiente, para os custos não se misturarem. |
 | `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD` | Plataforma | E-mail de homologação não pode chegar à caixa de cliente. |
@@ -52,8 +53,8 @@ A Plataforma e o MiggoAI usam a mesma imagem para a API e para o worker de fila:
 
 ```mermaid
 flowchart LR
-    B["branch MIG-nnn-*"] -->|PR| D["develop"]
-    D -->|homologação| H["teste / test-api / test-ai"]
+    B["branch de feature"] -->|PR| D["develop"]
+    D -->|homologação| H["teste / test-api / backend-test-ai"]
     D -->|release| M["main"]
     M -->|imagem no ECR + deploy no Dokploy| P["app / api / backend-ai"]
 ```

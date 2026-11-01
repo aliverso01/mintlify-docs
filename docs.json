@@ -225,8 +225,8 @@
     "global": {
       "anchors": [
         {
-          "anchor": "Docs do produto",
-          "href": "https://docs.miggomkt.com.br",
+          "anchor": "Central de ajuda",
+          "href": "https://ajuda.miggomkt.com.br",
           "icon": "book-open"
         }
       ]

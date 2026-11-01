@@ -57,7 +57,7 @@ Recebe os eventos `PAYMENT_*` e espelha a cobrança na `Invoice`. Pagamento conf
 **Idempotência.** O `id` do evento (ou `evento:pagamento:status`, quando o Asaas não manda id) vira uma linha em `AsaasEvent`. Reentrega: `200 already_processed`.
 
 <Warning>
-  A fila de webhooks do Asaas é **sequencial** e para no primeiro evento que não recebe `200`. Por isso o endpoint só devolve erro quando uma reentrega pode resolver (falha de processamento, `500`). Evento de outro tipo ou cobrança sem assinatura local respondem `200` e ficam no log para tratamento manual.
+  A fila de webhooks do Asaas é **sequencial** e para no primeiro evento que não recebe `200`. O endpoint devolve `401` para token errado, `400` para evento sem nome ou `PAYMENT_*` sem `payment.id`, e `500` quando o processamento falha. Um `400` também trava a fila: corrija a origem e reenvie pelo painel. Evento de outro tipo ou cobrança sem assinatura local respondem `200` e ficam no log para tratamento manual.
 </Warning>
 
 O painel do Asaas aponta para `/webhooks/asas/`; `/webhooks/asaas/` é um alias com a grafia correta. A rotina `sync_asaas_billing` continua como rede de segurança para evento perdido.

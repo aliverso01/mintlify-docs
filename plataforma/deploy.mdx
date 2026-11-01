@@ -59,7 +59,7 @@ Para voltar versão, troque a imagem para o SHA anterior. Migration já aplicada
 
 ## A imagem
 
-`dockerfile` na raiz: `python:3.11-slim`, dependências do `requirements.txt` e o Chromium do Playwright (`playwright install --with-deps chromium`), usado como último recurso na raspagem de site do onboarding. Expõe `8000` (API) e `5555` (Flower) e usa `ENTRYPOINT ["/app/docker-entrypoint.sh"]`.
+`dockerfile` na raiz: `python:3.11-slim`, dependências do `requirements.txt` e o Chromium do Playwright (`playwright install --with-deps chromium`), usado como último recurso na raspagem de site do onboarding. Declara `EXPOSE 5555` (Flower); o gunicorn escuta em `8000`, porta que o `dockerfile` não declara. Usa `ENTRYPOINT ["/app/docker-entrypoint.sh"]`.
 
 O `CMD` do web:
 

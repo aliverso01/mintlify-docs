@@ -32,15 +32,27 @@ As settings exigem as mesmas variáveis do servidor, então rode de `backend/` c
     ```
   </Tab>
   <Tab title="SQLite em memória">
-    Quando o usuário do Postgres local não pode criar o banco de teste, troque só o banco por um settings que importa `core.settings` e define `DATABASES` com `sqlite3` em `:memory:`. No workspace Miggo esse arquivo já existe em `.maestri/test_settings.py` e serve aos dois backends:
+    Quando o usuário do Postgres local não pode criar o banco de teste, troque só o banco por um settings que importa `core.settings` e define `DATABASES` com `sqlite3` em `:memory:`. Crie o arquivo fora do repositório (ou num caminho ignorado pelo git):
+
+    ```python test_settings.py
+    from core.settings import *  # noqa: F401,F403
+
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': ':memory:',
+        }
+    }
+    ```
+
+    Rode com a pasta do arquivo no `PYTHONPATH`:
 
     ```bash
     cd miggoai-2.0/miggoai_v2/backend
-    PYTHONPATH=D:/Projetos/Miggo/.maestri \
-      ./venv/Scripts/python.exe manage.py test apps.prompts --settings=test_settings
+    PYTHONPATH=/caminho/da/pasta python manage.py test apps.prompts --settings=test_settings
     ```
 
-    O arquivo fica fora do repositório do MiggoAI.
+    O mesmo arquivo serve à Plataforma: veja [Testes da Plataforma](/plataforma/testes).
   </Tab>
 </Tabs>
 

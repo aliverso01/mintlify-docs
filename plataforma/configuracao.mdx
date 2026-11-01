@@ -78,8 +78,8 @@ Uso e fluxo dos tokens: [Autenticação](/plataforma/autenticacao).
 
 | Variável | Obrigatória | Padrão | Efeito |
 |---|---|---|---|
-| `STRIPE_API_KEY` | não | vazio | Chave de teste da Stripe |
-| `STRIPE_PROD_API_KEY` | não | vazio | Chave de produção da Stripe |
+| `STRIPE_API_KEY` | nos pontos de uso | vazio | Chave da Stripe do ambiente (de teste em homologação, de produção em produção). Sem ela nem `STRIPE_PROD_API_KEY`, a primeira chamada à Stripe levanta `ImproperlyConfigured` |
+| `STRIPE_PROD_API_KEY` | não | vazio | Outro nome para a mesma chave: definida, tem precedência sobre `STRIPE_API_KEY` (as duas diferentes geram um warning no log). Defina só uma |
 | `STRIPE_WEBHOOK_SECRET` | não | vazio | Valida a assinatura de `/webhooks/`. Vazio, o webhook responde `503` |
 | `STRIPE_TRIAL_DAYS` | não | `7` | Dias de teste grátis |
 | `BILLING_GRACE_DAYS` | não | `5` | Carência antes de cortar o acesso de quem está em atraso |
@@ -91,7 +91,7 @@ Uso e fluxo dos tokens: [Autenticação](/plataforma/autenticacao).
 
 | Variável | Obrigatória | Padrão | Efeito |
 |---|---|---|---|
-| `OPENAI_API_KEY` | não | vazio | Chamadas diretas à OpenAI feitas pelo backend (onboarding, brandkit, mídia, suporte) |
+| `OPENAI_API_KEY` | nos pontos de uso | vazio nas settings | Chamadas diretas à OpenAI feitas pelo backend (onboarding, brandkit, mídia, suporte). Os pontos de uso leem a variável sem padrão: ausente, a chamada levanta `UndefinedValueError` |
 | `OPENAI_API_URL` | não | `https://api.openai.com/v1/` | Base da API da OpenAI |
 | `OPENAI_MODEL` | não | `gpt-4o-mini` | Modelo de texto padrão |
 | `OPENAI_MODEL_ESTRATEGIA` | não | o mesmo de `OPENAI_MODEL` | Modelo da estratégia do onboarding |
@@ -100,7 +100,8 @@ Uso e fluxo dos tokens: [Autenticação](/plataforma/autenticacao).
 | `MIGGOAI_V2_API_URL` | não | cai em `MIGGOAI_API_URL` | Base do MiggoAI (`/api/generations/...`). Aponte para o MiggoAI **do mesmo ambiente** |
 | `MIGGOAI_V2_API_KEY` | não | vazio | `Api-Key` aceita pelo MiggoAI. Configurada, dispensa o login por usuário e senha |
 | `MIGGOAI_V2_USERNAME`, `MIGGOAI_V2_PASSWORD` | não | — | Login no MiggoAI quando não há `MIGGOAI_V2_API_KEY` |
-| `MIGGOAI_API_URL`, `MIGGOAI_USERNAME`, `MIGGOAI_PASSWORD` | não | `http://localhost:10000` | Integração com a API antiga de geração (`/api/generate/...`) |
+| `MIGGOAI_API_URL` | não | `http://localhost:10000` | Base da API antiga de geração (`/api/generate/...`) |
+| `MIGGOAI_USERNAME`, `MIGGOAI_PASSWORD` | nos pontos de uso | — | Login na API de geração quando não há `MIGGOAI_V2_API_KEY`. Sem padrão: ausentes, a chamada levanta `UndefinedValueError` |
 | `ACERVO_SERVICE_TOKEN` | não | vazio | Credencial de serviço (header `Acervo-Service-Token`) das rotas `media/acervo/elegiveis/` e `media/acervo/uso/`. Mesma string no MiggoAI. Vazia, o caminho de serviço é recusado |
 | `PIXABAY_API_KEY` | não | vazio | Banco de imagens Pixabay no acervo. Vazia, a fonte fica indisponível |
 | `GRID_ASYNC_ESPERA_MAXIMA` | não | `300` s | Quanto o backend espera pelo grid quando o MiggoAI responde `202` |
@@ -110,7 +111,7 @@ Uso e fluxo dos tokens: [Autenticação](/plataforma/autenticacao).
 
 | Variável | Obrigatória | Padrão | Efeito |
 |---|---|---|---|
-| `LATE_API_KEY` | não | vazio | Chave do Zernio (antigo GetLate). **Homologação nunca usa a chave de produção**: ela publica de verdade na conta do cliente |
+| `LATE_API_KEY` | nos pontos de uso | — | Chave do Zernio. Lida sem padrão: ausente, publicação e métricas levantam `UndefinedValueError`. **Homologação nunca usa a chave de produção**: ela publica de verdade na conta do cliente |
 | `ZERNIO_PUBLISH_TIMEOUT` | não | `120` s | Espera nas chamadas de publicação (presign e `POST /v1/posts`) |
 | `ZERNIO_WEBHOOK_TOKEN` | não | vazio | Token do header `Zernio-Webhook-Token` em `/webhooks/zernio/status/`. Vazio, o webhook responde `503` |
 
@@ -187,5 +188,5 @@ O que não vem do ambiente e só muda no código (`core/settings.py`):
 | JWT | RS256, access de 30 min, refresh de 7 dias com rotação, audiência `miggo` e `miggoai` |
 | Middleware próprio | `app.history.middleware.CurrentRequestMiddleware`, depois da autenticação, expõe o autor da requisição aos signals de auditoria |
 | Estáticos | WhiteNoise, `STATIC_ROOT = static/`, coletados no boot do container |
-| Fuso e idioma | `TIME_ZONE='UTC'`, `USE_TZ=True`, `LANGUAGE_CODE='en-us'` |
+| Fuso e idioma | `TIME_ZONE='America/Sao_Paulo'`, `USE_TZ=True` (o banco guarda em UTC), `LANGUAGE_CODE='pt-br'` |
 | `CRONJOBS` | só `app.post.cron.send_scheduled_reviews`; as demais rotinas são Schedules do Dokploy ([Tarefas agendadas](/plataforma/tarefas-agendadas)) |
