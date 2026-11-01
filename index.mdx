@@ -1,26 +1,26 @@
 ---
-title: "Documentação técnica da Miggo"
-description: "Ponto de partida para desenvolver nos repositórios backend-miggo, frontend-miggo e miggoai."
+title: "Portal de desenvolvedor da Miggo"
+description: "Ponto de partida para desenvolver na Plataforma, no Web app e no MiggoAI."
 icon: "house"
 ---
 
-Esta é a documentação **de desenvolvimento** da Miggo. Ela descreve como o software é construído: instalação, configuração, arquitetura, modelos de dados, endpoints, funções e deploy dos três repositórios que compõem a plataforma.
+Documentação **técnica** da Miggo: como os três softwares são construídos, como rodar cada um, como autenticar, quais fluxos atravessam os serviços e a referência completa das APIs, gerada do código.
 
 <Note>
-  Procurando a documentação **de produto** (como usar a plataforma)? Ela fica em [docs.miggomkt.com.br](https://docs.miggomkt.com.br). Aqui o público é quem escreve código.
+  Procurando como **usar** o produto? A documentação para clientes fica em [ajuda.miggomkt.com.br](https://ajuda.miggomkt.com.br). Aqui o público é quem escreve código.
 </Note>
 
-## Os três repositórios
+## Os três softwares
 
 <Columns cols={3}>
-  <Card title="Backend" icon="server" href="/backend/instalacao">
-    **backend-miggo** — Django + DRF. API principal da plataforma: contas, clientes, posts, calendário editorial, assinaturas, conversas e webhooks.
+  <Card title="Plataforma" icon="server" href="/plataforma/rodar-localmente">
+    **`backend-miggo`** — Django + DRF. API principal: contas, clientes, agências, posts, calendário editorial, mídia, assinaturas, conversas e webhooks.
   </Card>
-  <Card title="Frontend" icon="monitor" href="/frontend/instalacao">
-    **frontend-miggo** — React 19 + Vite + TypeScript + Tailwind 4. Aplicação web usada por clientes (`/app`) e pela equipe (`/admin`).
+  <Card title="Web app" icon="monitor" href="/web/rodar-localmente">
+    **`frontend-miggo`** — React 19 + Vite + TypeScript. Interface do cliente (`/app`), das agências e da equipe (`/admin`), incluindo o painel de IA.
   </Card>
-  <Card title="MiggoAI" icon="sparkles" href="/miggoai/instalacao">
-    **miggoai** — Django + DRF. Serviço de IA que gera título, imagem, legenda e hashtags dos posts.
+  <Card title="MiggoAI" icon="sparkles" href="/miggoai/rodar-localmente">
+    **`miggoai_v2/backend`** — Django + DRF. Serviço de IA que gera grid, título, imagem, legenda e hashtags dos posts.
   </Card>
 </Columns>
 
@@ -28,29 +28,29 @@ Esta é a documentação **de desenvolvimento** da Miggo. Ela descreve como o so
 
 <Steps>
   <Step title="Entenda o todo">
-    Leia a [visão geral da arquitetura](/arquitetura/visao-geral) para saber quem chama quem, e os [fluxos principais](/arquitetura/fluxos) para acompanhar um post do nascimento à publicação.
+    A [visão geral da arquitetura](/arquitetura/visao-geral) mostra quem chama quem; os [fluxos principais](/arquitetura/fluxos) acompanham um post do onboarding à publicação.
   </Step>
   <Step title="Suba o ambiente">
-    Siga o [Quickstart](/quickstart) para ter os três serviços rodando localmente.
+    O [Quickstart](/quickstart) sobe os três serviços na sua máquina.
   </Step>
-  <Step title="Adote as convenções">
-    As [convenções de código](/arquitetura/convencoes) valem para os três repos: estilo, migrations, lint, UTF-8, segredos e fluxo de trabalho no Jira.
+  <Step title="Autentique e chame a API">
+    Veja como obter o token da [Plataforma](/plataforma/autenticacao) e do [MiggoAI](/miggoai/autenticacao), e explore a [referência da API da Plataforma](/plataforma/api-referencia) e a do [MiggoAI](/miggoai/api-referencia).
   </Step>
 </Steps>
 
-## Atalhos frequentes
+## Atalhos
 
 <Columns cols={2}>
-  <Card title="Referência da API" icon="plug" href="/backend/api-referencia">
-    Tabela mestre de todos os endpoints do backend, com método, rota, view e permissão.
+  <Card title="Ciclo do conteúdo" icon="workflow" href="/plataforma/ciclo-do-conteudo">
+    Onboarding, geração, aprovação e publicação, com os endpoints envolvidos.
   </Card>
-  <Card title="Modelo de dados" icon="database" href="/backend/modelo-de-dados">
-    Todos os models, campos e relações do backend, com diagrama de entidades.
+  <Card title="Webhooks" icon="webhook" href="/plataforma/guias/webhooks">
+    Stripe, Asaas, Zernio, ManyChat e Jira: como cada um entra e é validado.
   </Card>
-  <Card title="Integrações externas" icon="share-2" href="/arquitetura/integracoes-externas">
-    Stripe, Asaas, Zernio, ManyChat, OpenAI, Apify, Google e afins — o que cada um faz.
+  <Card title="Ambientes" icon="globe" href="/arquitetura/ambientes">
+    Produção e homologação: domínios e o caminho de uma mudança.
   </Card>
-  <Card title="Glossário" icon="book-a" href="/arquitetura/glossario">
-    Vocabulário do domínio: card, grid, microângulo, brandkit, flow, snapshot.
+  <Card title="Changelog" icon="history" href="/releases">
+    O que mudou em cada release, por software.
   </Card>
 </Columns>

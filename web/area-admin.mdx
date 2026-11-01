@@ -1,0 +1,112 @@
+---
+title: "Áreas /admin e /agency do Web app"
+description: "Níveis de acesso, módulos e telas do /admin (equipe Miggo) e do /agency (agência) no frontend-miggo."
+icon: "shield"
+---
+
+O Web app tem uma área de gestão para a equipe Miggo (`/admin/*`) e outra para agências (`/agency/*`). As duas reaproveitam as telas de operação de conteúdo; o que muda é quem entra, o que o menu mostra e quais clientes a Plataforma devolve. A tabela de rotas está em [Telas e rotas](/web/paginas).
+
+## Níveis de acesso
+
+Os predicados ficam em `src/routes/rolePaths.ts` e `src/routes/modulos.ts`:
+
+| Função | Quem satisfaz | Libera |
+|---|---|---|
+| `isManagementUser` | `is_superuser`, `is_staff`, `role` `admin` ou `manager` (nunca papel de agência) | Área `/admin` |
+| `isFullAdminUser` | `is_superuser` ou `role === "admin"` | `/admin/agencies` e o item "Agências" do menu |
+| `isAgencyUser` | `role` `agencia_admin` ou `agencia_membro` | Área `/agency` |
+| `canManageClients` | Gestão ou agência | Telas de carteira: escolher cliente, marca, mídia, calendário |
+| `temModulo(user, modulo)` | Ver abaixo | Telas por módulo |
+
+### Módulos
+
+O papel diz **quem** é; o módulo diz **o que** pode usar. `temModulo` espelha `app/account/modulos.py` da Plataforma ([Contas e usuários](/plataforma/apps/account)):
+
+| Papel | Módulos |
+|---|---|
+| `admin`, superusuário | Todos os da Miggo |
+| `manager` (gestor) | Os que o admin marcou em `/admin/team` |
+| `agencia_admin` | Todos os da agência |
+| `agencia_membro` | Os que o `agencia_admin` marcou em `/agency/members` |
+
+| Catálogo | Códigos |
+|---|---|
+| Miggo | `clientes`, `conteudo`, `trials`, `financeiro`, `conversas`, `email_marketing`, `miggoai`, `acervo`, `beneficios`, `suporte`, `logs`, `time` |
+| Agência | `clientes`, `conteudo`, `membros`, `plano`, `marca` |
+
+<Warning>
+`ModuloRoute` e o menu são navegação. A recusa real é da Plataforma, por endpoint (permissão `TemModulo`), e do MiggoAI para o painel de IA. Veja [Autenticação da Plataforma](/plataforma/autenticacao).
+</Warning>
+
+## Menu lateral
+
+`src/layout/AppSidebar.tsx` monta o menu de cada área em grupos com rótulo. Cada item pode declarar `modulo`, `superuserOnly`, `financeOnly` (`isFullAdminUser`) ou `hideForFinance`; grupo sem item visível some.
+
+| Área | Grupos | Rodapé |
+|---|---|---|
+| `/admin` | (sem rótulo: Visão geral, Analytics), Clientes, Conteúdo, MiggoAI, Relacionamento, Receita | Time, Logs, Central de ajuda |
+| `/agency` | (sem rótulo), Clientes, Conteúdo, Atividade | Configurações: Membros, Marca, Plano |
+| `/app` | `CLIENT_NAV_GROUPS` em `src/layout/clientNav.tsx` | — |
+
+## Telas do `/admin`
+
+As telas exclusivas da equipe ficam em `src/pages/Admin/`.
+
+| Grupo | Telas | O que resolvem |
+|---|---|---|
+| Clientes | `/admin/clients`, `/admin/users`, `/admin/trials` | Carteira (com filtro de suspensos por trial e do workflow MiggoAI), usuários (inclusive de agência) e o funil de trials, com as abas Visão geral e Funil de vendas. |
+| Conteúdo | `/admin/content/parados`, `/admin/design-references` | Posts parados na esteira; referências de grid, de títulos e copies e o acervo de imagens. |
+| Relacionamento | `/admin/conversations`, `/admin/message-flows`, `/admin/email-marketing`, `/admin/benefits`, `/admin/support` | WhatsApp (ManyChat), fluxos de mensagem, régua de e-mails do trial, benefícios de parceiros com fila de moderação e o suporte. |
+| Receita | `/admin/billing`, `/admin/plans` | Faturamento num módulo só, com abas na URL (`?aba=`): Visão geral, Faturas, Conciliação e Planos. A Conciliação junta as filas de assinaturas com anomalia, sem vínculo e cobranças órfãs do gateway. |
+| Operação | `/admin/team`, `/admin/logs`, `/admin/notifications` | Time e módulos de cada gestor, log das chamadas a APIs externas e histórico de notificações. |
+| Agências | `/admin/agencies`, `/admin/agencies/:id` | Cadastro de agências, usuários, vínculo de clientes, domínios próprios e marca. Chamadas em `src/pages/Admin/agenciaApi.ts`, contra `/api/v1/agency/`. |
+| MiggoAI | `/admin/miggoai/*` | Painel de IA. Veja [Painel de IA](/web/painel-de-ia). |
+
+### Acervo de imagens
+
+O acervo é o banco de imagens interno da Miggo, usado pela seleção automática de imagem dos posts. Fica na aba "Acervo" de `/admin/design-references` (`/admin/acervo` redireciona para lá) e não tem par no `/app`.
+
+- **Acervo:** galeria com filtros, upload em lote e edição de tags, curadoria e alocação.
+- **Importar de banco externo** (`AcervoImportar.tsx`): busca no Pixabay, seleção de até 20 fotos por envio, alocação e crédito do autor.
+- **Alocação:** a foto é global ou restrita a clientes e nichos. O card mostra o resumo da alocação e alerta "Sem vínculo — ninguém vê" quando a foto é restrita e sem destinatário.
+- **Conferir como um cliente vê:** troca a lista para `GET /api/v1/media/acervo/elegiveis/?client_id=`, a mesma regra que a geração usa para escolher imagem.
+
+As rotas do acervo na Plataforma são só da gestão: cliente recebe `403`. O modelo e as regras estão em [Mídia e acervo](/plataforma/apps/media).
+
+## Área `/agency`
+
+A agência opera a própria carteira com as telas de conteúdo do `/admin` (conteúdos, calendário, ideias, mídia, brandkit, briefing, redes, clientes). A Plataforma escopa tudo aos clientes dela. Não há trials, faturamento, time, usuários, logs nem as ferramentas internas da Miggo.
+
+| Rota | Tela | Módulo |
+|---|---|---|
+| `/agency` | `Agencia/AgenciaHome` | — |
+| `/agency/members` | `Agencia/Membros` (convidar membros e marcar módulos) | `membros` |
+| `/agency/plan` | `Agencia/Plano` (assinatura da agência, checkout e portal) | `plano` |
+| `/agency/brand` | `Agencia/Marca` (logo, paleta e elementos da marca) | `marca` |
+
+### Marca da agência
+
+Em domínio próprio de agência, o app inteiro assume a marca dela:
+
+- O `MarcaProvider` carrega a marca antes das rotas (pelo usuário ou, sem sessão, pelo host) e aplica a paleta. Veja [Estado e dados](/web/estado-e-dados).
+- `MarcaLogo` troca o logo da Miggo pelo da agência.
+- Em produção, o Nginx injeta título, favicon e meta-tags da marca no `index.html` por SSI (`/api/v1/agency/meta-tags/`).
+- O Google Analytics só carrega no host da Miggo.
+
+O backend da agência está em [Agência](/plataforma/apps/agencia).
+
+## Backend de cada tela
+
+| Tela | App da Plataforma |
+|---|---|
+| Clientes, usuários, time | [Clientes](/plataforma/apps/client), [Contas e usuários](/plataforma/apps/account) |
+| Faturamento, planos, trials | [Assinaturas e cobrança](/plataforma/apps/subscription) |
+| Benefícios | [Benefits](/plataforma/apps/benefits) |
+| Logs de integração | [Log de integrações](/plataforma/apps/integration) |
+| Conversas e fluxos | [Conversas de WhatsApp](/plataforma/apps/conversation) |
+| E-mail marketing | [Email marketing](/plataforma/apps/emailmarketing) |
+| Notificações | [Notification](/plataforma/apps/notification) |
+| Posts parados | [Posts e publicação](/plataforma/apps/post) |
+| Acervo, referências | [Mídia e acervo](/plataforma/apps/media), [Brandkit](/plataforma/apps/brandkit) |
+| Agências | [Agência](/plataforma/apps/agencia) |
+| Painel de IA | [Referência de API do MiggoAI](/miggoai/api-referencia) |

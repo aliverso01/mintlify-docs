@@ -1,0 +1,28 @@
+---
+title: "Versionamento"
+description: "Como as releases da Miggo são numeradas e registradas."
+icon: "tag"
+---
+
+## A versão é da plataforma, não do repo
+
+Uma release leva para a `main` dos três repositórios, de uma vez, as mudanças validadas em homologação. O número de versão (`v2.1.0`, `v2.2.0`, `v2.3.0`…) identifica essa entrega conjunta da plataforma, e cada release aparece no [Changelog](/releases) com a data em que foi publicada.
+
+| Onde a versão aparece | Valor |
+| --- | --- |
+| [Changelog](/releases) | uma entrada por release, com data e número |
+| Navbar deste portal | versão da última release |
+| `info.version` dos specs OpenAPI (`api-reference/*/openapi.json`) | versão da release em que o spec foi gerado |
+
+Os repositórios não carregam esse número no código. O `version` do `package.json` do `frontend-miggo` não acompanha as releases.
+
+## O que cada release registra
+
+Cada entrada do changelog traz, quando houver:
+
+- as **migrations** novas de cada serviço, na ordem em que precisam rodar;
+- as **variáveis de ambiente** novas ou alteradas;
+- os **contratos de API** que mudaram entre os serviços;
+- as **mudanças entregues**, com o card do Jira (`MIG-nnn`) de origem.
+
+O número do card aparece só no changelog. As demais páginas descrevem o sistema como ele é na `main`, sem histórico.

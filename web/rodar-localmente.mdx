@@ -1,0 +1,58 @@
+---
+title: "Rodar o Web app localmente"
+description: "Instala o frontend-miggo, configura as variáveis VITE_* e sobe o servidor de desenvolvimento."
+icon: "download"
+---
+
+O `frontend-miggo` é uma SPA em React 19 + Vite 6 + TypeScript. Em desenvolvimento ela fala com a Plataforma (`backend-miggo`) por um proxy do Vite e, no painel de IA do `/admin`, com o MiggoAI direto.
+
+## Pré-requisitos
+
+- **Node.js 20** (a imagem de produção usa `node:20-alpine`) e **npm** (o repo usa `package-lock.json`).
+- A Plataforma acessível — local na porta 8000 ou a homologação. Veja [Rodar a Plataforma localmente](/plataforma/rodar-localmente).
+- Para o painel de IA: o MiggoAI acessível (local na porta 8010). Veja [Rodar o MiggoAI localmente](/miggoai/rodar-localmente).
+
+<Steps>
+  <Step title="Instalar as dependências">
+    ```bash
+    cd frontend-miggo
+    npm install
+    ```
+  </Step>
+  <Step title="Criar o .env">
+    Copie o `.env.example` para `.env` e preencha as variáveis da tabela abaixo. O `.env` não é versionado.
+    ```bash
+    cp .env.example .env
+    ```
+  </Step>
+  <Step title="Subir o servidor">
+    ```bash
+    npm run dev
+    ```
+    O app abre em `http://localhost:5173`. Toda chamada a `/api/*` é repassada para `VITE_API_BASE_URL`.
+  </Step>
+</Steps>
+
+## Variáveis de ambiente
+
+O `.env` mínimo para desenvolvimento é `VITE_API_BASE_URL=http://localhost:8000`. A lista completa, com o que é público e o que vai só para o proxy, está em [Variáveis de ambiente do Web app](/web/configuracao).
+
+## Scripts
+
+| Script | Comando | O que faz |
+|---|---|---|
+| `dev` | `vite` | Servidor de desenvolvimento com HMR e proxy de `/api`. |
+| `build` | `tsc -b && vite build` | Checa tipos e gera o build de produção em `dist/`. |
+| `lint` | `eslint .` | ESLint no projeto inteiro. |
+| `preview` | `vite preview` | Serve o `dist/` para conferir o build. |
+
+Não há test runner no repositório. A verificação automatizada é `lint` + `build`; veja [Qualidade e verificação](/web/qualidade).
+
+## Problemas comuns
+
+| Sintoma | Causa provável |
+|---|---|
+| `/api/...` responde 404, 502 ou erro de CORS no dev | `VITE_API_BASE_URL` vazia ou apontando para um backend fora do ar. |
+| Login funciona, mas a sessão cai ao recarregar | O cookie do refresh não chegou ao `localhost`. O proxy reescreve o domínio do cookie (`cookieDomainRewrite`); confira que a chamada passou pelo proxy e não direto pela URL do backend. |
+| Painel de IA mostra "Não foi possível falar com o MiggoAI" | `VITE_MIGGOAI_API_URL` errada, MiggoAI parado ou CORS do MiggoAI sem `http://localhost:5173`. |
+| Botão do Google não aparece | Esperado sem `VITE_GOOGLE_CLIENT_ID`. |

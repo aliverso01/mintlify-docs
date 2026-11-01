@@ -1,0 +1,52 @@
+---
+title: "Notificações in-app"
+description: "Como o app notification grava e entrega as notificações do sininho para clientes, admins e agências."
+icon: "bell"
+---
+
+O app `notification` guarda as notificações in-app (o sininho). Não envia push nem e-mail: só persiste e expõe para leitura. Quem decide **quando** notificar é o código de outros apps, chamando `notify` ou `notify_admins` de `app/notification/utils.py`. Não há signals.
+
+Endpoints: veja a [Referência de API](/plataforma/api-referencia) (grupo *Notificações*): listar, histórico paginado e marcar como lida (uma ou todas).
+
+## Model
+
+| Model | Papel |
+|---|---|
+| `Notification` | `recipient` (`CustomUser`), `notification_type`, `title`, `message`, `link`, `is_read`, `created_at`. Não tem FK para `Client`. |
+
+`notification_type` é uma das choices de `NOTIFICATION_TYPES` em `models.py`, agrupadas em eventos do admin (ex.: `new_client`, `trial_expired`, `media_uploaded`), do cliente (ex.: `post_approved`, `payment_failed`, `trial_ending`) e de atividade cliente ↔ equipe (ex.: `content_sent_client`, `agenda_suggestion_created`). Tipo novo entra nessa lista.
+
+## Como notificar
+
+```python
+from app.notification.utils import notify, notify_admins
+
+# um usuário
+notify(user, 'post_approved', 'Post aprovado', 'Seu post foi aprovado.', '/content')
+
+# todos os admins (e a agência do cliente, se houver)
+notify_admins(
+    'media_uploaded', 'Novas mídias', f'Cliente {client.name} enviou mídias',
+    link='/admin/media', client=client,
+    dedupe_window_seconds=600, dedupe_key=client.name,
+)
+```
+
+Regras de `notify_admins`:
+
+- **Destinatários:** todo `CustomUser` com `role='admin'` e ativo. Se `client` for passado e pertencer a uma agência, os usuários da agência (papéis de agência) também recebem. A agência nunca recebe aviso de cliente que não é dela.
+- **Tipos silenciados para o admin Miggo:** `post_published` e `content_rejected` (`TIPOS_SILENCIADOS_ADMIN`). Eles continuam chegando ao cliente por `notify` e à agência do cliente.
+- **Deduplicação:** com `dedupe_window_seconds` e `dedupe_key`, quem já recebeu uma notificação do mesmo tipo com `dedupe_key` no `message` dentro da janela não recebe outra. Útil para uploads em lote.
+- Cria em lote (`bulk_create`).
+
+<Warning>
+O filtro por `client_id` do histórico procura o texto `client_id=<id>` em `message` ou `link`. Notificação sobre um cliente que deve aparecer nesse filtro precisa carregar esse padrão no `link`.
+</Warning>
+
+## Onde fica no código
+
+| Caminho | Conteúdo |
+|---|---|
+| `app/notification/models.py` | `Notification` e `NOTIFICATION_TYPES`. |
+| `app/notification/utils.py` | `notify`, `notify_admins`, `TIPOS_SILENCIADOS_ADMIN`. |
+| `app/notification/views.py` | Listagem, histórico e marcação de leitura. |

@@ -1,0 +1,192 @@
+---
+title: "Variáveis de ambiente da Plataforma"
+description: "Todas as variáveis que o backend-miggo lê, agrupadas por assunto, com obrigatoriedade, padrão e efeito."
+icon: "settings"
+---
+
+O backend lê a configuração do ambiente com `python-decouple` (`config(...)`), a partir das variáveis do processo ou de um `.env` na raiz. A lista de chaves, todas **sem valor**, fica no `.env.example` do repositório. Em produção e homologação os valores ficam na env de cada serviço no Dokploy.
+
+<Note>
+  **Obrigatória** = sem padrão no código: a importação das settings falha sem ela. As demais têm padrão e podem ficar de fora em desenvolvimento. Segredo nunca entra no repositório nem em log.
+</Note>
+
+## Django e segurança
+
+| Variável | Obrigatória | Padrão | Efeito |
+|---|---|---|---|
+| `DEBUG` | sim | — | Modo debug. Com `False` liga cookies seguros, `SECURE_PROXY_SSL_HEADER` e o redirecionamento HTTPS |
+| `SECRET_KEY` | não | chave insegura embutida | Troque em qualquer ambiente compartilhado |
+| `ALLOWED_HOSTS` | não | vazio | Lista CSV de hosts aceitos |
+| `CORS_ALLOWED_ORIGINS` | não | `*` | CSV. Só `*` libera todas as origens; outra lista restringe a ela |
+| `CSRF_TRUSTED_ORIGINS` | não | `http://localhost:5173` | CSV. Origem sem esquema ganha `https://`; `localhost` ganha também a variante `http://` |
+| `CSRF_COOKIE_DOMAIN` | não | `None` | Domínio do cookie CSRF |
+| `SECURE_SSL_REDIRECT` | não | `True` (só com `DEBUG=False`) | `/health/` fica fora do redirecionamento para o healthcheck do Dokploy |
+| `DJANGO_SETTINGS_MODULE` | não | `core.settings` | Troque só para rodar a suíte com outro settings |
+
+## Banco de dados
+
+| Variável | Obrigatória | Padrão | Efeito |
+|---|---|---|---|
+| `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT` | sim | — | Conexão PostgreSQL. Não há outro engine configurado |
+
+## URLs e domínios
+
+| Variável | Obrigatória | Padrão | Efeito |
+|---|---|---|---|
+| `FRONTEND_URL` | não | `https://app.miggomkt.com.br` | Base dos links de e-mail e dos redirects OAuth. **Homologação precisa definir** (`https://teste.miggomkt.com.br`), senão os links levam à produção |
+| `BACKEND_URL` | não | vazio | Base do link permanente de mídia enviado por WhatsApp e do rastreio de clique do e-mail marketing |
+| `PLATFORM_BASE_DOMAIN` | não | `localhost` com `DEBUG`, senão vazio | `<slug>.<domínio>` identifica a agência pelo subdomínio |
+| `HOSTS_PLATAFORMA` | não | vazio | CSV de hosts extras da Miggo, que nenhuma agência pode cadastrar como domínio próprio |
+| `PROXY_HOST_TOKEN` | não | vazio | Segredo que o nginx do front manda em `X-Miggo-Proxy-Token` para provar o host em `X-Miggo-Host`. Vazio, nenhuma requisição é reconhecida como de agência |
+| `AGENCIA_CNAME_ALVO` | não | vazio | Host para onde o CNAME do domínio da agência deve apontar |
+| `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ZONE_ID` | não | vazio | Cloudflare for SaaS, para o domínio próprio da agência. Sem eles o cadastro de domínio responde `503` e o resto da API segue |
+
+## Autenticação
+
+| Variável | Obrigatória | Padrão | Efeito |
+|---|---|---|---|
+| `JWT_PRIVATE_KEY` | sim | — | Chave privada RSA (PEM em uma linha, `\n` literal) que assina o JWT em RS256. A pública é derivada dela. Forma par com a `MIGGO_JWT_PUBLIC_KEY` do MiggoAI |
+| `JWT_REFRESH_COOKIE_NAME` | não | `miggo_refresh` | Nome do cookie httpOnly do refresh |
+| `JWT_REFRESH_COOKIE_SAMESITE` | não | `Lax` | `SameSite` do cookie do refresh |
+| `MIGGO_API_KEY` | sim | — | Chave da integração máquina-a-máquina com o MiggoAI |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | não | vazio | Login com Google. Sem o client ID, `/api/v1/account/google/` responde `503` |
+| `GOOGLE_AUTH_CLOCK_SKEW` | não | `10` | Tolerância de relógio, em segundos, ao validar o ID token do Google |
+
+Uso e fluxo dos tokens: [Autenticação](/plataforma/autenticacao).
+
+## E-mail
+
+| Variável | Obrigatória | Padrão | Efeito |
+|---|---|---|---|
+| `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD` | sim | — | SMTP (`EmailBackend` fixo) |
+| `EMAIL_USE_TLS`, `EMAIL_USE_SSL` | não | `False` | Criptografia da conexão SMTP |
+
+## Armazenamento e uploads
+
+| Variável | Obrigatória | Padrão | Efeito |
+|---|---|---|---|
+| `USE_S3` | não | `False` | Liga o storage S3 para mídia. Desligado, grava em `media/` no disco |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_STORAGE_BUCKET_NAME` | só com `USE_S3` | — | Credenciais e bucket |
+| `AWS_S3_REGION_NAME` | não | `us-east-1` | Região do bucket |
+| `AWS_S3_CUSTOM_DOMAIN` | não | vazio | Domínio público dos arquivos |
+| `AWS_S3_PROJECT_FOLDER` | não | `miggo-backend` | Prefixo das chaves no bucket |
+| `FILE_UPLOAD_MAX_MEMORY_SIZE`, `DATA_UPLOAD_MAX_MEMORY_SIZE` | não | `104857600` (100 MB) | Limites do Django por requisição |
+| `TRIAL_MEDIA_MAX_FILES` | não | `5` | Arquivos de mídia permitidos durante o teste grátis |
+| `UPLOAD_MAX_IMAGE_SIZE_MB`, `UPLOAD_MAX_VIDEO_SIZE_MB` | não | `10` / `50` | Tamanho máximo de imagem e vídeo no teste grátis |
+
+## Cobrança
+
+| Variável | Obrigatória | Padrão | Efeito |
+|---|---|---|---|
+| `STRIPE_API_KEY` | nos pontos de uso | vazio | Chave da Stripe do ambiente (de teste em homologação, de produção em produção). Sem ela nem `STRIPE_PROD_API_KEY`, a primeira chamada à Stripe levanta `ImproperlyConfigured` |
+| `STRIPE_PROD_API_KEY` | não | vazio | Outro nome para a mesma chave: definida, tem precedência sobre `STRIPE_API_KEY` (as duas diferentes geram um warning no log). Defina só uma |
+| `STRIPE_WEBHOOK_SECRET` | não | vazio | Valida a assinatura de `/webhooks/`. Vazio, o webhook responde `503` |
+| `STRIPE_TRIAL_DAYS` | não | `7` | Dias de teste grátis |
+| `BILLING_GRACE_DAYS` | não | `5` | Carência antes de cortar o acesso de quem está em atraso |
+| `ASAAS_API_KEY` | não | vazio | Chave do Asaas |
+| `ASAAS_BASE_URL` | não | `https://api.asaas.com/v3` | Base da API do Asaas |
+| `ASAAS_WEBHOOK_TOKEN` | não | vazio | Token do header `asaas-access-token` em `/webhooks/asas/`. Vazio, o webhook responde `503` |
+
+## IA e MiggoAI
+
+| Variável | Obrigatória | Padrão | Efeito |
+|---|---|---|---|
+| `OPENAI_API_KEY` | nos pontos de uso | vazio nas settings | Chamadas diretas à OpenAI feitas pelo backend (onboarding, brandkit, mídia, suporte). Os pontos de uso leem a variável sem padrão: ausente, a chamada levanta `UndefinedValueError` |
+| `OPENAI_API_URL` | não | `https://api.openai.com/v1/` | Base da API da OpenAI |
+| `OPENAI_MODEL` | não | `gpt-4o-mini` | Modelo de texto padrão |
+| `OPENAI_MODEL_ESTRATEGIA` | não | o mesmo de `OPENAI_MODEL` | Modelo da estratégia do onboarding |
+| `MEDIA_ANALYSIS_MODEL` | não | `gpt-4o-mini` | Modelo que descreve as imagens da galeria |
+| `COPY_OCR_MODEL` | não | `gpt-4o` | Leitura de texto em referências de copy |
+| `MIGGOAI_V2_API_URL` | não | cai em `MIGGOAI_API_URL` | Base do MiggoAI (`/api/generations/...`). Aponte para o MiggoAI **do mesmo ambiente** |
+| `MIGGOAI_V2_API_KEY` | não | vazio | `Api-Key` aceita pelo MiggoAI. Configurada, dispensa o login por usuário e senha |
+| `MIGGOAI_V2_USERNAME`, `MIGGOAI_V2_PASSWORD` | não | — | Login no MiggoAI quando não há `MIGGOAI_V2_API_KEY` |
+| `MIGGOAI_API_URL` | não | `http://localhost:10000` | Base da API antiga de geração (`/api/generate/...`) |
+| `MIGGOAI_USERNAME`, `MIGGOAI_PASSWORD` | nos pontos de uso | — | Login na API de geração quando não há `MIGGOAI_V2_API_KEY`. Sem padrão: ausentes, a chamada levanta `UndefinedValueError` |
+| `ACERVO_SERVICE_TOKEN` | não | vazio | Credencial de serviço (header `Acervo-Service-Token`) das rotas `media/acervo/elegiveis/` e `media/acervo/uso/`. Mesma string no MiggoAI. Vazia, o caminho de serviço é recusado |
+| `PIXABAY_API_KEY` | não | vazio | Banco de imagens Pixabay no acervo. Vazia, a fonte fica indisponível |
+| `GRID_ASYNC_ESPERA_MAXIMA` | não | `300` s | Quanto o backend espera pelo grid quando o MiggoAI responde `202` |
+| `PERFIL_ESPERA_NA_REQUEST`, `PERFIL_ESPERA_NA_TASK` | não | `30` s / `840` s | Espera pelas peças de perfil (bio, banner, destaques) no request e na task |
+
+## Publicação nas redes (Zernio)
+
+| Variável | Obrigatória | Padrão | Efeito |
+|---|---|---|---|
+| `LATE_API_KEY` | nos pontos de uso | — | Chave do Zernio. Lida sem padrão: ausente, publicação e métricas levantam `UndefinedValueError`. **Homologação nunca usa a chave de produção**: ela publica de verdade na conta do cliente |
+| `ZERNIO_PUBLISH_TIMEOUT` | não | `120` s | Espera nas chamadas de publicação (presign e `POST /v1/posts`) |
+| `ZERNIO_WEBHOOK_TOKEN` | não | vazio | Token do header `Zernio-Webhook-Token` em `/webhooks/zernio/status/`. Vazio, o webhook responde `503` |
+
+## WhatsApp e ManyChat
+
+| Variável | Obrigatória | Padrão | Efeito |
+|---|---|---|---|
+| `MANYCHAT_API_KEY` | nos pontos de uso | — | API do ManyChat. Lida quando o código chama o ManyChat; sem ela essas chamadas falham |
+| `MANYCHAT_WEBHOOK_TOKEN` | não | vazio | Token dos webhooks `/webhooks/manychat/*`. Vazio, respondem `503` |
+| `CONTENT_APPROVATION_FLOW_ID` | não | flow padrão | Aprovação de conteúdo quando a rede do post **não** está conectada (o cliente publica) |
+| `CONTENT_APPROVATION_CONNECTED_FLOW_ID` | não | flow padrão | Aprovação quando a rede está conectada (a Miggo publica) |
+| `GRID_APPROVAL_FLOW_ID` | não | flow padrão | Cobrança de aprovação do grid |
+| `GRID_APPROVAL_MAX_REMINDERS` | não | `3` | Máximo de lembretes de aprovação do grid |
+| `DYNAMIC_FLOW_STARTER_FLOW_ID` | não | vazio | Flow casca do Dynamic Block |
+| `TRIAL_ENDING_FLOW_ID`, `TRIAL_ENDED_FLOW_ID` | não | vazio | Avisos de "teste acabando" e "teste terminou". Vazios, o aviso por WhatsApp não sai |
+| `WHATSAPP_SEND_FLOW_DELAY` | não | `2.0` s | Pausa antes de disparar um flow |
+| `WHATSAPP_FLOW_RETRY_ATTEMPTS`, `WHATSAPP_FLOW_RETRY_BACKOFF` | não | `8` / `10.0` s | Retentativas do disparo de flow |
+
+## Onboarding e raspagem
+
+| Variável | Obrigatória | Padrão | Efeito |
+|---|---|---|---|
+| `APIFY_TOKEN` | não | vazio | Raspagem do Instagram |
+| `ONBOARDING_IG_MIN_POSTS` | não | `3` | Mínimo de posts para analisar o perfil |
+| `ONBOARDING_WEBSITE_BUDGET` | não | `180` s | Orçamento de leitura do site do cliente |
+| `ONBOARDING_ANALYSIS_STALL` | não | `900` s | Tempo sem progresso que marca a análise como travada |
+| `ONBOARDING_GRID_*` | não | por variável | Backoff, heartbeat, retentativas e alertas da geração do grid do onboarding |
+
+## Suporte e Jira
+
+| Variável | Obrigatória | Padrão | Efeito |
+|---|---|---|---|
+| `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN` | não | vazio | Abertura de issue a partir de ticket de suporte. Sem elas, a integração não faz nada |
+| `JIRA_PROJECT_KEY` | não | `MIG` | Projeto onde o issue nasce |
+| `JIRA_ISSUE_TYPE` | não | `Suporte` | Tipo do issue |
+| `JIRA_BOARD_ID` | não | vazio | Board consultado na sincronização de status |
+| `JIRA_WEBHOOK_TOKEN` | não | vazio | Token de `/api/v1/account/support/jira-webhook/`. Vazio, responde `503` |
+
+## Celery, Redis e Flower
+
+Todas opcionais: **sem `REDIS_URL` o Celery roda em modo eager** e nada conecta. Detalhes e flags por fluxo em [Filas e Celery](/plataforma/filas-e-celery).
+
+| Variável | Padrão | Efeito |
+|---|---|---|
+| `REDIS_URL` | vazio (eager) | Broker e result backend. Segredo |
+| `ROLE` | `web` | `web` sobe gunicorn + Flower; `worker` sobe o Celery na mesma imagem; outro valor recusa subir |
+| `CELERY_REDIS_DB` | `1` | DB do Redis. Use `0` em Redis gerenciado de um DB só; igual no web e no worker |
+| `CELERY_TASK_TIME_LIMIT`, `CELERY_TASK_SOFT_TIME_LIMIT` | `900` / `840` s | Limite padrão de uma task |
+| `CELERY_VISIBILITY_TIMEOUT` | `max(7200, 2 × time limit)` | Tem de ser maior que o time limit, senão a aplicação recusa subir |
+| `CELERY_BROKER_POOL_LIMIT`, `CELERY_REDIS_MAX_CONNECTIONS` | `3` / `10` | Conexões por processo com o Redis |
+| `CELERY_WORKER_CONCURRENCY` | `2` | Concorrência do worker |
+| `FLOWER_BASIC_AUTH` | — | `usuario:senha`, senha com 12 caracteres ou mais. Sem ela o Flower não sobe; o web segue. Segredo |
+| `FLOWER_ENABLED`, `FLOWER_PORT`, `FLOWER_ADDRESS` | `1` / `5555` / `0.0.0.0` | Liga e posiciona o Flower |
+| `CACHE_REDIS_DB` | `3` | DB do cache compartilhado, usado só com `APIFY_ASYNC=1` |
+| `*_ASYNC` | vazio | Uma flag por fluxo e uma por command agendado |
+| `*_TASK_TIME_LIMIT`, `*_TASK_SOFT_TIME_LIMIT` | por fluxo | Limites de cada task, validados na carga |
+
+## Logging
+
+| Variável | Padrão | Efeito |
+|---|---|---|
+| `LOG_LEVEL` | `INFO` | Nível dos loggers da aplicação (`app`) e do console. Valor inválido volta ao padrão |
+| `DJANGO_LOG_LEVEL` | `INFO` | Nível do logger `django` |
+| `LOG_FILE` | vazio | Se preenchido, espelha os logs num arquivo rotativo (10 MB, 5 backups). Sem permissão de escrita, cai para só console |
+
+## Configuração avançada
+
+O que não vem do ambiente e só muda no código (`core/settings.py`):
+
+| Item | Valor |
+|---|---|
+| Apps | 17 apps de negócio em `app/`, mais `core` (commands de infraestrutura) — ver [Estrutura](/plataforma/estrutura) |
+| DRF | autenticação `JWTAuthentication`; permissão padrão `HasAPIKeyOrIsAuthenticated`; filtros `DjangoFilterBackend`, `SearchFilter`, `OrderingFilter`; schema `drf_spectacular` |
+| JWT | RS256, access de 30 min, refresh de 7 dias com rotação, audiência `miggo` e `miggoai` |
+| Middleware próprio | `app.history.middleware.CurrentRequestMiddleware`, depois da autenticação, expõe o autor da requisição aos signals de auditoria |
+| Estáticos | WhiteNoise, `STATIC_ROOT = static/`, coletados no boot do container |
+| Fuso e idioma | `TIME_ZONE='America/Sao_Paulo'`, `USE_TZ=True` (o banco guarda em UTC), `LANGUAGE_CODE='pt-br'` |
+| `CRONJOBS` | só `app.post.cron.send_scheduled_reviews`; as demais rotinas são Schedules do Dokploy ([Tarefas agendadas](/plataforma/tarefas-agendadas)) |

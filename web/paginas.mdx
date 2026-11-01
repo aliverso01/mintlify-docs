@@ -1,0 +1,89 @@
+---
+title: "Telas e rotas do Web app"
+description: "Tabela de todas as rotas do frontend-miggo: caminho, tela, área e módulo exigido."
+icon: "layout-dashboard"
+---
+
+Fonte: `src/App.tsx`. As telas ficam em `src/pages/<Pasta>/`. Como as áreas funcionam está em [Roteamento e áreas](/web/roteamento).
+
+## Uma tela, várias áreas
+
+A maioria das telas de operação é montada em mais de uma área com **o mesmo componente**. O componente de rota é um container que escolhe a visão pelo papel do usuário. Exemplos: `Dashboard/Home` renderiza `DashboardAdmin` ou `DashboardClient`; `Content/ContentKanban`, `Agenda/AgendaSugestao` e `Brandkit/BrandkitPage` seguem o mesmo padrão. Por isso nenhum componente escreve o prefixo da área à mão (use `useRoleArea().path()`).
+
+## Rotas públicas e de fluxo
+
+| Rota | Tela | Acesso |
+|---|---|---|
+| `/signin` | `AuthPages/SignIn` | Pública. Com sessão, volta para o `?next=` (só caminho interno) ou para `/`. |
+| `/signup` | redireciona para `/onboarding` | Pública |
+| `/reset-password` | `AuthPages/ResetPassword` | Pública |
+| `/onboarding` | `Onboarding/OnboardingShell` | Pública (a etapa 1 cria a conta). Veja [Onboarding no Web app](/web/onboarding). |
+| `/midia/:token` | `Media/MediaDownloadPage` | Pública. Quem autoriza é o token assinado do link enviado por WhatsApp. |
+| `/terms`, `/privacy` | `Legal/TermsOfUse`, `Legal/PrivacyPolicy` | Pública |
+| `/grid/aprovar` | `Grid/GridApprovalPage` | Login, fora dos guards de onboarding e assinatura (aprovação do grid por link). |
+| `/onboarding/conectado/:platform/:clientId/*` | `Onboarding/SocialConnected` | Login. Retorno do OAuth de rede social iniciado no onboarding. |
+| `/` | `RoleHomeRedirect` | Login. Manda para a home da área. |
+| `*` | `OtherPage/NotFound` | — |
+
+## Operação de conteúdo (`/admin`, `/agency` e `/app`)
+
+Mesmos subcaminhos nas três áreas. No `/admin` e no `/agency` a tela exige o módulo indicado; no `/app` não há módulo.
+
+| Subcaminho | Tela | Módulo (`/admin`, `/agency`) |
+|---|---|---|
+| (index) | `Dashboard/Home` no `/admin` e `/app`; `Agencia/AgenciaHome` no `/agency` | — |
+| `analytics` | `Dashboard/AnalyticsDashboard` | — |
+| `profile` | `UserProfiles` | — |
+| `content` | `Content/ContentKanban` | `conteudo` |
+| `content/parados` | `Content/StalledPosts` (fila de posts parados) | `conteudo`; não existe no `/app` |
+| `editorial-calendar` | `EditorialCalendar/EditorialCalendar` | `conteudo` |
+| `agenda/sugestao` | `Agenda/AgendaSugestao` | `conteudo` |
+| `media-library` | `Media/MediaLibrary` | `conteudo` |
+| `brandkit` | `Brandkit/BrandkitPage` | `conteudo` |
+| `briefing` | `Briefing/Briefing` | `clientes` |
+| `social-networks` | `SocialNetworks/SocialNetworksPage` | `clientes` |
+| `history` | `History/HistoryList` | — |
+| `notifications` | `Admin/NotificationHistory` | — |
+| `clients` | `Clients/ClientsList` | `clientes`; não existe no `/app` |
+
+## Só no `/app` (cliente)
+
+| Rota | Tela |
+|---|---|
+| `/app/beneficios` | `Benefits/BenefitsPage` (vitrine aberta a todos; cupom, link e instruções só para assinante pagante) |
+| `/app/plans` | `Subscription/Plans` |
+| `/app/billing` | `Subscription/ClientBilling` |
+| `/app/subscription/checkout`, `/success`, `/cancel` | `Subscription/Checkout`, `Success`, `Cancel` |
+| `/app/support` | `OtherPage/SupportPage` |
+| `/app/{instagram,linkedin,whatsapp,tiktok,facebook}/success/:clientId/*` | `AuthPages/InstagramSuccess` (retorno do OAuth de rede social, fora do onboarding) |
+
+## Só no `/agency` (agência)
+
+| Rota | Tela | Módulo |
+|---|---|---|
+| `/agency/members` | `Agencia/Membros` | `membros` |
+| `/agency/plan` | `Agencia/Plano` | `plano` |
+| `/agency/brand` | `Agencia/Marca` | `marca` |
+
+## Só no `/admin` (equipe Miggo)
+
+| Rota | Tela | Acesso |
+|---|---|---|
+| `/admin/trials` | `Admin/TrialsPanel` | Módulo `trials` |
+| `/admin/users` | `Users/UsersList` | Módulo `clientes` |
+| `/admin/benefits` | `Admin/BenefitsAdmin` | Módulo `beneficios` |
+| `/admin/logs` | `Admin/IntegrationLogs` | Módulo `logs` |
+| `/admin/support` | `Admin/AdminSupportPage` | Módulo `suporte` |
+| `/admin/conversations` | `Admin/ConversationsPage` | Módulo `conversas` |
+| `/admin/message-flows` | `Admin/MessageFlowsPage` | Módulo `conversas` |
+| `/admin/email-marketing`, `/admin/email-marketing/:id` | `Admin/EmailMarketingPage`, `Admin/EmailCampaignEditorPage` | Módulo `email_marketing` |
+| `/admin/design-references` | `Admin/DesignReferences` | Módulo `acervo` |
+| `/admin/acervo` | redireciona para `/admin/design-references?aba=acervo` | — |
+| `/admin/plans` | `Admin/PlansEntry` | Gestão (com `financeiro`, cai na aba Planos de `/admin/billing`) |
+| `/admin/billing` | `Admin/BillingModule` | Módulo `financeiro` |
+| `/admin/financial` | redireciona para `/admin/billing` | Módulo `financeiro` |
+| `/admin/team` | `Admin/TeamManagement` | Módulo `time` |
+| `/admin/agencies`, `/admin/agencies/:id` | `Admin/AgenciasList`, `Admin/AgenciaDetalhe` | Admin pleno (`AdminRoute`) |
+| `/admin/miggoai/*` | `Admin/MiggoAI/*` | Gestão. Veja [Painel de IA](/web/painel-de-ia). |
+
+As telas do `/admin` estão descritas em [Área administrativa](/web/area-admin).

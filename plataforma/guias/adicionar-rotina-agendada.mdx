@@ -1,0 +1,79 @@
+---
+title: "Adicionar uma rotina agendada na Plataforma"
+description: "Passo a passo para criar um management command agendado no Dokploy que também pode rodar no worker do Celery."
+icon: "calendar-clock"
+---
+
+**Objetivo:** uma rotina nova (aqui, `limpar_rascunhos`) que o Dokploy dispara no horário e que, com a fila ligada, só enfileira e deixa o worker executar.
+
+## Pré-requisitos
+
+- Plataforma rodando localmente ([Rodar a Plataforma localmente](/plataforma/rodar-localmente)).
+- A regra que a rotina aplica já existe numa função de serviço do app. O command só chama essa função.
+- Para testar a fila: `REDIS_URL` e um worker (`ROLE=worker`). Veja [Filas e Celery na Plataforma](/plataforma/filas-e-celery).
+
+## Passos
+
+<Steps>
+  <Step title="Crie o management command">
+    Em `app/<app>/management/commands/limpar_rascunhos.py`. A primeira linha do `handle` decide entre enfileirar e rodar no processo:
+
+    ```python
+    from django.core.management.base import BaseCommand
+
+    from core import rotinas
+
+
+    class Command(BaseCommand):
+        help = 'Apaga rascunhos abandonados há mais de 30 dias.'
+
+        def add_arguments(self, parser):
+            parser.add_argument('--dry-run', action='store_true')
+
+        def handle(self, *args, **options):
+            if rotinas.enfileirou(self, 'limpar_rascunhos', options):
+                return
+            # chame aqui a função de serviço e escreva um resumo no stdout
+    ```
+
+    A rotina tem de ser idempotente: rodar duas vezes seguidas não pode ter efeito extra. Não há retry; quem reexecuta é o próximo schedule.
+  </Step>
+  <Step title="Registre em ROTINAS">
+    Acrescente a entrada em `core/rotinas.py::ROTINAS`:
+
+    ```python
+    'limpar_rascunhos': {
+        'expires': DIARIA, 'fila': FILA_INTEGRACOES, 'opcoes': ('dry_run',),
+        'efetivo': lambda o: not o.get('dry_run'),
+    },
+    ```
+
+    - `expires`: por quanto tempo o disparo vale na fila. Use a constante do intervalo do schedule (`DIARIA`, `A_CADA_6H`, `HORARIA`, `A_CADA_15MIN`, `A_CADA_10MIN`, `A_CADA_5MIN`).
+    - `opcoes`: só os argumentos que viajam para a task (valores primitivos).
+    - `efetivo`: devolve falso quando a execução não tem efeito (dry-run); aí o command roda no processo, sem fila.
+
+    A task `core.rodar_rotina` recusa nome fora de `ROTINAS` e segura uma execução por vez com advisory lock do Postgres.
+  </Step>
+  <Step title="Teste no processo">
+    ```bash
+    python manage.py limpar_rascunhos --dry-run
+    python manage.py limpar_rascunhos
+    ```
+  </Step>
+  <Step title="Teste na fila">
+    Com `REDIS_URL` e o worker no ar, rode com a flag da rotina:
+
+    ```bash
+    LIMPAR_RASCUNHOS_ASYNC=1 python manage.py limpar_rascunhos
+    ```
+  </Step>
+  <Step title="Agende no Dokploy">
+    Cadastre o schedule em cada ambiente (homologação e produção) com o comando e o cron. Para executar no worker, ponha `LIMPAR_RASCUNHOS_ASYNC=1` na env do schedule. Depois, acrescente a linha em [Tarefas agendadas da Plataforma](/plataforma/tarefas-agendadas) e em [Comandos da Plataforma](/plataforma/comandos).
+  </Step>
+</Steps>
+
+## Resultado
+
+- No processo, o command termina com o resumo que você escreveu.
+- Na fila, ele imprime `[rotina] limpar_rascunhos enfileirada na fila 'integracoes'.` e sai; o log do worker registra `[rotina] limpar_rascunhos: <última linha da saída>`.
+- Broker fora do ar: o command registra o aviso e roda no processo, sem perder a execução.

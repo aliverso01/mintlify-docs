@@ -1,0 +1,90 @@
+---
+title: "Clientes"
+description: "Registro do cliente, ativação, ciclo de vida, trials, predefinições de criação e materiais da marca no app client."
+icon: "briefcase"
+---
+
+O app `client` guarda o `Client`, dono de tudo que os outros apps referenciam (brandkit, assinatura, posts, mídia). Ele controla a ativação da conta, calcula o ciclo de vida do cliente, mantém o painel de trials, as predefinições de criação de conteúdo (assinatura visual, foto real, workflow do MiggoAI) e os materiais de marca que alimentam o briefing.
+
+## Models principais
+
+| Model | Papel |
+|---|---|
+| `Client` | Cliente final. `OneToOne` com `CustomUser`; `agencia` (FK opcional) quando o cliente pertence a uma agência; `niche` (FK para `Niche`); `miggoai_workflow_enabled` e `generation_requested_at` controlam a geração automática. |
+| `ClientMeta` | Par chave/valor do cliente: campos do briefing, código de ativação, raspagem do Instagram, `brand_knowledge`. Sem `unique_together` em `(client, key)`: grave com upsert. |
+| `Niche` | Taxonomia de nicho de mercado, usada pelo acervo para restringir fotos por segmento. Começa com a linha "Não informado". |
+| `ClientSignaturePreference` | Assinatura manual por formato (`story`, `feed`, `carrossel`, `reel`): `logo`, `instagram`, `text` ou `none`. Único por `(client, format)`. |
+| `ClientMediaPreference` | Uso de foto real na geração de imagem, um por cliente: `usage` (`always`, `never`, `alternate`), `reuse_days` (janela anti-repetição) e `use_stock` (permite o banco de imagens). |
+| `BrandMaterial` | Material de referência da marca (PDF, DOCX, PPTX, TXT ou texto colado). Só o texto extraído é guardado. |
+
+## Ciclo de vida e onboarding
+
+- **Ativação.** O signal de `account` cria o `Client` com um `ClientMeta` `activation_code`. O código vai por e-mail; usá-lo ativa a conta (`active = True`) e o apaga.
+- **Etapa do onboarding.** `Client.onboarding_step` (0 a 5) é o marco legado e nunca regride. A etapa real vem de `OnboardingSession` (app [`onboarding`](/plataforma/apps/onboarding)). `lifecycle.annotate_lifecycle` anota sem N+1 a etapa efetiva (`stage`, `stage_estimated` quando veio do legado) e o `lifecycle`:
+
+| `lifecycle` | Regra |
+|---|---|
+| `lead` | Trial em vigor e onboarding incompleto. |
+| `active` | Assinatura ativa ou trial em vigor. |
+| `unconverted` | Onboarding concluído sem nunca ter assinado. |
+| `churned` | Já assinou e a assinatura foi encerrada. |
+| `inactive` | Abandonou o onboarding sem nunca assinar, ou está em assinatura `PENDING`, `UNPAID`, `EXPIRED`, `PAUSED` ou `CANCELLED`. |
+
+- **Status do onboarding.** O endpoint de status recalcula a etapa a partir de condições reais (conta verificada, assinatura, rede conectada, logo no brandkit, briefing) e reconcilia as conexões com o Zernio quando o webhook `account.connected` não chegou. Quem já comprou (`trials.has_purchased`) é sempre tratado como concluído.
+
+## Trials
+
+`trials.py` monta o painel de trials do `/admin`: um checklist de 10 itens, dos quais são obrigatórios `briefing`, `colors`, `style`, `calendar` e `grid_generated`. O estágio é `completo` (obrigatórios feitos), `novo` (cadastro há menos de 7 dias) ou `incompleto`. Quem já comprou sai do painel. Quando um lead fecha os obrigatórios, `check_trial_ready` avisa os admins uma única vez.
+
+**Suspensão por fim de trial** é um filtro de leitura, não um campo: `app.subscription.access.com_direito_de_publicacao` exclui quem não pode publicar (trial vencido, inadimplente fora da carência, sem assinatura). O cliente volta sozinho quando assina.
+
+## Geração automática pelo MiggoAI
+
+- `miggoai_workflow_enabled` liga a rodada diária. Este backend não chama o MiggoAI ao ligar: o MiggoAI lê a carteira por `GET /api/v1/client/list/?miggoai_workflow_enabled=true`.
+- Com `?miggoai_workflow_enabled=true` ou `?generation_requested_at__isnull=false`, a listagem devolve **só clientes com direito de publicação**. O painel do admin e a consulta por id continuam vendo a base inteira.
+- **Criar agora** marca `generation_requested_at` e chama `POST /api/generations/gerar-agora/` do MiggoAI. A resposta traz `disparo: 'imediato'` só quando o MiggoAI responde `status: 'aceito'`; qualquer outro desfecho (fila, erro, resposta inesperada) vira `disparo: 'fila'`, e a rodada seguinte do MiggoAI atende o pedido pendente.
+
+<Note>
+Ligar o workflow não reativa um cliente suspenso por trial. Ele só volta a receber geração automática ao assinar ou ter o teste estendido.
+</Note>
+
+## Predefinições de criação
+
+- **Assinatura visual** (`signature.py`): sem preferência manual, vale o padrão automático, calculado ao vivo: logo do brandkit, senão o `@` do Instagram, senão "Nome da marca | Ramo". `mode='auto'` remove a preferência manual.
+- **Foto real** (`ClientMediaPreference`): `usage` diz quando usar foto real, `use_stock` diz se o banco de imagens entra. `reuse_days` é a mesma janela para a galeria do cliente e para o banco. Quem lê é o MiggoAI, na geração de imagem.
+
+## Briefing assistido
+
+- **Instagram.** A raspagem do perfil público usa o Apify (`instagram.py`), com cache de 1 hora por perfil. O JSON bruto vai para `ClientMeta` `scrapping_instagram`, a OpenAI propõe o briefing e a foto de perfil vira logo se o cliente ainda não tiver um e a imagem for classificada como logotipo. Em `preview`, nada do briefing é gravado: o cliente revisa a proposta e aplica.
+- **Materiais da marca** (`brand_materials.py`): aceita `.pdf`, `.docx`, `.pptx` e `.txt` até 10 MB, ou texto colado até 50.000 caracteres, no máximo 10 materiais por cliente. Há proteção contra zip bomb e limite de páginas e slides. A IA propõe valores para as 16 chaves de `BRIEFING_PROPOSAL_KEYS`; o cliente confirma e aplica.
+- **`brand_knowledge`.** Resumo de até 1.500 caracteres de todos os materiais, refeito a cada inclusão ou remoção de material — na fila `leve` do Celery (task `client.atualizar_brand_knowledge`) com `BRANDKNOWLEDGE_ASYNC=1` e fila ativa, ou em segundo plano no próprio processo sem ela, e consumido pelo MiggoAI. Sem materiais, a chave é apagada.
+- **Bio.** A geração de bio e nome de exibição é feita pelo MiggoAI, com fallback determinístico quando ele falha.
+
+Throttles: análise de Instagram e envio de materiais limitados a 20 requisições por hora por cliente; equipe e Api-Key ficam isentas na análise de Instagram.
+
+<Warning>
+A chave do Apify (`APIFY_TOKEN`) nunca vai em URL, log ou mensagem de erro. Com `APIFY_ASYNC=1` e fila ativa, o veredito do `@` roda em task; `APIFY_JOBS_ASYNC=1` faz a análise responder `202` com job, e só pode ser ligada com o front preparado para tratar o `202`.
+</Warning>
+
+## Comandos
+
+| Comando | Para quê |
+|---|---|
+| `fix_active_onboarding` | Destrava clientes ativos presos no onboarding. Dry-run por padrão; `--apply` grava. |
+| `merge_client_accounts` | Consolida duas contas do mesmo cliente (`--origem`, `--destino`). Dry-run por padrão, com backup JSON antes de gravar. |
+
+Detalhes em [Comandos](/plataforma/comandos).
+
+## Onde fica no código
+
+| Caminho | Conteúdo |
+|---|---|
+| `app/client/models.py` | Models do app |
+| `app/client/views.py` | Endpoints de cliente, onboarding status, trials, predefinições, Instagram, materiais |
+| `app/client/lifecycle.py` | Etapa efetiva e `lifecycle` |
+| `app/client/trials.py` | Checklist e funil de trials |
+| `app/client/signature.py` | Assinatura automática e efetiva |
+| `app/client/instagram.py` | Cliente do Apify |
+| `app/client/brand_materials.py`, `tasks.py` | Materiais, propostas de briefing e `brand_knowledge` |
+
+Endpoints: veja a [Referência de API](/plataforma/api-referencia).

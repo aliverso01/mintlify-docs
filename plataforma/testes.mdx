@@ -1,0 +1,87 @@
+---
+title: "Testes da Plataforma"
+description: "Como rodar a suíte automatizada do backend-miggo, inclusive sem permissão de criar banco no Postgres local."
+icon: "flask-conical"
+---
+
+A suíte usa o test runner padrão do Django (`django.test.TestCase` e `APITestCase` do DRF). Os testes ficam dentro de cada app, em `app/<app>/tests.py` e em módulos `tests_*.py` ao lado — não há pasta central de testes.
+
+## Rodar
+
+```bash
+python manage.py test app                                   # todos os apps
+python manage.py test app.subscription                      # um app
+python manage.py test app.subscription.tests.CheckInvoicesTests   # uma classe
+```
+
+<Warning>
+  Passe sempre o rótulo `app` (ou um app específico). `python manage.py test` sem rótulo também descobre o `test_grid.py` da raiz, que é um script manual e não carrega como módulo de teste.
+</Warning>
+
+## Sem permissão para criar o banco de teste
+
+O `manage.py test` cria e destrói um banco de teste no Postgres. O usuário local das `DB_*` costuma não ter `CREATEDB`, e o comando aborta antes do primeiro teste. A saída é rodar a suíte com SQLite em memória, por um settings de teste que herda tudo de `core.settings` e troca só o que importa para a suíte.
+
+<Steps>
+  <Step title="Criar o settings de teste">
+    Fora do repositório (ou num arquivo ignorado pelo git), crie `test_settings.py`:
+
+    ```python test_settings.py
+    from core.settings import *  # noqa: F401,F403
+
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': ':memory:',
+        }
+    }
+
+    # Hash barato: a suíte cria muitos usuários e o PBKDF2 domina o tempo.
+    PASSWORD_HASHERS = ['django.contrib.auth.hashers.MD5PasswordHasher']
+
+    EMAIL_BACKEND = 'django.core.mail.backends.locmem.EmailBackend'
+
+    # Nenhum teste deve depender de cache compartilhado entre processos.
+    CACHES = {'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'}}
+    ```
+  </Step>
+  <Step title="Rodar apontando para ele">
+    Coloque a pasta do arquivo no `PYTHONPATH` e passe `--settings`:
+
+    ```bash
+    PYTHONPATH=/caminho/da/pasta python manage.py test app --settings=test_settings
+    ```
+  </Step>
+</Steps>
+
+O `.env` continua sendo lido: as variáveis obrigatórias (`DEBUG`, `DB_*`, `EMAIL_*`, `MIGGO_API_KEY`, `JWT_PRIVATE_KEY`) precisam existir mesmo com o banco trocado.
+
+<Note>
+  SQLite não é Postgres. Testes que dependem de recurso específico do Postgres (advisory lock, por exemplo) já tratam o `connection.vendor`; um teste novo que dependa disso deve fazer o mesmo.
+</Note>
+
+## O que a suíte cobre
+
+| App | Foco dos testes |
+|---|---|
+| `onboarding` | O maior conjunto: etapas, análise, grid (geração, retentativa, concorrência, crédito, travamento), aprovação e retomada da esteira |
+| `media` | Limites de upload, análise por IA, fila da galeria, acervo, upload em partes |
+| `client` | Ciclo de vida, trials, raspagem do Instagram, geração sob demanda, plano em vigor |
+| `post` | Listagem, publicação no Zernio (multi-rede, fila), agendamento, correção de perfil |
+| `conversation` | Motor de flows do ManyChat, webhooks e Dynamic Block |
+| `subscription` | Faturas da Stripe, reconciliação, acesso de pagante, sync em fila |
+| `account` | Refresh de token, módulos, webhook do Jira |
+| `agencia` | Agência, domínio próprio e marca |
+| `emailmarketing`, `editorial_calendar`, `brandkit`, `benefits` | Régua de e-mails, catálogo editorial, importação de site e paywall de benefícios |
+
+## A pasta `testes/`
+
+A pasta `testes/` na raiz **não é a suíte**. São scripts manuais (`populate_all.py` e chamadas a serviços reais como Stripe e ManyChat), executados com `python testes/<script>.py`. Alguns usam credenciais reais do `.env`: nunca os rode em CI nem contra produção sem saber o que fazem.
+
+## Antes de abrir um PR
+
+```bash
+python manage.py check
+python manage.py makemigrations --check
+python manage.py test app.<app-tocado> --settings=test_settings
+```

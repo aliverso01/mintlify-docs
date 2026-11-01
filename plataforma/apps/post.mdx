@@ -1,0 +1,104 @@
+---
+title: "Posts e publicação"
+description: "Conteúdo, status, aprovação por WhatsApp, publicação por rede no Zernio, integrações de redes e insights no app post."
+icon: "images"
+---
+
+O app `post` modela o conteúdo produzido para o cliente (`Post`) e tudo o que acontece com ele até a rede social: formato, status e histórico de transições, mídia vinculada, envio para aprovação por WhatsApp, publicação por rede via Zernio, conexões das redes do cliente, configurações de perfil (bio, capa, destaques) e insights de desempenho. A visão de ponta a ponta está em [Ciclo do conteúdo](/plataforma/ciclo-do-conteudo).
+
+## Models principais
+
+| Model | Papel |
+|---|---|
+| `Post` | A peça: cliente, pauta (`subject`), título, legenda (`content`), data e hora, formato, status, e o que herda do calendário editorial (`tags`, `objetivo`, `macro_objetivo`, `cta`, `cta_required`). |
+| `PostStatus` | Catálogo de status, referenciado **por nome** (sem `choices`). |
+| `PostStatusEvent` | Histórico de transições, gravado por signal a cada `save()` que muda o status. Guarda os nomes como texto. |
+| `PostPublication` | Uma publicação **por rede** do mesmo post, com formato, legenda opcional, status, `external_post_id` e `permalink` próprios. |
+| `MediaPost` | Vínculo ordenado entre `Post` e `Media`. Mídia de post (`from_media_library=False`) que fica sem vínculo é apagada; foto da galeria do cliente nunca é. |
+| `SocialNetwork`, `PostFormat` | Redes e formatos (ex.: Instagram Feed, Stories, Reels; LinkedIn post e carrossel). |
+| `PlatformIntegration` | Conexão do cliente com uma rede: Instagram/LinkedIn/Facebook/TikTok pelo Zernio, ou WhatsApp pelo ManyChat. |
+| `PlatformProfileConfig` | Peças de perfil (`bio`, `cover`, `highlights`, `editorial_calendar`): estado atual (`old_*`) e proposto (`new_*`). |
+| `ProfileCorrectionJob` | Pedido de correção de uma peça de perfil, executado em fila com `idempotency_key`. |
+| `PostMetadata` | Chave/valor do post (ex.: `late_post_id`, `whatsapp_media_view_url`). |
+| `ScheduledReview` | Envio de aprovação agendado para data futura. |
+| `PostInsights`, `PostInsightsSnapshot` | Métricas atuais do post publicado e o histórico diário. |
+
+<Note>
+WhatsApp aparece em `SocialNetwork` porque compartilha a tabela de plataformas, mas é canal de comunicação, não rede de publicação. Toda lista de "publicar em" deve filtrar o que o Zernio publica.
+</Note>
+
+## Status do post
+
+Os status usados no fluxo são `pending`, `processing`, `sent`, `in_review`, `approved`, `rejected`, `scheduled`, `holding`, `published`, `error` e `canceled`. O cliente só vê `sent`, `approved`, `published` e `in_review`; os demais são internos. Post publicado não pode ser editado.
+
+| Transição | Quem provoca |
+|---|---|
+| `pending` → `scheduled` | O MiggoAI, ao entregar título, legenda e arte. |
+| → `sent` | Envio para aprovação por WhatsApp. |
+| `sent` → `approved` / `in_review` / `rejected` | Resposta do cliente. Pedido de ajuste: `in_review` quando o cliente move o post no app, `rejected` quando reprova com motivo (app ou WhatsApp). |
+| → `scheduled` / `holding` | Publicação ou agendamento enviado ao Zernio. |
+| → `published` / `error` | Desfecho confirmado pelo Zernio. |
+
+Mudanças de status geram notificações in-app (`in_review`, `published`, `rejected`) e e-mail de post publicado.
+
+## Aprovação por WhatsApp
+
+`services.send_post_for_approval(post)` é a regra única, usada pela view e pelos flows de conversa:
+
+1. Grava o link permanente da mídia (`/midia/<token>` no front, token assinado pelo id do post).
+2. Grava o id do post num campo do subscriber no ManyChat, **antes** de disparar o flow, porque o flow lê dali qual post está em aprovação.
+3. Marca o post como `sent` e dispara o flow.
+
+O flow muda conforme a rede do post estar conectada (`CONTENT_APPROVATION_CONNECTED_FLOW_ID`: a Miggo publica sozinha) ou não (`CONTENT_APPROVATION_FLOW_ID`: o cliente publica manualmente). `ScheduledReview` faz o mesmo numa data futura, pelo cron `send_scheduled_reviews`.
+
+## Publicação no Zernio
+
+- Cada rede do post vira uma `PostPublication`; uma rede pode falhar sem bloquear a outra.
+- Requisitos: formato definido, ao menos uma mídia, tipo de arquivo aceito e, no feed do Instagram, proporção entre 0,75 e 1,91. Data já passada vira publicação imediata.
+- Sem integração com a rede, mas com WhatsApp ativo, o post é aprovado e o cliente recebe o aviso "pode postar".
+- A publicação responde `202` e roda em segundo plano (task `post.publicar_na_rede` na fila `integracoes` com `ZERNIO_ASYNC=1`): upload das mídias, `POST /v1/posts` e gravação do id externo. O agendamento fica no Zernio, que publica na hora marcada.
+- **Timeout não é falha.** As chamadas usam `ZERNIO_PUBLISH_TIMEOUT` (120 s por padrão). Se estourar, a publicação fica `sending` ("enviado, desfecho desconhecido") e o post vai para `holding`.
+- **Confirmação do desfecho** (`status_sync.py`), com três chamadores e a mesma regra: o webhook `/webhooks/zernio/status/`, o comando `reconcile_zernio_posts` ([Tarefas agendadas](/plataforma/tarefas-agendadas)) e o botão "Verificar status" (limite de uma checagem a cada 30 s por publicação). Nenhum deles marca falha só por não encontrar o post no Zernio.
+- **Cancelamento** apaga o post no Zernio e marca a publicação como `canceled`. Quando a assinatura expira, `scheduling.py` cancela os agendamentos futuros do cliente.
+
+<Warning>
+`/api/v1/post/webhook-update-post/` e `/api/v1/post/webhook-account-connected/` são os webhooks antigos do Zernio e não validam token. O webhook de desfecho `/webhooks/zernio/status/` exige `ZERNIO_WEBHOOK_TOKEN`. Veja [Webhooks](/plataforma/guias/webhooks).
+</Warning>
+
+## Conexão das redes
+
+- O OAuth das redes é feito no Zernio. O webhook `account.connected` ativa a `PlatformIntegration` casando por `(profile_id, platform)`, porque o `profile_id` do Zernio identifica o cliente e é o mesmo para todas as redes dele.
+- `zernio.sync_platform_connections` reconcilia as conexões quando o webhook não chega (chamado pelo status do onboarding). O comando `repair_platform_integrations` realinha integrações gravadas na rede errada.
+- WhatsApp é conectado pelo código de verificação do [Onboarding na Plataforma](/plataforma/apps/onboarding).
+
+## Peças de perfil
+
+`PlatformProfileConfig` guarda bio, capa, destaques e calendário em texto. O scraping grava o estado atual (`old_*`); a geração grava só a proposta (`new_*`). O pedido de correção (`correcao_perfil.py`) roda como `ProfileCorrectionJob` na fila `interativo` (com `PERFIL_ASYNC=1`) e a geração é do MiggoAI; a peça atual é preservada até a nova chegar, e a `idempotency_key` impede gerar e cobrar duas vezes.
+
+## Insights
+
+`zernio.sync_client_insights` pagina o `GET /analytics` do Zernio para cada perfil do cliente, faz upsert de `PostInsights` por `external_post_id` (post publicado fora da Miggo entra com `is_external=True`) e grava o snapshot do dia. O post local é casado por `late_post_id`, id ou URL da plataforma e, por último, pelo conteúdo.
+
+## Comandos
+
+| Comando | Para quê |
+|---|---|
+| `reconcile_zernio_posts` | Fecha publicações presas em `sending`/`pending` consultando o Zernio. |
+| `repair_platform_integrations [--apply] [--client <id>]` | Realinha `PlatformIntegration` com as contas conectadas no Zernio. |
+| `backfill_post_status_events [--dry-run]` | Reconstrói o histórico de status a partir do `History`. |
+
+## Onde fica no código
+
+| Caminho | Conteúdo |
+|---|---|
+| `app/post/models.py` | Models do app |
+| `app/post/views.py` | Endpoints de post, publicação, integrações, insights e webhooks antigos |
+| `app/post/services.py` | Envio para aprovação |
+| `app/post/status_sync.py` | Confirmação do desfecho no Zernio |
+| `app/post/scheduling.py` | Cancelamento de agendamentos |
+| `app/post/zernio.py` | Cliente do Zernio (analytics e conexões) |
+| `app/post/correcao_perfil.py`, `tasks.py` | Correção de peças de perfil e tasks Celery |
+| `app/post/media_link.py` | Link permanente de mídia |
+| `app/post/signals.py`, `stalled.py`, `cron.py` | Histórico de status, fila de parados, revisões agendadas |
+
+Endpoints: veja a [Referência de API](/plataforma/api-referencia).

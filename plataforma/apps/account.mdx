@@ -1,0 +1,79 @@
+---
+title: "Contas e usuários"
+description: "Identidade, papéis, módulos de acesso, login e suporte no app account do backend-miggo."
+icon: "user-round"
+---
+
+O app `account` concentra identidade e acesso: o modelo de usuário `CustomUser` (login por e-mail, sem `username`), emissão de JWT, login com Google, recuperação de senha, verificação de e-mail, módulos de permissão da equipe e da agência e o subsistema de suporte (chat com IA e tickets).
+
+Para obter e usar o token, veja o guia [Autenticação](/plataforma/autenticacao).
+
+## Models principais
+
+| Model | Papel |
+|---|---|
+| `CustomUser` | Usuário único da plataforma (equipe Miggo, agência e cliente). `USERNAME_FIELD = 'email'`; campo `role` define o papel; `agencia` (FK) só nos papéis de agência. |
+| `UserMeta` | Par chave/valor por usuário (ex.: código de recuperação de senha). |
+| `UsuarioModulo` | Módulo liberado para um `manager` ou `agencia_membro`. Admin e `agencia_admin` têm todos, sem linha aqui. |
+| `SupportConversation` / `SupportMessage` | Conversa e mensagens do chat de suporte com IA. |
+| `SupportTicket` | Ticket do formulário de contato, com código `TKT-XXXXXXXX` gerado no `save()` e vínculo opcional a um issue no Jira. |
+
+## Papéis
+
+| `role` | Quem é | Acesso |
+|---|---|---|
+| `admin` | Equipe Miggo, administrador | Tudo; único papel com `is_staff=True` na criação pela equipe. |
+| `manager` | Gestor da equipe Miggo | Só os módulos concedidos em `UsuarioModulo` e só a carteira de clientes visível a ele. |
+| `agencia_admin` | Administrador de uma agência | Todos os módulos da agência, restrito aos clientes da própria agência. |
+| `agencia_membro` | Membro de uma agência | Módulos concedidos, restrito aos clientes da agência. |
+| `client` | Cliente final | Os próprios dados. |
+
+As regras de escopo de clientes (`clientes_visiveis`, `EscopoClienteMixin`) e de módulos (`TemModulo`, `ModuloDeCarteira`) estão em [Autenticação](/plataforma/autenticacao). Detalhes de agência em [Agência](/plataforma/apps/agencia).
+
+## Regras de negócio
+
+- **Criação de usuário cria o cliente.** O signal `manage_client` (`post_save` de `CustomUser`) cria um `Client` com nome, e-mail e telefone do usuário e um `ClientMeta` `activation_code`; em updates, mantém esses três campos sincronizados.
+- **Senha.** Mínimo de 8 caracteres, 1 maiúscula e 1 número. Cadastro sem senha gera uma senha forte e a envia por e-mail.
+- **Login de cliente inativo** (`Client.active = False`) responde `403`. Equipe sempre entra. Agência suspensa ou login por um domínio que não é o da conta também respondem `403`.
+- **JWT.** O access token carrega os claims `email`, `is_management` e `is_superuser` (`MiggoRefreshToken`), consumidos pelo MiggoAI. O refresh vai em cookie httpOnly restrito aos endpoints de conta; o corpo da resposta de login leva só o `access`.
+- **Refresh com usuário apagado** responde `401` (`no_active_account`) em vez de erro 500 (`SafeTokenRefreshView`).
+- **Login com Google** valida o ID token contra `GOOGLE_CLIENT_ID` (tolerância de relógio em `GOOGLE_AUTH_CLOCK_SKEW`), cria o usuário se não existir e marca `email_verified`. Cadastro novo pelo domínio de uma agência vincula o cliente a ela. Falha de rede ao validar responde `503`, não `401`.
+- **Recuperação de senha.** Código de 6 dígitos guardado em `UserMeta`, válido por 15 minutos, apagado após 5 tentativas erradas. O pedido responde sempre `200` com mensagem genérica, para não revelar quais e-mails existem.
+- **Metadados do usuário.** Chaves reservadas (`password_reset_code`, `activation_code`) nunca passam pela API; quem não é da equipe só grava as chaves liberadas da própria conta (`meta_access.py`).
+- **Edição de usuário** é escopada por papel: o dono edita só a si; gestor edita clientes só com o módulo `clientes`, nunca outro gestor, admin ou agência.
+
+## Suporte
+
+- **Chat com IA:** proxy para a OpenAI (`gpt-4o-mini`) com prompt de sistema fixo no servidor; a chave `OPENAI_API_KEY` nunca vai ao cliente. O histórico é truncado às últimas 20 mensagens e a conversa é classificada (`support`, `compliment`, `suggestion`) por palavras-chave.
+- **Tickets:** o formulário de contato cria um `SupportTicket`, envia e-mail para a equipe e de confirmação ao cliente e abre um issue no Jira. A resposta da equipe vai por e-mail, fica registrada em `admin_notes` e gera notificação (`notification_type='support_response'`).
+- **Jira:** integração só de ida (`jira_service.py`), configurada por `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_PROJECT_KEY` e `JIRA_ISSUE_TYPE`. Sem credenciais, as funções não fazem nada e não levantam erro. Cada chamada é registrada em `Integration`. O comando `sync_jira_ticket_status` atualiza o status dos tickets a partir do Jira.
+
+<Note>
+Falhas de envio de e-mail (credenciais, confirmação de ticket, post publicado) e de criação de issue no Jira são logadas e não interrompem a requisição. Para diagnosticar, consulte os logs do container.
+</Note>
+
+## Onde fica no código
+
+| Caminho | Conteúdo |
+|---|---|
+| `app/account/models.py` | `CustomUser`, `UserMeta`, `UsuarioModulo` |
+| `app/account/support_models.py`, `support_views.py` | Chat de suporte e tickets |
+| `app/account/views.py` | Cadastro, login, Google, refresh, senha, verificação de e-mail, equipe |
+| `app/account/tokens.py`, `auth_cookies.py` | Claims do JWT e cookie do refresh |
+| `app/account/permissions.py`, `escopo.py`, `modulos.py` | Permissões, escopo de clientes e módulos |
+| `app/account/meta_access.py` | Regras de escrita em `UserMeta` |
+| `app/account/signals.py` | `manage_client` |
+| `app/account/jira_service.py` | Integração com o Jira |
+
+Endpoints: veja a [Referência de API](/plataforma/api-referencia).
+
+## Relacionados
+
+<Columns cols={2}>
+  <Card title="Clientes" icon="briefcase" href="/plataforma/apps/client">
+    `Client` criado a partir do `CustomUser`.
+  </Card>
+  <Card title="Agência" icon="building-2" href="/plataforma/apps/agencia">
+    Papéis `agencia_admin` e `agencia_membro`.
+  </Card>
+</Columns>

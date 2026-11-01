@@ -1,0 +1,69 @@
+---
+title: "Estrutura do Web app"
+description: "Onde fica cada coisa no frontend-miggo: pastas de src/, convenção de nomes e arquivos de infraestrutura."
+icon: "folder-tree"
+---
+
+## `src/`
+
+```text
+src/
+├── main.tsx          # entrada: instala o interceptor de fetch e monta os providers globais
+├── App.tsx           # todas as rotas (ver Roteamento)
+├── index.css         # Tailwind 4: tokens @theme, fontes, estilos de bibliotecas
+├── components/       # componentes reutilizáveis, por domínio
+│   ├── ui/           # design system: Button, Modal, Badge, Alert, tabela, toast...
+│   ├── form/         # inputs, selects, checkboxes, wrappers de formulário
+│   ├── common/       # breadcrumb, loaders, PageMeta, MarcaLogo, ScrollToTop
+│   ├── auth/ Agencia/ Clients/ Subscription/ admin/ analytics/ brandkit/ briefing/
+│   │   editorial/ email/ header/ modulos/ onboarding/ shared/ support/ UserProfile/ ...
+│   └── *Route.tsx, OnboardingGuard.tsx, SubscriptionGuard.tsx, RoleRedirect.tsx   # guards
+├── context/          # contextos globais (ver Estado e dados)
+├── hooks/            # hooks compartilhados por mais de uma tela
+├── services/         # chamadas de API agrupadas; services/miggoai/ é o cliente do MiggoAI
+├── routes/           # rolePaths.ts (áreas), modulos.ts (permissão), legacyPaths.ts
+├── layout/           # AppLayout, AppHeader, AppSidebar, AppBottomNav, clientNav
+├── pages/            # telas, uma pasta por área de produto
+├── data/             # dados estáticos (perguntas e seções do briefing, prompt do suporte)
+├── icons/            # SVGs como componentes React (index.ts reexporta)
+└── utils/            # funções puras (erros, marca, URLs seguras, status de assinatura)
+```
+
+### `src/pages/`
+
+| Pasta | Telas |
+|---|---|
+| `Admin/` | Telas só da equipe Miggo: financeiro, planos, trials, logs, conversas, e-mail marketing, agências, benefícios, referências de design. |
+| `Admin/MiggoAI/` | Painel de IA. Veja [Painel de IA](/web/painel-de-ia). |
+| `Agencia/` | Home, membros, plano e marca da área `/agency`. |
+| `Content/`, `EditorialCalendar/`, `Agenda/`, `Media/`, `Brandkit/`, `Briefing/` | Operação de conteúdo, compartilhada entre as áreas. |
+| `Onboarding/` | Esteira de onboarding (ver [Onboarding no Web app](/web/onboarding)). |
+| `Grid/` | Aprovação do grid por link. |
+| `Dashboard/`, `History/`, `Clients/`, `Users/`, `SocialNetworks/`, `Subscription/`, `Benefits/` | Demais telas. |
+| `AuthPages/`, `Legal/`, `OtherPage/` | Login, reset de senha, retorno de OAuth, termos, 404 e suporte. |
+
+## Convenção de nomes
+
+| Tipo | Padrão | Exemplo |
+|---|---|---|
+| Componente e tela | `PascalCase.tsx`, um componente por arquivo | `ClientSearchSelect.tsx` |
+| Hook compartilhado | `src/hooks/useAlgo.ts` | `useRoleArea.ts` (o hook de auth vive em `authHook.ts`) |
+| Hook de uma tela só | Ao lado da tela | `pages/Content/useContentBoard.ts` |
+| Contexto | `NomeContext.tsx` com o provider; o hook pode ficar num `.ts` à parte | `SupportChatContext.tsx` + `supportChat.ts` |
+| Service e util | `camelCase.ts`, funções nomeadas | `uploadChunked.ts` |
+
+Um `.tsx` que exporta componente **e** valor quebra a regra `react-refresh/only-export-components`; por isso alguns contextos separam o hook num `.ts`.
+
+## Raiz do repositório
+
+| Arquivo | Papel |
+|---|---|
+| `vite.config.ts` | Plugins e proxy `/api` do dev server. |
+| `dockerfile` | Build em dois estágios: `node:20-alpine` gera o `dist/`, `nginx:stable-alpine` serve. |
+| `nginx.conf.template` + `docker-entrypoint.sh` | Config do Nginx com o backend injetado no start do container. |
+| `docker-compose.yml` | Serviço atrás do Traefik, com o router dos domínios de agência. |
+| `.github/workflows/docker-ecr.yml` | Build da imagem e push no Amazon ECR a cada push na `main`. |
+| `design.md` | Catálogo do design system: consulte antes de criar componente. |
+| `.env.example` | Chaves de ambiente, sem valor. |
+
+O deploy está em [Build e deploy do Web app](/web/build-e-deploy).

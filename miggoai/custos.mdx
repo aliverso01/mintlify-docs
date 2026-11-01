@@ -1,0 +1,82 @@
+---
+title: "Custos de IA no MiggoAI"
+description: "Como o MiggoAI mede, precifica e converte para reais o custo de cada chamada à OpenAI."
+icon: "coins"
+---
+
+O app `apps.custos` registra cada chamada paga à OpenAI com os tokens consumidos e o custo calculado na hora. É o que alimenta o bloco `custo` das gerações e a tela de uso e custos do [painel de IA](/web/painel-de-ia).
+
+## Como o custo nasce
+
+1. O `openai_service` (ou o `grid_workflow`) recebe uma resposta com sucesso.
+2. `services/registro.py::registrar_resposta` lê o `usage` da resposta (`services/uso.py`), busca o preço do modelo (`services/precos.py`) e grava uma `ChamadaIA` ligada à geração e à etapa em curso.
+3. O custo em dólar fica **congelado** na linha. Mudar o preço depois não altera o que já foi gravado.
+
+O registro nunca derruba a geração: se falhar, é logado e a peça segue.
+
+Modelo sem `PrecoModelo` não bloqueia nada. A chamada é gravada com os tokens reais, custo zero e `sem_preco=True`; o painel a mostra como alerta, não como chamada gratuita. O preço fica em cache por 5 minutos; salvar ou apagar um `PrecoModelo` limpa o cache na hora (`signals.py`).
+
+## Models
+
+| Model | O que guarda |
+|---|---|
+| `ChamadaIA` | uma chamada paga: `generation` (nula fora de uma geração), `client_id`, `operacao` (`chat`, `imagem_edit`, `imagem_gen`), `modelo`, `etapa`, tokens de entrada, cache, imagem e saída, `imagens`, `custo_usd`, `estimado`, `sem_preco`, `criado_em` |
+| `PrecoModelo` | preço de um modelo em US$ por 1 milhão de tokens: entrada de texto, entrada em cache, entrada de imagem e saída. `modelo` é único |
+| `CotacaoDolar` | taxa USD→BRL de um dia (`data` única), com `fonte`: `awesomeapi`, `bcb` ou `manual` |
+
+Campos completos em [Modelo de dados](/miggoai/modelo-de-dados).
+
+## Conversão para reais
+
+`services/cambio.py`:
+
+- `cotacao_do_dia()` busca a cotação na AwesomeAPI, com fallback no SGS do Banco Central, e grava a linha do dia. Roda no comando `atualizar_cotacao` ou, sem cron, na primeira leitura do dia que precisar dela.
+- `taxa_vigente()` só **lê** a cotação mais recente gravada. É o que as listas e detalhes de geração usam, para o polling do painel nunca disparar chamada externa.
+- Uma cotação `manual` (via API) corrige ou cria o dia.
+
+## O bloco `custo`
+
+Listas e detalhes de geração (`/api/generations/linhas/`, `/api/generations/<id>/`, `/api/generations/execucoes/<id>/`) trazem:
+
+| Campo | Significado |
+|---|---|
+| `usd` | soma em dólar, string com 6 casas |
+| `brl` | soma em reais, string com 2 casas, ou `null` sem cotação |
+| `estimado` | alguma chamada veio da estimativa retroativa |
+| `sem_preco` | algum modelo chamado não tinha preço |
+| `chamadas` | número de chamadas. `0` significa "não medido", não "custo zero" |
+
+Os detalhes trazem também `custo_por_etapa`, na ordem em que as etapas rodaram. A lista de clientes (`/api/clients/`) traz o consumo do mês e o total, medido e estimado separados.
+
+## Endpoints
+
+Todos em `/api/custos/`; contratos na referência de API desta aba.
+
+| Rota | Uso | Escrita |
+|---|---|---|
+| `dashboard/` | totais, série por dia e recortes por cliente, modelo e etapa. `?periodo=mes` (padrão), `30d` ou `intervalo` com `desde`/`ate` (até 365 dias). Medido e estimado sempre separados | — |
+| `precos/`, `precos/<id>/` | tabela de preços | superusuário |
+| `cotacoes/` | cotações, mais recente primeiro; `POST {data, taxa}` grava manual (taxa entre 1 e 100) | superusuário |
+| `chamadas/` | log de chamadas, filtros `modelo`, `etapa`, `client_id`, `sem_preco`, `estimado`, `from`/`to` | — |
+
+## Comandos
+
+```bash
+python manage.py seed_precos                  # semeia os preços dos modelos em uso
+python manage.py atualizar_cotacao [--forcar] # cotação do dia (cron diário opcional)
+```
+
+`seed_precos` cria os preços de `gpt-4o-mini`, `gpt-image-1` e `gpt-image-2`. Quando a OpenAI muda o preço, edite pelo painel ou rode `seed_precos --atualizar`.
+
+### Estimativa retroativa
+
+`estimar_custo_historico` estima o custo de gerações anteriores à medição e grava `ChamadaIA` com `estimado=True` e a data da geração original. Não chama API: tokens pelo `tiktoken`, preço pela `PrecoModelo`, câmbio pela `CotacaoDolar` já gravada.
+
+```bash
+python manage.py estimar_custo_historico --dry-run
+python manage.py estimar_custo_historico --desde 2026-08-01 --ate 2026-09-30 --client-id 72 --environment PRODUCTION
+```
+
+- Reconstrói entrada e saída pela trilha de auditoria; sem trilha, pelo template da versão usada, `variables_used` e `result`. Imagem conta por `image_paths`.
+- Idempotente: geração com qualquer `ChamadaIA` é pulada. Por padrão só entram gerações anteriores à primeira chamada medida.
+- Sem `tiktoken` (ou sem rede para baixar o encoding na primeira vez) falha antes de processar.

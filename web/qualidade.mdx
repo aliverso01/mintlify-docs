@@ -1,0 +1,75 @@
+---
+title: "Qualidade e verificação do Web app"
+description: "Como verificar uma mudança no frontend-miggo: ESLint, TypeScript estrito, build e a configuração de Vite e Tailwind."
+icon: "check-check"
+---
+
+O `frontend-miggo` **não tem test runner** (sem Vitest, Jest, Playwright ou Cypress). A verificação automatizada é lint + build. Comportamento de tela se confere no navegador.
+
+## Verificar uma mudança
+
+```bash
+npm run lint    # ESLint no projeto inteiro
+npm run build   # tsc -b (tipos) e vite build
+```
+
+| Comando | Pega |
+|---|---|
+| `npm run lint` | Regras de hooks (dependência faltando em `useEffect`, hook condicional) e erros do `typescript-eslint`. |
+| `npm run build` | Qualquer erro de tipo em `src/`, porque `tsc -b` roda antes do Vite e o build falha se a tipagem não passar. |
+
+<Warning>
+Lint e build verdes não provam que a tela funciona. Confira no navegador as duas áreas (`/admin` e `/app`, e `/agency` quando a tela é compartilhada), os temas claro e escuro e os estados de carregando, vazio e erro.
+</Warning>
+
+## TypeScript
+
+Configuração por project references: `tsconfig.json` (raiz, só referencia), `tsconfig.app.json` (código em `src/`) e `tsconfig.node.json` (`vite.config.ts`).
+
+| Flag em `tsconfig.app.json` | Efeito |
+|---|---|
+| `strict` | Conjunto estrito completo, com `strictNullChecks`. |
+| `noUnusedLocals`, `noUnusedParameters` | Variável, import ou parâmetro sem uso quebra o build. |
+| `noFallthroughCasesInSwitch` | `case` sem `break` é erro. |
+| `noUncheckedSideEffectImports` | Import de efeito colateral inexistente é erro. |
+| `noEmit`, `moduleResolution: "bundler"`, `jsx: "react-jsx"`, target `ES2020` | O TypeScript só checa; quem emite é o Vite. |
+
+Não introduza `any` novo: tipe a resposta da API ou use `unknown` com narrowing.
+
+## ESLint
+
+`eslint.config.js` (flat config do ESLint 9) aplica a `**/*.{ts,tsx}`:
+
+- `js.configs.recommended` + `tseslint.configs.recommended`;
+- todas as regras recomendadas de `eslint-plugin-react-hooks`;
+- `react-refresh/only-export-components` como aviso (`allowConstantExport: true`);
+- ignora `dist/`.
+
+## Vite
+
+`vite.config.ts` define:
+
+- **Plugins:** `@vitejs/plugin-react` e `vite-plugin-svgr` (SVG vira componente React nomeado, base de `src/icons/index.ts`).
+- **Proxy `/api`:** veja [Build e deploy do Web app](/web/build-e-deploy#desenvolvimento-o-proxy-do-vite).
+- **`allowedHosts: [".localhost"]`:** aceita `<slug>.localhost` para testar domínio de agência.
+- Sem aliases de import: os imports são relativos.
+
+## Tailwind CSS 4
+
+Tailwind v4 pelo plugin `@tailwindcss/postcss` (`postcss.config.js`). Não existe `tailwind.config.js`: tema, cores da marca, breakpoints e sombras ficam no bloco `@theme` de `src/index.css`. Veja [Layout e tema](/web/layout-e-tema).
+
+## `index.html`
+
+- O `<head>` traz um include SSI (`<!--# include virtual="/api/v1/agency/meta-tags/" -->`): em produção o Nginx injeta título, descrição, favicon e meta-tags da marca do host (Miggo ou agência). No `vite dev` o comentário é inerte e o `MarcaProvider` cobre o título.
+- O Pixel da Meta só carrega no host `app.miggomkt.com.br`.
+- Ponto de entrada: `src/main.tsx`.
+
+## Convenções de código
+
+| Tema | Convenção |
+|---|---|
+| Rotas | Não escreva `/admin/...` ou `/app/...` no JSX; use `path()` de `useRoleArea`. |
+| Chamadas à API | Em `src/services/` ou num hook, não `fetch` solto pela tela. Veja [Consumir a API](/web/guias/consumir-a-api). |
+| Componentes | Funcionais com hooks; arquivo `PascalCase.tsx`. Reaproveite os de `src/components/ui/` (o catálogo é o `design.md` do repo). |
+| Cores e espaçamento | Tokens de `src/index.css`, não hex nem px soltos. |
+| Idioma e encoding | Texto de interface e comentários em pt-BR; UTF-8 sem BOM. |

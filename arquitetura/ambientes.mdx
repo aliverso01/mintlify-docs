@@ -1,92 +1,69 @@
 ---
 title: "Ambientes"
-description: "Desenvolvimento, homologação e produção: domínios, infraestrutura e como as mudanças progridem."
-icon: "layers"
+description: "Produção, homologação e desenvolvimento: domínios, o que muda entre eles e como uma mudança chega à produção."
+icon: "globe"
 ---
 
-## Os ambientes
+## Domínios
 
-| Ambiente | Para quê | Quem valida |
+| Software | Produção | Homologação |
 | --- | --- | --- |
-| **Desenvolvimento** | Máquina do dev, com `runserver` e `vite dev` | O próprio dev |
-| **Homologação** | Validação manual antes de produção — etapa *Enviado pra teste* no board | Desenvolvedor responsável |
-| **Produção** | Ambiente usado pelos clientes — etapa *Feito* no board | Time Miggo |
+| Web app (`frontend-miggo`) | `app.miggomkt.com.br` | `teste.miggomkt.com.br` |
+| Plataforma (`backend-miggo`) | `api.miggomkt.com.br` | `test-api.miggomkt.com.br` |
+| MiggoAI (`miggoai_v2`) | `backend-ai.miggomkt.com.br` | `backend-test-ai.miggomkt.com.br` |
 
-## Domínios de produção
+Outros domínios que aparecem no código:
 
-Extraídos dos rótulos Traefik nos arquivos de compose e das referências no código:
+- `plataforma.miggomkt.com.br` — domínio anterior do Web app, ainda reconhecido como host da Miggo (`HOSTS_PLATAFORMA` em `core/settings.py`).
+- `<slug>.<PLATFORM_BASE_DOMAIN>` e domínios próprios cadastrados por agências — servidos pelo mesmo Web app; veja [Agências](/plataforma/apps/agencia).
+- `test-ai.miggomkt.com.br` — front antigo do MiggoAI em homologação. Não é a API: a API de homologação é `backend-test-ai.miggomkt.com.br`.
+- `ajuda.miggomkt.com.br` — central de ajuda, para clientes.
 
-| Serviço | Domínio |
-| --- | --- |
-| Frontend | `plataforma.miggomkt.com.br` |
-| API | `api.miggomkt.com.br` |
-| MiggoAI | `ai.miggomkt.com.br` |
-| Documentação de produto | `docs.miggomkt.com.br` |
-| Site institucional | `miggomkt.com.br` |
+<Note>
+  Em desenvolvimento os três rodam na máquina: Plataforma em `localhost:8000`, MiggoAI em `localhost:8010` e Web app em `localhost:5173`. Veja o [Quickstart](/quickstart).
+</Note>
 
-## Infraestrutura
+## O que separa os ambientes
 
-Os dois serviços são publicados com **Docker Compose atrás do Traefik**, usando a rede externa `root_default` e certificados Let's Encrypt (`certresolver=letsencrypt`, entrypoint `websecure`).
+Homologação é uma cópia completa: banco próprio para cada serviço, mesmas imagens e outra configuração. Um ambiente nunca fala com o outro; quando isso acontece, é variável errada.
 
-<Tabs>
-  <Tab title="Backend">
-    `backend-miggo/docker-compose.yml` define dois serviços:
-
-    - `miggo-db` — imagem `postgres:16`, porta `5432`.
-    - `miggo-api` — build do `dockerfile` local, porta interna `8000`, volumes `./static_data:/app/static` e `./media_data:/app/media`.
-
-    O roteador Traefik aplica dois middlewares: `miggo-headers`, que injeta `X-Forwarded-Proto: https` e `X-Forwarded-Ssl: on`, e `miggo-buffering`, que eleva `maxRequestBodyBytes` para 104857600 (100 MB) — o mesmo valor de `FILE_UPLOAD_MAX_MEMORY_SIZE` e `DATA_UPLOAD_MAX_MEMORY_SIZE` passados ao container, para suportar upload de mídia.
-  </Tab>
-  <Tab title="Frontend">
-    `frontend-miggo/docker-compose.yml` define `miggo-frontend`: build local com os *build args* `VITE_MIGGO_API_KEY` e `VITE_API_BASE_URL`, `env_file: .env`, e Nginx servindo na porta interna `80`.
-
-    <Note>
-      Variáveis `VITE_*` são resolvidas **em tempo de build**, por isso entram como build args. Mudar o `.env` sem rebuildar a imagem não altera o bundle. Veja [Build e deploy do frontend](/frontend/build-e-deploy).
-    </Note>
-  </Tab>
-  <Tab title="MiggoAI">
-    O repositório traz `Dockerfile.backend` e `Dockerfile.frontend`, com Nginx para o frontend. Detalhes em [Deploy do MiggoAI](/miggoai/deploy).
-  </Tab>
-</Tabs>
-
-<Warning>
-  O `docker-compose.yml` do backend contém credenciais de banco em texto puro no arquivo versionado. Para qualquer ambiente real, mova esses valores para variáveis de ambiente ou para um `.env` não versionado.
-</Warning>
-
-## Diferenças de configuração por ambiente
-
-Estas variáveis costumam mudar entre ambientes (todas descritas em [Configuração do backend](/backend/configuracao)):
-
-| Variável | Desenvolvimento | Produção |
+| Variável | Software | Regra |
 | --- | --- | --- |
-| `DEBUG` | `True` | `False` |
-| `ALLOWED_HOSTS` | `localhost,127.0.0.1` | domínios reais |
-| `CORS_ALLOWED_ORIGINS` / `CSRF_TRUSTED_ORIGINS` | origem local do Vite | domínio do frontend |
-| `SECURE_SSL_REDIRECT` | desligado | ligado |
-| `CSRF_COOKIE_DOMAIN` | vazio | domínio da plataforma |
-| `USE_S3` | normalmente desligado (mídia local) | ligado, com as `AWS_*` |
-| `STRIPE_API_KEY` vs `STRIPE_PROD_API_KEY` | chave de teste | chave de produção |
-| `MIGGOAI_API_URL` | instância local (`http://localhost:10000` é o padrão do cliente) | `ai.miggomkt.com.br` |
-| `LOG_FILE` | vazio (só terminal) | caminho de arquivo |
+| `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT` | Plataforma e MiggoAI | Banco separado por ambiente. |
+| `FRONTEND_URL` | Plataforma | URL do Web app do **mesmo** ambiente. O default é `https://app.miggomkt.com.br`: sem a variável, homologação monta links para produção. |
+| `BACKEND_URL` | Plataforma | URL pública da própria API, usada em links gerados fora de um request (mídia pelo WhatsApp, rastreio de clique do e-mail). |
+| `MIGGOAI_V2_API_URL`, `MIGGOAI_V2_API_KEY` | Plataforma | Apontam para o MiggoAI do mesmo ambiente. |
+| `MIGGO_API_BASE_URL`, `MIGGO_API_KEY` | MiggoAI | Apontam para a Plataforma do mesmo ambiente. |
+| `JWT_PRIVATE_KEY` / `MIGGO_JWT_PUBLIC_KEY` | Plataforma / MiggoAI | Par de chaves por ambiente: o MiggoAI só aceita o token da Plataforma do seu ambiente. |
+| `STRIPE_API_KEY` (ou `STRIPE_PROD_API_KEY`), `STRIPE_WEBHOOK_SECRET` | Plataforma | Chave do modo de teste da Stripe em homologação; o segredo do webhook casa com o endpoint cadastrado na Stripe para aquele ambiente. |
+| `LATE_API_KEY` | Plataforma | Publica de verdade nas redes do cliente: em homologação, não use a chave de produção. |
+| `OPENAI_API_KEY` | Plataforma e MiggoAI | Chave separada por ambiente, para os custos não se misturarem. |
+| `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD` | Plataforma | E-mail de homologação não pode chegar à caixa de cliente. |
+| `VITE_API_BASE_URL`, `VITE_MIGGOAI_API_URL` | Web app | Endereço da Plataforma e do MiggoAI do mesmo ambiente. Tudo em `VITE_*` é público. |
 
-## Fluxo de promoção de uma mudança
+A lista completa de variáveis está em [Variáveis da Plataforma](/plataforma/configuracao), [Variáveis do MiggoAI](/miggoai/configuracao) e [Rodar o Web app](/web/rodar-localmente).
 
-O board do Jira (projeto **MIG**) espelha o caminho de uma alteração:
+## Hospedagem
+
+Os três softwares rodam em containers gerenciados pelo **Dokploy**. Cada repo tem o workflow `.github/workflows/docker-ecr.yml`, que no push da `main` constrói a imagem e publica no **Amazon ECR** com as tags `:<sha>` e `:latest`. A `develop` não gera imagem. A atualização do container no Dokploy é manual.
+
+A Plataforma e o MiggoAI usam a mesma imagem para a API e para o worker de fila: a variável `ROLE` (`web` ou `worker`) decide o que o container sobe. Veja [Deploy da Plataforma](/plataforma/deploy), [Deploy do MiggoAI](/miggoai/deploy) e [Build e deploy do Web app](/web/build-e-deploy).
+
+## Caminho de uma mudança
 
 ```mermaid
 flowchart LR
-    A["A fazer"] --> B["Fazendo"] --> C["Enviado pra teste<br/>(homologação)"] --> D["Feito<br/>(produção)"]
-    R["Retorno"] --> B
+    B["branch de feature"] -->|PR| D["develop"]
+    D -->|homologação| H["teste / test-api / backend-test-ai"]
+    D -->|release| M["main"]
+    M -->|imagem no ECR + deploy no Dokploy| P["app / api / backend-ai"]
 ```
 
-<Note>
-  *Enviado pra teste* significa **homologado manualmente pelo desenvolvedor**; *Feito* significa **em produção**. As duas últimas transições são responsabilidade humana.
-</Note>
+1. Toda mudança nasce numa branch a partir da `develop` e entra por pull request.
+2. A `develop` é o que roda em homologação.
+3. A release leva para a `main` as mudanças validadas em homologação; o push da `main` gera as imagens.
+4. O deploy em produção atualiza os containers no Dokploy. As releases ficam registradas no [Changelog](/releases).
 
-## Relacionados
-
-<Columns cols={3}>
-  <Card title="Deploy do backend" icon="server" href="/backend/deploy" />
-  <Card title="Deploy do frontend" icon="monitor" href="/frontend/build-e-deploy" />
-  <Card title="Deploy do MiggoAI" icon="sparkles" href="/miggoai/deploy" />
-</Columns>
+<Warning>
+  Mudança de contrato entre os serviços (campo, rota, formato de token) precisa chegar aos dois lados na mesma release. A ordem segura é: a Plataforma primeiro, depois o MiggoAI e o Web app.
+</Warning>

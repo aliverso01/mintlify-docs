@@ -1,0 +1,54 @@
+---
+title: "Editar um prompt do MiggoAI"
+description: "Passo a passo para mudar o texto de um prompt, conferir o resultado no preview e voltar uma versão se precisar."
+icon: "file-pen-line"
+---
+
+**Objetivo:** mudar o conteúdo de um prompt (por exemplo, `titulo-carrossel`) sem quebrar a geração e com histórico para voltar atrás.
+
+## Pré-requisitos
+
+- MiggoAI rodando com `seed_prompts` já executado (veja [Rodar o MiggoAI localmente](/miggoai/rodar-localmente)).
+- Usuário de gestão da Plataforma (`is_management`), logado no Web app, ou um token para chamar a API (veja [Autenticação no MiggoAI](/miggoai/autenticacao)).
+- O `id` do prompt: `GET /api/prompts/?workflow=<key>` lista os prompts de um workflow.
+
+## Passos
+
+<Steps>
+  <Step title="Abra o prompt">
+    No Web app, vá a `/admin/miggoai/prompts` e abra o prompt. Pela API: `GET /api/prompts/<id>/`.
+  </Step>
+  <Step title="Edite só o conteúdo">
+    Mude o texto e as variáveis `{{...}}`. A forma da resposta (JSON, chaves) é fixa no código: não escreva formato de saída nem exemplo de JSON no prompt. Veja [Prompts do MiggoAI](/miggoai/prompts).
+  </Step>
+  <Step title="Confira no preview antes de salvar">
+    O preview renderiza o rascunho com dados de um cliente e card reais, sem chamar a IA. Pela API:
+
+    ```bash
+    curl -X POST "$MIGGOAI/api/prompts/<id>/preview/" \
+      -H "Authorization: Bearer $ACCESS" -H "Content-Type: application/json" \
+      -d '{"content": "<rascunho>", "values": {"nome_cliente": "Teste"}}'
+    ```
+
+    A resposta traz o texto renderizado e, em `structural`, o bloco fixo que o sistema anexa na geração.
+  </Step>
+  <Step title="Confira as variáveis">
+    `POST /api/prompts/<id>/detect-variables/` compara as chaves do texto com as `PromptVariable` cadastradas. Variável nova no texto precisa ser cadastrada em `POST /api/prompts/<id>/variables/`.
+  </Step>
+  <Step title="Salve com uma nota">
+    Salve no painel, ou `PUT /api/prompts/<id>/` com `{"content": "...", "change_note": "o que mudou"}`. O conteúdo anterior vira uma `PromptVersion`.
+  </Step>
+</Steps>
+
+## Resultado
+
+- `GET /api/prompts/<id>/versions/` mostra a versão anterior arquivada, com `change_note` e autor.
+- A próxima geração do workflow usa o texto novo: gere um card de teste em `/admin/miggoai/generate/...` (ambiente `test`) e confira o resultado.
+
+## Voltar atrás
+
+`POST /api/prompts/<id>/versions/<n>/restore/` restaura a versão `n` como uma versão nova, sem apagar o histórico.
+
+<Warning>
+O `seed_prompts` não sobrescreve prompt que já existe: editar `seed_prompts.json` não muda o banco. Para resetar um prompt para o texto do repositório, use `python manage.py seed_prompts --overwrite --slug <slug>`.
+</Warning>

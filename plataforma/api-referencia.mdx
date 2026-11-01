@@ -1,0 +1,89 @@
+---
+title: "Introdução à API da Plataforma"
+description: "Base URL, autenticação, paginação, erros e limites da API REST do backend-miggo."
+icon: "book-open"
+---
+
+A API da Plataforma é REST sobre JSON. Os endpoints listados nesta seção vêm do schema **OpenAPI gerado do próprio código** (`drf-spectacular`), agrupados por recurso. Esta página cobre o que vale para todos eles.
+
+## Base URL
+
+| Ambiente | Base URL |
+|---|---|
+| Produção | `https://api.miggomkt.com.br` |
+| Homologação | `https://test-api.miggomkt.com.br` |
+| Local | `http://localhost:8000` |
+
+Os recursos de negócio ficam sob **`/api/v1/<recurso>/`** (`/api/v1/post/`, `/api/v1/client/`, `/api/v1/agency/`...). Fora desse prefixo há só `/health/`, o schema em `/api/schema/` e os webhooks em `/webhooks/` — ver [Webhooks](/plataforma/guias/webhooks).
+
+<Note>
+  No navegador, o Web app chama a API pela própria origem (`app.miggomkt.com.br/api/...`): o nginx do front faz o proxy para a API. Por isso o cookie do refresh funciona com `SameSite=Lax`.
+</Note>
+
+## Autenticação
+
+Toda rota exige credencial, salvo as de login, cadastro, reset de senha e os links públicos de mídia:
+
+```bash
+curl https://api.miggomkt.com.br/api/v1/post/list/ \
+  -H "Authorization: Bearer <access>"
+```
+
+Como obter e renovar o token, e quando usar a `Api-Key` de serviço: [Autenticação](/plataforma/autenticacao).
+
+## Paginação
+
+As listagens paginadas usam `StandardPagination` (`utils/pagination.py`), por número de página:
+
+| Parâmetro | Padrão | Valores |
+|---|---|---|
+| `page` | `1` | inteiro |
+| `page_size` | `10` | `10`, `30`, `50` ou `100`; outro valor volta ao padrão |
+
+```json
+{
+  "count": 128,
+  "next": "https://api.miggomkt.com.br/api/v1/post/list/?page=2",
+  "previous": null,
+  "results": [ ... ]
+}
+```
+
+A paginação não é global: cada view declara a sua. Listagens sem paginação devolvem um array direto — o schema de cada endpoint mostra qual é o caso.
+
+## Filtros e ordenação
+
+Os filtros padrão do DRF estão ligados para todas as views: `django-filter`, busca (`?search=`) e ordenação (`?ordering=campo` ou `?ordering=-campo`). Os campos aceitos dependem de cada view e aparecem nos parâmetros do endpoint.
+
+## Erros
+
+Não há formato de erro customizado; vale o padrão do DRF:
+
+| Status | Corpo típico |
+|---|---|
+| `400` | Erros de validação por campo: `{"campo": ["mensagem"]}` |
+| `401` | `{"detail": "...", "code": "token_not_valid"}` |
+| `403` | `{"detail": "..."}` ou, nas rotas de conta, `{"message": "..."}` |
+| `404` | `{"detail": "..."}`, também para recurso de cliente fora do seu escopo |
+| `429` | `{"detail": "..."}` com o tempo de espera, nos endpoints com limite |
+| `5xx` | Falha do servidor ou de integração externa; repita depois |
+
+Algumas views próprias respondem com `message` ou `error` em vez de `detail`. Trate as três chaves ao exibir o erro.
+
+## Limites de taxa
+
+Não há throttling global. Só dois `POST` que chamam serviços pagos têm limite por usuário: a raspagem do Instagram (`instagram_scrape`) e os materiais da marca (`brand_materials`), **20 por hora** cada. Api-Key de serviço e equipe Miggo ficam fora do limite.
+
+## Respostas assíncronas
+
+Algumas operações longas respondem **`202 Accepted`** com um identificador de job, quando a fila correspondente está ligada (por exemplo, a importação de referência por URL). Acompanhe o job pelo endpoint indicado no schema até o status final. Ver [Filas e Celery](/plataforma/filas-e-celery).
+
+## Schema e explorador
+
+| Rota | O que é |
+|---|---|
+| `GET /api/schema/` | Schema OpenAPI em YAML |
+| `GET /api/schema/swagger-ui/` | Swagger UI do ambiente |
+| `GET /api/schema/redoc/` | Redoc do ambiente |
+
+Os endpoints abaixo, na navegação, vêm desse mesmo schema.

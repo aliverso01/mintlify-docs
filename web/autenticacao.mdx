@@ -1,0 +1,59 @@
+---
+title: "Sessão e login no Web app"
+description: "Como o frontend-miggo guarda a sessão, renova o token e anexa o JWT às chamadas da Plataforma e do MiggoAI."
+icon: "shield-check"
+---
+
+O Web app autentica sempre por **JWT** emitido pela Plataforma. Como o token é emitido, quais claims carrega e como a API recusa está em [Autenticação da Plataforma](/plataforma/autenticacao). Esta página cobre só o lado do navegador.
+
+## Onde a sessão mora
+
+| Peça | Onde fica | Por quê |
+|---|---|---|
+| Access token | Em memória (`src/services/jwtAuth.ts`) | Some ao recarregar a página; um XSS não o encontra no `localStorage`. |
+| Refresh token | Cookie httpOnly emitido pela Plataforma | O JavaScript nunca lê o refresh. |
+| Marcador `miggo_has_session` | `localStorage` | Não é segredo: só diz se vale tentar restaurar a sessão pelo cookie. |
+| `user` | `localStorage` e `AuthContext` | Dados do usuário para a interface (papel, módulos, agência). |
+
+Ao carregar a página, o `AuthProvider` lê o `user` salvo e chama `restoreSession()`, que troca o cookie por um access novo. Se não der, limpa tudo e o usuário volta para o login. O logout de outra aba apaga o marcador e derruba o access desta aba também.
+
+Um refresh legado em `localStorage` (`miggo_refresh_token`) é trocado uma vez pelo cookie e apagado (`src/services/jwtAuth.ts`).
+
+## O interceptor de `fetch`
+
+`setupAuthFetchInterceptor()` roda uma vez em `src/main.tsx`, antes do primeiro render, e substitui `window.fetch`. Para cada chamada:
+
+1. **Decide se é API.** É API a chamada de mesma origem com caminho `/api/` (a Plataforma, via proxy) **ou** a chamada para a origem de `VITE_MIGGOAI_API_URL` com caminho `/api/` (o MiggoAI). Nenhuma outra origem recebe o token.
+2. **Renova antes.** Se o access expira em menos de 15 s, renova primeiro. Vários requests ao mesmo tempo esperam o **mesmo** refresh, para não queimar um refresh rotativo com corrida.
+3. **Anexa o token.** Remove qualquer `Authorization` que não seja Bearer (por exemplo `Api-Key`, que é só para serviços) e põe `Authorization: Bearer <access>`.
+4. **Tenta de novo no 401.** Se a resposta for `401`, renova e repete a chamada uma vez. Se o refresh falhar, limpa a sessão e manda para `/signin`.
+
+Endpoints de autenticação (`/account/login/`, `/account/token/`, `/token/refresh/`, `/account/register/`, `/account/google/`) não passam pela renovação nem pelo retry.
+
+O refresh vai para `VITE_JWT_REFRESH_URL` (default `/api/v1/account/token/refresh/`).
+
+## `AuthContext` e `useAuth`
+
+`AuthContext` (`src/context/AuthContext.tsx`) guarda `user`, `loading` e `error` e expõe as operações de conta. As telas usam `useAuth()` (`src/hooks/authHook.ts`), que também navega para a home da área depois do login.
+
+| Operação | Endpoint da Plataforma |
+|---|---|
+| `login` | `POST /api/v1/account/login/` — o access vem no corpo, o refresh no cookie. `401` = credencial inválida; `403` traz o motivo do backend (conta inativa, agência suspensa, domínio errado) e a tela mostra como veio. |
+| `loginWithGoogle` | `POST /api/v1/account/google/` com `{ credential }` do Google |
+| `register` | `POST /api/v1/account/register/` |
+| `logout` | `POST /api/v1/account/logout/` (o estado local é limpo mesmo se a chamada falhar) |
+| `updateProfile` | `PATCH /api/v1/account/update/<id>/` |
+| `requestPasswordReset`, `confirmPasswordReset` | `POST /api/v1/account/password-reset/request/` e `.../confirm/` |
+| `requestVerificationCode` | `GET /api/v1/client/generate-activation-code/<clientId>/` |
+
+O cadastro de cliente acontece no [Onboarding no Web app](/web/onboarding); `/signup` só redireciona para lá.
+
+O tipo `User` traz `role` (`admin`, `manager`, `client`, `agencia_admin`, `agencia_membro`), `is_staff`, `is_superuser`, `agencia`, `agencia_nome` e `modulos`. É isso que os guards e `useRoleArea` usam para decidir a área e o que mostrar. Veja [Roteamento e áreas](/web/roteamento).
+
+## Login com Google
+
+Com `VITE_GOOGLE_CLIENT_ID` definida, o `main.tsx` envolve o app em `GoogleOAuthProvider` e os formulários de login e cadastro mostram o botão. O `credential` devolvido pelo Google vai para `loginWithGoogle`. Sem a variável, o botão some.
+
+## Token da Plataforma no MiggoAI
+
+O [painel de IA](/web/painel-de-ia) chama o MiggoAI direto do navegador com o mesmo Bearer. O MiggoAI valida o JWT da Plataforma (RS256) e só aceita usuário de gestão Miggo. Veja [Autenticação do MiggoAI](/miggoai/autenticacao).

@@ -1,0 +1,128 @@
+---
+title: "Deploy da Plataforma"
+description: "Como uma versão do backend-miggo chega à produção: imagem no ECR, troca manual no Dokploy, serviços web e worker, migrations e checagens."
+icon: "cloud-upload"
+---
+
+O caminho de uma versão é: **merge na `main` → GitHub Actions constrói a imagem e publica no Amazon ECR → alguém troca a imagem no Dokploy**. O workflow não faz deploy; a troca de versão é manual.
+
+| Ambiente | API | Front que a consome |
+|---|---|---|
+| Produção | `https://api.miggomkt.com.br` | `https://app.miggomkt.com.br` |
+| Homologação | `https://test-api.miggomkt.com.br` | `https://teste.miggomkt.com.br` |
+
+Ver também [Ambientes](/arquitetura/ambientes).
+
+## Build da imagem no ECR
+
+Workflow `.github/workflows/docker-ecr.yml`:
+
+| Item | Como funciona |
+|---|---|
+| Gatilho | `push` na `main` e `workflow_dispatch`. Os jobs só rodam na `main`; a `develop` não gera imagem |
+| Concorrência | um build por branch; push novo cancela o anterior |
+| Job `check` | Python 3.11, `pip install -r requirements.txt` e `python manage.py check` com valores fictícios e uma `JWT_PRIVATE_KEY` descartável gerada na hora |
+| Job `build` | depende do `check`; environment `production` |
+| Autenticação na AWS | OIDC (`role-to-assume`), sem chave de acesso guardada no GitHub |
+| Tags | `<registry>/<ECR_REPOSITORY>:<sha do commit>` (imutável, serve para voltar versão) e `:latest` |
+| Plataforma | `vars.BUILD_PLATFORM`, padrão `linux/amd64` |
+
+`vars` do environment `production` no GitHub: `AWS_ROLE_ARN`, `AWS_REGION` (o registry fica em `us-east-2`), `ECR_REPOSITORY` (ex.: `backend-miggo`; vazia, o job falha com erro explícito) e, opcional, `BUILD_PLATFORM`.
+
+## Publicar uma versão
+
+<Steps>
+  <Step title="Conferir o build">
+    No GitHub Actions, o workflow `docker-ecr` do commit da `main` terminou verde. Anote o SHA.
+  </Step>
+  <Step title="Trocar a imagem no Dokploy">
+    No serviço web, aponte a imagem para `<registry>/backend-miggo:<sha>` e faça o redeploy. Repita no serviço de worker, com a **mesma tag**.
+  </Step>
+  <Step title="Deixar o web migrar">
+    O `migrate` roda na subida do web. O worker não migra: suba o web primeiro.
+  </Step>
+  <Step title="Verificar">
+    ```bash
+    curl https://api.miggomkt.com.br/health/
+    ```
+    Confira os logs do container (`docker logs` ou o painel do Dokploy) e, se a versão mexe em fila, `python manage.py celery_ping` no container do web.
+  </Step>
+</Steps>
+
+Para voltar versão, troque a imagem para o SHA anterior. Migration já aplicada **não volta** com a troca de imagem: migration destrutiva precisa de plano próprio.
+
+### Ordem entre serviços
+
+- Mudança de contrato com o MiggoAI: **backend-miggo primeiro**, depois o MiggoAI. Ver [Deploy do MiggoAI](/miggoai/deploy).
+- Variável nova: cadastre no Dokploy **antes** de trocar a imagem. Obrigatória ausente impede o container de subir.
+- Flag de fila que muda contrato (`*_JOBS_ASYNC`): front que trata o `202`, backend, worker e só então a flag.
+
+## A imagem
+
+`dockerfile` na raiz: `python:3.11-slim`, dependências do `requirements.txt` e o Chromium do Playwright (`playwright install --with-deps chromium`), usado como último recurso na raspagem de site do onboarding. Declara `EXPOSE 5555` (Flower); o gunicorn escuta em `8000`, porta que o `dockerfile` não declara. Usa `ENTRYPOINT ["/app/docker-entrypoint.sh"]`.
+
+O `CMD` do web:
+
+```bash
+python manage.py migrate --noinput \
+  && python manage.py collectstatic --noinput \
+  && gunicorn core.wsgi:application --bind 0.0.0.0:8000 --workers 4 --threads 2 \
+       --timeout 60 --access-logfile - --error-logfile - --capture-output
+```
+
+`migrate` roda no start, e não no build, porque as settings exigem as variáveis do banco, que só existem em runtime.
+
+### Entrypoint: `ROLE`
+
+Web e worker usam **a mesma imagem**; o serviço de worker no Dokploy só muda a env.
+
+| `ROLE` | O que sobe |
+|---|---|
+| ausente ou `web` | o `CMD` acima e, em segundo plano, o Flower |
+| `worker` | o worker Celery das filas `interativo`, `integracoes` e `leve`, sem migrate, collectstatic nem Flower |
+| outro valor | recusa subir (`exit 64`) |
+
+Filas, flags e Flower: [Filas e Celery](/plataforma/filas-e-celery).
+
+<Warning>
+  `docker-entrypoint.sh` precisa de fim de linha LF (o `.gitattributes` força `*.sh text eol=lf`). Com CRLF o container morre com `/bin/sh^M: bad interpreter`.
+</Warning>
+
+## Rede, estáticos e mídia
+
+| Item | Como está |
+|---|---|
+| Proxy | Traefik termina o HTTPS e injeta `X-Forwarded-Proto: https`; com `DEBUG=False` o Django confia nesse header |
+| Healthcheck | `GET /health/`, fora de `/api/v1/`, sem autenticação e fora do redirecionamento HTTPS |
+| Estáticos | coletados no boot e servidos pelo WhiteNoise |
+| Mídia | S3 com `USE_S3=True`. Sem S3, o próprio Django serve `/media/` — fallback, não o caminho desejado |
+| Limite de upload | três pontos, vale o menor: nginx do front (`client_max_body_size`), Traefik (100 MB) e Django (`FILE_UPLOAD_MAX_MEMORY_SIZE`, 100 MB) |
+
+## Variáveis que mudam por ambiente
+
+A lista completa está em [Variáveis de ambiente](/plataforma/configuracao). O que precisa ser diferente de desenvolvimento, e de homologação para produção:
+
+| Variável | Produção | Atenção |
+|---|---|---|
+| `DEBUG` | `False` | |
+| `SECRET_KEY`, `JWT_PRIVATE_KEY` | próprias do ambiente | A `JWT_PRIVATE_KEY` forma par com a `MIGGO_JWT_PUBLIC_KEY` do MiggoAI do mesmo ambiente |
+| `ALLOWED_HOSTS`, `CORS_ALLOWED_ORIGINS`, `CSRF_TRUSTED_ORIGINS` | domínios do ambiente | |
+| `FRONTEND_URL`, `BACKEND_URL` | domínios do ambiente | Sem `FRONTEND_URL`, homologação manda links para a produção |
+| `MIGGOAI_V2_API_URL`, `MIGGOAI_V2_API_KEY` | MiggoAI do mesmo ambiente (`https://backend-ai.miggomkt.com.br` em produção) | |
+| `STRIPE_*`, `LATE_API_KEY`, `OPENAI_API_KEY`, `EMAIL_*` | credenciais reais | Em homologação, nunca as de produção: a chave do Zernio publica de verdade e a da Stripe cobra de verdade |
+| `REDIS_URL`, `ROLE`, `FLOWER_BASIC_AUTH` | conforme o serviço | `ROLE=worker` só no serviço de worker |
+| `*_WEBHOOK_TOKEN`, `STRIPE_WEBHOOK_SECRET` | iguais ao cadastrado no painel de cada provedor | Vazios, os webhooks respondem `503` |
+
+## Depois do deploy
+
+<AccordionGroup>
+  <Accordion title="Webhooks apontando para o host certo">
+    No painel de cada provedor, a URL tem de apontar para a API do ambiente e o segredo tem de casar com a variável. Ver [Webhooks](/plataforma/guias/webhooks).
+  </Accordion>
+  <Accordion title="Rotinas agendadas">
+    As rotinas são Schedules do Dokploy, não sobem com o container. Comando novo precisa de schedule novo. Ver [Tarefas agendadas](/plataforma/tarefas-agendadas).
+  </Accordion>
+  <Accordion title="MiggoAI acessível">
+    O backend precisa alcançar `MIGGOAI_V2_API_URL` com credencial válida, senão a geração para. As chamadas e respostas ficam na tabela `Integration`.
+  </Accordion>
+</AccordionGroup>

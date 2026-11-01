@@ -1,0 +1,78 @@
+---
+title: "Mídia e acervo"
+description: "Galeria de mídia do cliente, upload em pedaços, análise por IA e acervo interno de fotos da Miggo no app media."
+icon: "image"
+---
+
+O app `media` guarda os arquivos de mídia (fotos e vídeos) dos clientes — a galeria reutilizável e as mídias anexadas a posts — e o **acervo interno da Miggo** (`StockPhoto`), um banco de fotos da equipe, sem dono, em tabela própria. A galeria e o acervo alimentam o MiggoAI, que escolhe uma foto real como referência ao gerar a arte de um post.
+
+## Models principais
+
+| Model | Papel |
+|---|---|
+| `Media` | Arquivo do cliente. `from_media_library` diz a **origem** e não muda depois do upload: `True` = galeria do cliente, `False` = mídia de post (subida no card, template importado, arte entregue pelo MiggoAI). Guarda `description` (do cliente), `ai_description`/`ai_keywords` (da análise) e a miniatura gerada no `save()`. |
+| `StockPhoto` | Foto do acervo interno, com `nicho`, `tema`, `sentimento`, `palavras_chave`, `fonte` (`upload` ou `pixabay`), `ativo` (curadoria) e `escopo` (`global` ou `restrita`). |
+| `StockPhotoUsage` | Registro de que uma foto do acervo foi usada por um cliente numa geração. Único por `(foto, cliente, geração)`. |
+
+## Galeria do cliente
+
+- **Upload.** Multipart único ou em pedaços (`upload-chunk/`): cada pedaço é uma requisição curta e reenviável, gravada no storage do projeto (S3 em produção), para funcionar com vários containers. Upload por URL também é aceito.
+- **Caminho no storage:** `<client_hash>/<media_path>/<nome com hash>`. A extensão vem dos bytes do arquivo quando o nome não a traz.
+- **Limites no teste grátis:** sem assinatura `ACTIVE`, imagem até `UPLOAD_MAX_IMAGE_SIZE_MB` (10) e vídeo até `UPLOAD_MAX_VIDEO_SIZE_MB` (50), e no máximo `TRIAL_MEDIA_MAX_FILES` arquivos. Assinante não tem trava de tamanho.
+- **Listagem:** com `?from_media_library=true`, a galeria inclui fotos em uso em posts, que é o mesmo recorte que o MiggoAI consulta. Sem o parâmetro, vale o recorte antigo (só mídias sem post).
+- **Vida útil:** foto da galeria nunca é apagada por perder vínculo com post. Mídia de post que fica sem vínculo é apagada (signal `post_delete` em `app.post`).
+
+## Análise por IA
+
+- O comando `analyze_media_library` (a cada 15 minutos no Dokploy) envia as fotos ainda não analisadas da galeria à visão da OpenAI (`MEDIA_ANALYSIS_MODEL`, padrão `gpt-4o-mini`) e grava `ai_description` e `ai_keywords`. Mais recentes primeiro; `--limit` conta só as chamadas pagas.
+- Vídeo, arquivo ausente e imagem recusada pela OpenAI são descartados da fila. Erro temporário mantém a mídia na fila até 3 falhas.
+- Com `MIDIA_ASYNC=1` e fila ativa, cada análise vira uma task Celery que recebe só o `media_id`, sem retry (a análise é paga).
+- `--report` mostra contagens e amostras da fila sem chamar a IA.
+
+<Note>
+`ai_description` (análise da galeria) e `description` (texto do cliente, preenchido por IA no upload quando vazio) são campos diferentes, escritos por mecanismos diferentes.
+</Note>
+
+## Acervo interno (`StockPhoto`)
+
+- **Isolamento por construção.** O acervo é outra tabela: foto do acervo nunca aparece na galeria de um cliente. As rotas do acervo exigem usuário da equipe (`IsManagementUserOnly`); cliente recebe `403` e Api-Key sozinha, `401`.
+- **Quem pode usar uma foto** é decidido só por `StockPhoto.objects.elegiveis_para(client)`: foto ativa **e** (global, **ou** o cliente está em `clientes_permitidos`, **ou** o nicho do cliente está em `nichos_permitidos`). Cliente sem nicho não casa restrição por nicho. Foto restrita sem vínculo não aparece para ninguém (`visivel_para_ninguem` na resposta).
+- **`nicho` (texto) é eixo de busca**; quem restringe é `escopo` + os vínculos. Vínculo em foto `global` é recusado com `400`, para a foto não vazar para a carteira inteira.
+- **Curadoria:** tirar uma foto do acervo é `ativo=false`, não `DELETE`. Foto já usada não pode ser apagada (`409`), porque o registro de uso é a base do anti-fadiga.
+- **Anti-fadiga:** `POST /api/v1/media/acervo/uso/` registra o uso de forma idempotente, e a seleção de fotos exclui o que o cliente usou dentro de `reuse_days` da sua `ClientMediaPreference`. A mesma foto global pode servir a clientes diferentes.
+
+<Warning>
+Toda consulta de fotos elegíveis passa por `elegiveis_para`. Refazer o filtro à mão numa view nova é a forma mais fácil de vazar foto de um cliente para outro.
+</Warning>
+
+## Fontes externas (Pixabay)
+
+`fontes_externas.py` importa fotos de bancos externos para o acervo. A única fonte é o Pixabay (`PIXABAY_API_KEY`, sem ela a busca responde `503`):
+
+- Download só por HTTPS de hosts `pixabay.com`, sem seguir redirect, até 15 MB e só `image/*`. A URL é obtida de novo pelo backend, nunca aceita do corpo.
+- Buscas em cache por 24 horas e limite de 100 requisições por minuto, como pedem os termos do Pixabay. Sem Redis, cache e limite valem por processo.
+- A mesma imagem não é importada duas vezes (unicidade de `fonte` + `fonte_id`).
+- A chave nunca vai a log ou resposta de erro.
+
+Para adicionar uma fonte: herde de `FonteExterna`, implemente `disponivel`, `buscar`, `obter` e `baixar`, registre em `FONTES` e acrescente a choice em `STOCK_PHOTO_FONTES` com migration.
+
+## Comandos
+
+| Comando | Para quê |
+|---|---|
+| `analyze_media_library [--limit N] [--client-id N] [--force] [--dry-run] [--report]` | Análise da galeria por IA. |
+| `sanear_galeria` | Corrige o `from_media_library` de mídias antigas pelo tempo entre upload e primeiro vínculo. Prévia por padrão. |
+
+## Onde fica no código
+
+| Caminho | Conteúdo |
+|---|---|
+| `app/media/models.py` | `Media`, `StockPhoto` (e `elegiveis_para`), `StockPhotoUsage` |
+| `app/media/views.py`, `serializers.py` | Galeria, acervo e importação |
+| `app/media/chunked_upload.py` | Upload em pedaços |
+| `app/media/services.py`, `saneamento.py` | Regra de origem da mídia e saneamento |
+| `app/media/analysis.py`, `cron.py`, `tasks.py` | Análise por IA |
+| `app/media/limits.py` | Limites do teste grátis |
+| `app/media/fontes_externas.py` | Pixabay |
+
+Endpoints: veja a [Referência de API](/plataforma/api-referencia).

@@ -1,0 +1,56 @@
+---
+title: "Histórico e relatórios"
+description: "Log de auditoria das ações de clientes e os relatórios do painel administrativo no app history."
+icon: "history"
+---
+
+O app `history` tem duas partes independentes:
+
+- o **log de auditoria** `History`, gravado automaticamente por signals quando um **cliente** altera um model da plataforma;
+- os **relatórios e dashboards** do `/admin` (posts, clientes, KPIs e gráficos), que consultam `Post`, `Client` e `Subscription` diretamente, sem usar o `History`.
+
+Endpoints: veja a [Referência de API](/plataforma/api-referencia) (grupo *Histórico*). Relatório de clientes e dashboards exigem usuário de gestão (`IsManagementUser`).
+
+## Model
+
+| Model | Papel |
+|---|---|
+| `History` | Uma ação: `user`, `action` (`CREATE`, `UPDATE`, `DELETE`, `OTHER`), `model_name`, `object_id`, `description` em pt-BR, `fields_changed` (`{campo: {from, to}}`) e `field_snapshot`. |
+
+## O que entra no log
+
+<Note>
+Só ações de usuários com `role='client'`. Equipe, automações (cron, MiggoAI, management commands) e chamadas sem request não geram linha. O rastro das mudanças de status de post é o `PostStatusEvent`, do app [`post`](/plataforma/apps/post); o das chamadas a serviços externos é o app [`integration`](/plataforma/apps/integration).
+</Note>
+
+- **Models rastreados:** todo model de módulo `app.*`, exceto `History`, `CustomUser`, `UserMeta`, `DesignReference` e `PostStatusEvent`.
+- **Autor:** o usuário da requisição atual, obtido pelo `CurrentRequestMiddleware`. Ele guarda a requisição numa `ContextVar` e os signals leem `request.user` depois que o DRF autenticou. O middleware fica depois de `AuthenticationMiddleware` em `MIDDLEWARE`.
+- **Update:** compara com a versão no banco e grava o diff em `fields_changed`.
+- **Delete:** grava sem snapshot. Falha ao montar o nome legível (cascata) não interrompe a deleção.
+
+<Warning>
+`bulk_create`, `bulk_update` e `queryset.update()` não disparam signals no Django, então ficam fora do log.
+</Warning>
+
+## Limpeza
+
+`purge_non_client_history` apaga do `History` tudo que não é ação de cliente, incluindo linhas antigas gravadas antes da regra atual. Sem `--yes`, só relata o que apagaria.
+
+```bash
+python manage.py purge_non_client_history                         # relatório
+python manage.py purge_non_client_history --yes --batch-size 2000  # apaga em lotes
+```
+
+<Warning>
+Comando destrutivo, sem backup automático. A única trava é a flag `--yes`.
+</Warning>
+
+## Onde fica no código
+
+| Caminho | Conteúdo |
+|---|---|
+| `app/history/models.py` | `History`. |
+| `app/history/signals.py` | `log_save`, `log_delete` e os filtros `should_track_action` / `should_track_model`. |
+| `app/history/middleware.py` | `CurrentRequestMiddleware` e `get_current_user`. |
+| `app/history/views.py` | Listagem do histórico, relatórios e dashboards do admin. |
+| `app/history/management/commands/purge_non_client_history.py` | Limpeza do log. |

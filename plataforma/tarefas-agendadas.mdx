@@ -1,0 +1,78 @@
+---
+title: "Tarefas agendadas da Plataforma"
+description: "O que roda periodicamente no backend-miggo, quem dispara cada rotina e como diagnosticar uma que não rodou."
+icon: "clock"
+---
+
+## Quem agenda o quê
+
+| Mecanismo | Onde vive | Para quê |
+|---|---|---|
+| **Schedules do Dokploy** | Painel do Dokploy, por ambiente | Chamam `python manage.py <comando>` nos intervalos de produção. **É a fonte da verdade do agendamento** |
+| **`CRONJOBS`** (`django-crontab`) | `core/settings.py` | Só `app.post.cron.send_scheduled_reviews`, a cada minuto |
+| **`run_cron.py`** | Raiz do repositório | Laço local para desenvolvimento, com um subconjunto das rotinas |
+| **Worker Celery** | Serviço com `ROLE=worker` | Executa o que os schedules enfileiram. Não agenda nada: **não há Celery beat** |
+
+<Warning>
+  Rotina nova não roda sozinha: cadastre o schedule no Dokploy de cada ambiente. Com `<COMANDO>_ASYNC=1` na env do schedule, o comando só enfileira e o worker executa — ver [Filas e Celery](/plataforma/filas-e-celery).
+</Warning>
+
+## Rotinas
+
+| Comando | Intervalo | O que faz |
+|---|---|---|
+| `notify_trial_ending` | diária | Avisa quem está a 3 e a 1 dia do fim do teste; o WhatsApp usa `TRIAL_ENDING_FLOW_ID` |
+| `expire_trials` | diária | Encerra testes vencidos que não converteram, avisa o cliente (in-app e WhatsApp, `TRIAL_ENDED_FLOW_ID`) e notifica os admins |
+| `check_invoices` | diária | Marca como `OVERDUE` as faturas vencidas e notifica o cliente. Não cobra: quem tenta o cartão é a Stripe |
+| `check_subscriptions` | diária | Expira quem passou da carência (`BILLING_GRACE_DAYS`) |
+| `scan_gateway_orphans` | diária | Procura no gateway assinaturas e cobranças sem dono na base local |
+| `disconnect_inactive_zernio_accounts` | diária | Desconecta do Zernio as contas de trials expirados há 15 dias ou mais e de inadimplentes há 40 dias ou mais. Só grava com `--apply` |
+| `sync_stripe_billing` | a cada 6 h | Relê na Stripe as assinaturas vinculadas e reespelha status e faturas: cobre webhook perdido |
+| `sync_asaas_billing` | a cada 6 h | O mesmo, no Asaas |
+| `send_marketing_emails` | horária | Dispara as campanhas de e-mail marketing elegíveis |
+| `pedir_primeira_geracao` | a cada 15 min | Pede ao MiggoAI a primeira geração de quem está em teste e ainda não tem post gerado |
+| `analyze_media_library` | a cada 15 min | Descreve por IA as imagens da galeria ainda sem descrição — é isso que torna a foto encontrável pelo MiggoAI |
+| `send_grid_approval_reminders` | a cada 5 min | Cobra no WhatsApp a aprovação do grid pendente, respeitando o intervalo entre lembretes e o teto `GRID_APPROVAL_MAX_REMINDERS` |
+| `generate_pending_grids` | a cada 5 min | Gera o grid personalizado das sessões de onboarding com estilo aprovado e geração pendente |
+| `reconcile_zernio_posts` | a cada 10 min (`*/10`); hoje não está cadastrado no Dokploy | Fecha as publicações presas em `sending`/`pending` perguntando o desfecho ao Zernio — rede de segurança do webhook de status |
+| `sync_jira_ticket_status` | periódico | Atualiza o status dos tickets de suporte pela coluna do issue no Jira |
+| `send_scheduled_reviews` | a cada minuto (`CRONJOBS`) | Envia ao ManyChat as revisões de post agendadas (`ScheduledReview`) cuja hora chegou |
+
+Argumentos e exemplos de cada comando: [Comandos](/plataforma/comandos).
+
+Todas as rotinas são **idempotentes** e terminam com um resumo no log: rodar de novo é seguro.
+
+### Cobrança: webhook e rotina se complementam
+
+O webhook reage em tempo real ao que o gateway avisa ([Webhooks](/plataforma/guias/webhooks)). As rotinas cuidam do que o gateway não avisa — o teste grátis local, sem cartão, não existe na Stripe — e servem de rede de segurança para evento perdido. Detalhes de regras em [Assinaturas e cobrança](/plataforma/apps/subscription).
+
+## Rodar localmente
+
+Chame o comando da rotina que quer testar, como o Dokploy faz:
+
+```bash
+python manage.py send_grid_approval_reminders
+```
+
+O `run_cron.py` roda em laço `check_subscriptions` e `check_invoices` (a cada 30 s) e `send_scheduled_reviews` (a cada 60 s), intervalos curtos só para teste:
+
+```bash
+python run_cron.py
+```
+
+## Diagnosticar uma rotina que não rodou
+
+<Steps>
+  <Step title="Rode o comando na mão">
+    `python manage.py <comando>`. Se funciona assim, o problema é o agendamento, não o código.
+  </Step>
+  <Step title="Veja o log do schedule e do worker">
+    Com a flag `_ASYNC` ligada, o log do schedule só diz que a rotina foi enfileirada; o resultado está no log do worker. Disparo que ficou parado na fila além do `expires` é descartado.
+  </Step>
+  <Step title="Olhe a tabela Integration">
+    As rotinas registram chamadas externas e respostas lá — tela `/admin/logs` ou [Log de integrações](/plataforma/apps/integration).
+  </Step>
+  <Step title="Confira o schedule no Dokploy">
+    Comando, cron, ambiente e as variáveis do schedule.
+  </Step>
+</Steps>

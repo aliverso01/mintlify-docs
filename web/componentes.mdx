@@ -1,0 +1,60 @@
+---
+title: "Componentes de interface do Web app"
+description: "Os componentes reutilizáveis do frontend-miggo e quando criar um componente novo."
+icon: "component"
+---
+
+O Web app nasceu do template TailAdmin (React 19 + Tailwind 4). O design system vive em `src/components/ui/` e `src/components/form/`, e o catálogo com a API de cada componente é o `design.md` na raiz do repositório. As props ficam no próprio código; esta página diz **o que existe** e **quando usar**.
+
+<Warning>
+Não reimplemente botão, modal, input, tabela, toast ou skeleton na mão. Use os componentes abaixo.
+</Warning>
+
+## Interface (`src/components/ui/`)
+
+| Componente | Import | Use para |
+|---|---|---|
+| `Button` | `ui/button/Button` | Toda ação. Variantes `primary` e `outline`, tamanhos `sm` e `md`. |
+| `Modal` | `ui/modal` (export `Modal`) | Diálogos. Estado com `useModal()`; largura com `max-w-[NNNpx] m-4`. Fecha com `Esc`. |
+| `useNotification` | `ui/NotificationProvider` | `toast(...)` e `confirm(...)`. Nunca `alert()` ou `window.confirm()`. |
+| `Table`, `TableHeader`, `TableBody`, `TableRow`, `TableCell` | `ui/table` | Tabelas, sempre dentro de `<div className="overflow-x-auto">`. `SortableHeader` e `TableExport` ficam na mesma pasta. |
+| `Skeleton`, `SkeletonTable` | `ui/skeleton/Skeleton` | Estado de carregamento (prefira a spinner). |
+| `Badge`, `Alert`, `Avatar` | `ui/badge`, `ui/alert`, `ui/avatar` | Status, avisos e foto de perfil. |
+| `Dropdown`, `DropdownItem` | `ui/dropdown` | Menus suspensos. |
+| `Pagination` | `ui/pagination/Pagination` | Listas paginadas. |
+| `ResponsiveImage`, componentes de vídeo | `ui/images`, `ui/videos` | Mídia fluida com proporção fixa. |
+
+## Formulários (`src/components/form/`)
+
+| Componente | Use para |
+|---|---|
+| `input/InputField`, `Label`, `input/TextArea`, `input/Checkbox`, `input/Radio`, `input/FileInput` | Campos padrão; `InputField` aceita `success`, `error` e `hint`. |
+| `Select`, `MultiSelect` | Seleção com dropdown estilizado. |
+| `ClientSearchSelect`, `ClientMultiSelect` | Escolher cliente(s) com busca no servidor. É o padrão em qualquer tela de gestão que filtra por cliente. |
+| `date-picker` | Data com flatpickr. |
+| `switch/Switch` | Liga/desliga. |
+| `group-input/PhoneInput` | Telefone com máscara e código de país. |
+
+## Página e layout (`src/components/common/`)
+
+| Componente | Papel |
+|---|---|
+| `PageMeta` | Título da aba e descrição por página (`react-helmet-async`). |
+| `PageBreadCrumb` | Cabeçalho e breadcrumb da tela. |
+| `ComponentCard`, `StatsCard`, `ChartTab` | Blocos de dashboard. |
+| `MarcaLogo` | Logo da marca do host (Miggo ou agência). Use no lugar de um `<img>` com o logo fixo. |
+| `RouteLoader` | Carregamento usado pelos guards. |
+| `ScrollToTop`, `RouteAnalytics` | Montados uma vez no `App.tsx`. |
+
+Componentes por domínio (`briefing/`, `Clients/`, `Subscription/`, `analytics/`, `onboarding/`, `support/`, `Agencia/`, `modulos/`, `shared/` etc.) servem a uma área de produto. Os guards de rota estão em [Roteamento e áreas](/web/roteamento).
+
+## Estrutura padrão de uma tela
+
+Toda tela abre com `PageMeta` e `PageBreadcrumb`. O passo a passo está em [Criar uma tela no Web app](/web/guias/criar-uma-tela).
+
+## Quando criar um componente novo
+
+1. Procure em `ui/`, `form/`, `common/` e no `design.md`. Se existe algo próximo, estenda por prop.
+2. Usado por uma tela só: crie na pasta da tela em `src/pages/<Area>/`.
+3. Usado por duas ou mais telas: mova para `src/components/<dominio>/` (ou `ui/` se não tiver regra de negócio).
+4. Sempre com par `dark:` em toda cor, layout mobile-first e texto em pt-BR. Veja [Layout e tema](/web/layout-e-tema).

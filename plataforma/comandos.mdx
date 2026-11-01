@@ -1,0 +1,99 @@
+---
+title: "Comandos da Plataforma"
+description: "Management commands do backend-miggo: rotinas agendadas, manutenção sob demanda e ferramentas de teste, com seus argumentos."
+icon: "terminal"
+---
+
+Todo comando roda com `python manage.py <comando>`. Os que alteram dados em massa rodam em **simulação por padrão** e só gravam com a flag explícita (`--apply`, `--yes`, `--aplicar`). Quando e com que frequência as rotinas rodam: [Tarefas agendadas](/plataforma/tarefas-agendadas).
+
+## Rotinas agendadas
+
+### Cobrança — `app/subscription`
+
+| Comando | Argumentos | O que faz |
+|---|---|---|
+| `notify_trial_ending` | — | Avisa quem está a 3 e a 1 dia do fim do teste |
+| `expire_trials` | — | Encerra testes vencidos (confere antes se a Stripe já converteu) e avisa o cliente |
+| `check_invoices` | — | Marca faturas vencidas como `OVERDUE` e notifica |
+| `check_subscriptions` | — | Expira assinaturas inadimplentes depois da carência `BILLING_GRACE_DAYS` |
+| `sync_stripe_billing` | — | Reespelha status e faturas das assinaturas vinculadas na Stripe |
+| `sync_asaas_billing` | — | O mesmo, no Asaas |
+| `scan_gateway_orphans` | `--days` | Lista no gateway assinaturas e cobranças sem dono na base local |
+| `disconnect_inactive_zernio_accounts` | `--apply` | Desconecta do Zernio contas de trials expirados (≥ 15 dias) e inadimplentes (≥ 40 dias). **Remove a conta no Zernio, sem volta** |
+
+### Onboarding e conteúdo
+
+| Comando | Argumentos | O que faz |
+|---|---|---|
+| `generate_pending_grids` | `--limit N` | Gera o grid das sessões com estilo aprovado e geração pendente |
+| `send_grid_approval_reminders` | — | Cobra no WhatsApp a aprovação do grid pendente |
+| `pedir_primeira_geracao` | `--dry-run`, `--client-id` | Pede ao MiggoAI a primeira geração de quem está em teste sem post gerado |
+| `reconcile_zernio_posts` | `--minutos N` (padrão 15) | Fecha publicações presas em `sending`/`pending` há pelo menos N minutos, consultando o Zernio. Não marca falha no que não conseguiu confirmar |
+| `analyze_media_library` | `--limit`, `--client-id`, `--force`, `--dry-run`, `--report`, `--workers` | Descreve por IA as imagens da galeria sem descrição (padrão: 50 por execução; `--limit 0` tira o teto) |
+
+```bash
+# quanto há na fila de análise, sem chamar a IA
+python manage.py analyze_media_library --dry-run
+
+# por que a fila está vazia ou travada
+python manage.py analyze_media_library --report
+
+# reanalisar um cliente, inclusive o que já tinha análise
+python manage.py analyze_media_library --client-id 42 --force
+```
+
+### Comunicação
+
+| Comando | Argumentos | O que faz |
+|---|---|---|
+| `send_marketing_emails` | `--dry-run`, `--campaign <id>` | Dispara as campanhas de e-mail marketing elegíveis hoje. A trava contra envio duplicado é o `EmailDispatch` |
+| `sync_jira_ticket_status` | `--dry-run`, `--todos` | Atualiza o status dos tickets de suporte pela coluna do issue no Jira |
+
+## Manutenção sob demanda
+
+Não agende estes comandos.
+
+| Comando | Argumentos | O que faz |
+|---|---|---|
+| `seed_marketing_emails` | — | Cria ou atualiza a régua de e-mails do trial (`update_or_create` por nome; rodar de novo não duplica) |
+| `sync_conversations` | — | Cria a `Conversation` de todo cliente com WhatsApp já conectado. Rode uma vez depois de um banco novo; depois disso o signal cria sozinho |
+| `backfill_post_status_events` | `--dry-run` | Reconstrói `PostStatusEvent` a partir do `History` |
+| `repair_platform_integrations` | `--client`, `--apply` | Realinha `PlatformIntegration` com as contas realmente conectadas no Zernio |
+| `sanear_galeria` | `--client-id`, `--amostra`, `--aplicar` | Reclassifica a galeria do cliente: mídia avulsa (ou anexada a post, mas vinda da galeria) volta a ficar disponível, e artes de post saem dela. Prévia por padrão; `--aplicar` grava. Rode antes de uma análise em massa com `analyze_media_library` |
+| `merge_client_accounts` | `--origem`, `--destino`, `--apply`, `--backup-dir`, `--manter-origem-ativa`, `--conexao-origem-prevalece` | Migra os dados de uma conta duplicada para a oficial e bloqueia a duplicada |
+| `fix_active_onboarding` | `--apply`, `--email`, `--client-id`, `--created-before`, `--with-subscription`, `--mark-skipped`, `--batch-size` | Marca o onboarding como concluído para clientes `active=True` |
+| `backfill_billing_identities` | `--apply` | Grava a identidade de cobrança que o banco já conhece |
+| `reconcile_invoice_amounts` | `--dry-run` | Preenche o valor recebido das faturas relendo Stripe e Asaas |
+| `sync_stripe_refunds` | `--dry-run`, `--limit` | Reaplica na base os estornos e notas de crédito da Stripe |
+| `end_stripe_trials` | `--apply`, `--limit` | Lista e, com `--apply`, encerra as assinaturas em trial na Stripe |
+| `purge_non_client_history` | `--dry-run`, `--yes`, `--batch-size` | Apaga do `History` o que não é ação de cliente. **Destrutivo e sem volta** |
+
+<Warning>
+  Não agende `check_trials` (`app/client`): a regra de bloqueio de 7 dias não vale mais. Quem encerra testes é `expire_trials`.
+</Warning>
+
+## Ferramentas de diagnóstico e teste
+
+| Comando | Argumentos | O que faz |
+|---|---|---|
+| `celery_ping` | `--timeout` (padrão 5 s) | Envia `core.ping` ao broker e imprime só `OK` ou `FALHA`, nunca a URL do Redis |
+| `trigger_manychat_webhook` | `--subscriber-id`, `--text`, `--name`, `--phone`, `--continue`, `--option`, `--base-url` | Simula o ManyChat chamando o backend local, já autenticado com `MANYCHAT_WEBHOOK_TOKEN` |
+
+```bash
+# o cliente escreve no WhatsApp
+python manage.py trigger_manychat_webhook --subscriber-id 123 --text "quero ajustar a legenda"
+
+# o cliente toca num botão do flow casca
+python manage.py trigger_manychat_webhook --subscriber-id 123 --continue --option aprovar
+```
+
+## Comandos do Django
+
+| Comando | Quando |
+|---|---|
+| `check` | Depois de mexer em settings, models ou URLs; é o que a CI roda antes do build da imagem |
+| `makemigrations` + `migrate` | Toda alteração de model precisa de migration versionada |
+| `makemigrations --check` | Confere que não ficou migration por gerar |
+| `createsuperuser` | Criar o primeiro acesso de admin |
+| `shell` | Investigar dados pelo ORM, em vez de escrever script solto |
+| `spectacular --format openapi-json --file openapi.json` | Gerar o schema OpenAPI da API |

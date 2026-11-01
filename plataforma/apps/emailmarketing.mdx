@@ -1,0 +1,76 @@
+---
+title: "E-mail marketing"
+description: "Como o app emailmarketing dispara a régua de e-mails ancorada no ciclo de vida do cliente."
+icon: "mail"
+---
+
+O app `emailmarketing` implementa a **régua de e-mails**: campanhas escritas pela equipe na área `/admin` que disparam quando o cliente atinge um evento do ciclo de vida (cadastro, onboarding concluído, fim do trial) somado a um deslocamento em dias, ou numa data marcada. O envio é feito pelo comando `send_marketing_emails`, agendado fora da aplicação; o app não tem scheduler próprio.
+
+Endpoints: veja a [Referência de API](/plataforma/api-referencia) (grupo *E-mail marketing*). Todas as rotas de gestão exigem usuário de gestão (`IsManagementUser`); só a rota de clique é pública.
+
+## Models principais
+
+| Model | Papel |
+|---|---|
+| `EmailCampaign` | A campanha: `trigger_event`, `delay_days` (negativo = antes do evento), `scheduled_date`, `audience`, `segment`, `send_time`, limites de frequência próprios e `bypass_limits`. |
+| `EmailSegment` | Público salvo e reaproveitável. Modo `manual` (lista de clientes) ou `filters` (critério avaliado na hora do disparo). |
+| `EmailDispatch` | Um envio de uma campanha a um cliente: `status` (`PENDING`/`SENT`/`FAILED`), `token` do rastreio e cliques. Único por campanha e cliente. |
+| `EmailAsset` | Imagens enviadas para usar no corpo dos e-mails. |
+| `EmailMarketingSettings` | Singleton com os limites de frequência padrão. |
+
+## Quem recebe
+
+`services.destinatarios(campanha)` decide, para o dia de hoje:
+
+1. Descarta quem já tem `EmailDispatch` `SENT` dessa campanha e quem não tem e-mail.
+2. Resolve a data do evento de cada cliente: `signup` (cadastro), `onboarding_completed`, `trial_end` (`expires_at` do trial mais recente) ou `scheduled` (a data da campanha).
+3. Calcula `data_alvo = evento + delay_days` e só aceita se ela cair entre **hoje − 3 dias** e hoje (`JANELA_DE_ATRASO_DIAS`).
+4. Aplica o público: `audience` (todos, onboarding feito ou pendente) e, se houver, o `segment`, que restringe por cima.
+5. Sem `bypass_limits`, aplica os limites de frequência: para de enviar após N e-mails seguidos sem clique (`max_ignored_emails`) e respeita o intervalo mínimo desde o último e-mail (`min_interval_hours`). Vazio herda de `EmailMarketingSettings`; `0` desliga.
+
+<Warning>
+A janela de 3 dias é o que impede uma campanha recém-ativada de disparar para toda a base histórica. Ainda assim, ativar uma campanha de `signup` envia na hora para quem se cadastrou nos últimos 3 dias.
+</Warning>
+
+Filtros aceitos no modo `filters` (`audience.py`): `subscription` (`trial`, `trial_not_started`, `active`, `expired`), `plan` (`instagram`, `linkedin`, `both`), `onboarding_stage` (`novo`, `incompleto`, `completo`), `signup_within_days` (7, 15, 30) e `networks` (`instagram`, `linkedin`, `none`).
+
+## Envio
+
+`services.enviar_campanha`:
+
+- cria o `EmailDispatch` `PENDING` **antes** de enviar; a unicidade campanha + cliente impede envio duplicado por processos concorrentes;
+- abre uma conexão SMTP por lote e limita a 50 envios por minuto (`RATE_LIMIT_PER_WINDOW`);
+- substitui `{{ nome }}` no assunto e no corpo, aplica o estilo inline e o template `emails/marketing_base.html`;
+- remetente `"<sender_name>" <EMAIL_HOST_USER>`, com reply-to fixo;
+- falha de um e-mail grava `FAILED` com o erro e não interrompe o lote.
+
+O comando é agendado de hora em hora ([Tarefas agendadas](/plataforma/tarefas-agendadas)), e é isso que faz o `send_time` valer: o e-mail sai no primeiro run depois do horário.
+
+## Rastreio de clique
+
+Todo `href` absoluto do corpo vira `{BACKEND_URL}/api/v1/email-marketing/click/<token>/?to=<destino>&s=<assinatura>`. A assinatura é um HMAC-SHA256 do destino com a `SECRET_KEY`; sem ela a rota seria um redirecionador aberto no domínio da Miggo.
+
+<Warning>
+Sem `BACKEND_URL` configurado, os e-mails saem **sem rastreio**, com apenas um aviso no log.
+</Warning>
+
+## Comandos
+
+```bash
+python manage.py send_marketing_emails              # todas as campanhas ativas
+python manage.py send_marketing_emails --dry-run    # só conta os elegíveis
+python manage.py send_marketing_emails --campaign 3 # uma campanha, com as mesmas regras
+python manage.py seed_marketing_emails              # cria/atualiza as campanhas padrão da régua de trial (idempotente, por nome)
+```
+
+Rodar `send_marketing_emails` duas vezes no mesmo dia não duplica envio. Com 500 elegíveis, o lote leva cerca de 10 minutos por causa do rate limit.
+
+## Onde fica no código
+
+| Caminho | Conteúdo |
+|---|---|
+| `app/emailmarketing/models.py` | Models e `TRIGGER_EVENTS`. |
+| `app/emailmarketing/services.py` | `destinatarios`, `enviar_campanha`, `render_email`, rastreio. |
+| `app/emailmarketing/audience.py` | Filtros do público por parâmetros. |
+| `app/emailmarketing/views.py` | CRUD, preview, cálculo de público, envio de teste e redirecionador de clique. |
+| `app/emailmarketing/management/commands/` | `send_marketing_emails`, `seed_marketing_emails`. |

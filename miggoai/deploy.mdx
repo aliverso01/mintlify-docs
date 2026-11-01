@@ -1,0 +1,96 @@
+---
+title: "Deploy do MiggoAI"
+description: "Como a imagem do MiggoAI é construída no ECR e publicada no Dokploy, com web, worker, Flower e agendamentos."
+icon: "cloud-upload"
+---
+
+O serviço roda a imagem de `Dockerfile.backend` (Django + Gunicorn), construída na raiz do repositório. Não há `docker-compose.yml` versionado: os serviços (web, worker) são configurados no Dokploy, e a troca de versão lá é **manual**.
+
+## Build das imagens no ECR (GitHub Actions)
+
+O workflow `.github/workflows/docker-ecr.yml` constrói a imagem e a publica no **Amazon ECR**. Ele **não faz deploy**.
+
+| Item | Como está no workflow |
+| --- | --- |
+| Gatilho | `push` na `main` e `workflow_dispatch`, com `if: github.ref == 'refs/heads/main'`. A `develop` não gera imagem |
+| Matriz | `backend` (`Dockerfile.backend`, repositório em `vars.ECR_REPOSITORY_BACKEND`). A matriz também publica imagens fora do escopo deste serviço |
+| Environment | `production`, com `permissions: id-token: write` |
+| Autenticação na AWS | OIDC (`vars.AWS_ROLE_ARN`, `vars.AWS_REGION`; o registry da Miggo fica em `us-east-2`), sem chave guardada |
+| Tags | `<registry>/<repositório>:<sha do commit>` (imutável) e `:latest` |
+| Plataforma | `vars.BUILD_PLATFORM`, padrão `linux/amd64` |
+| Cache | buildx `type=gha`, com escopo por imagem |
+
+Var de repositório vazia faz o job falhar com erro explícito (`vars.ECR_REPOSITORY_* vazia neste environment`).
+
+Para publicar uma versão: copie a tag do commit no ECR, troque a imagem do serviço web (e do worker) no Dokploy e faça o redeploy.
+
+## Imagem do backend
+
+`Dockerfile.backend`: `python:3.13-slim`, `libpq5`, `pip install -r backend/requirements.txt` e `playwright install --with-deps chromium` (o Chromium compõe o banner do LinkedIn e as capas de destaque a partir de HTML). Copia `backend/manage.py`, `backend/core` e `backend/apps` para `/app`, expõe `8000` (web) e `5555` (Flower) e usa `ENTRYPOINT ["/app/docker-entrypoint.sh"]`.
+
+O `CMD` do web:
+
+```bash
+gunicorn core.wsgi:application --bind 0.0.0.0:8000 --worker-class gthread \
+  --workers 3 --threads 8 --timeout 1800 --graceful-timeout 60 \
+  --access-logfile - --error-logfile -
+```
+
+O timeout longo existe porque parte da geração roda dentro do request; com o padrão de 30 s o Gunicorn aborta o worker no meio.
+
+### Entrypoint: `ROLE`
+
+`backend/docker-entrypoint.sh` escolhe o processo pela env `ROLE`. Web e worker usam **a mesma imagem**; o serviço de worker no Dokploy só muda a env.
+
+| `ROLE` | O que sobe |
+| --- | --- |
+| ausente ou `web` | `migrate --noinput`, `seed_prompts`, `collectstatic --noinput`, Flower em segundo plano e `exec` do `CMD` |
+| `worker` | `celery -A core worker -Q ia_interativo,ia_lote,composicao,entrega -l info -E --concurrency ${CELERY_WORKER_CONCURRENCY:-2} -n ia@%h --max-tasks-per-child 50 --max-memory-per-child 700000`, sem migrate, seed, collectstatic nem Flower |
+| outro valor | recusa subir (`ROLE invalido`, `exit 1`) |
+
+`seed_prompts` roda a cada subida do web porque os workflows (`title`, `image`, `caption`, `hashtags`) não vêm de data migration; o comando casa por chave natural e é idempotente.
+
+**Flower no container do web.** O entrypoint sobe `python -m core.flower_guard` em segundo plano (porta `FLOWER_PORT`, padrão `5555`; `FLOWER_ADDRESS` padrão `0.0.0.0` no container). A guarda recusa subir sem `FLOWER_BASIC_AUTH` válida (`usuario:senha`, senha com 12 caracteres ou mais) e também recusa as opções que desligam a autenticação; nesse caso o web segue normalmente e o log mostra a recusa. O subshell do Flower sempre sai com `0`, para o Gunicorn não ler a morte dele como falha de boot. `FLOWER_ENABLED=0` desliga o Flower — defina no serviço de worker e no Flower avulso.
+
+<Warning>
+  `docker-entrypoint.sh` precisa de fim de linha LF (o `.gitattributes` força `*.sh text eol=lf`). Com CRLF o container morre com `/bin/sh^M: bad interpreter`.
+</Warning>
+
+### Variáveis essenciais do container
+
+| Variável | Para quê |
+| --- | --- |
+| `MIGGO_JWT_PUBLIC_KEY` | Chave pública RSA que valida o JWT emitido pelo `backend-miggo` (RS256). **Obrigatória**: lida em `core/settings.py` sem default, então o processo não sobe sem ela. Precisa ser o par da `JWT_PRIVATE_KEY` do backend |
+| `REDIS_URL` | Broker e resultado do Celery. Ausente, as tasks rodam *eager* (no próprio processo) |
+| `ROLE` | `worker` só no serviço de worker |
+| `FLOWER_BASIC_AUTH` | Credencial do Flower; ausente, o Flower não sobe |
+| `GRID_ASYNC`, `FILA_ASYNC`, `PERFIL_ASYNC` | Ligam grid, rodada/entrega e peças de perfil em fila; só valem com `REDIS_URL` |
+
+Lista completa e defaults em [Variáveis de ambiente do MiggoAI](/miggoai/configuracao).
+
+
+## Agendamentos no Dokploy
+
+O MiggoAI não tem cron próprio. As tarefas agendadas ficam no serviço web do Dokploy:
+
+| Comando | Frequência | Para quê |
+|---|---|---|
+| `python manage.py generate_daily_contents` | a cada 15 min | rodada diária e pedidos de geração ([detalhes](/miggoai/guias/gerar-conteudo)) |
+| `python manage.py atualizar_cotacao` | diária (opcional) | cotação do dólar do dia; sem ela, a primeira leitura do dia busca |
+| `python manage.py cleanup_test_generations --hours 24` | opcional | limpa gerações de teste |
+
+A geração de um card pode passar de 5 minutos: não use timeout curto na tarefa.
+
+## Ordem de deploy
+
+1. Mudança de contrato com a Plataforma (nova resposta, flag de fila nova): `backend-miggo` primeiro, depois o MiggoAI.
+2. Migrations rodam sozinhas no start do web (`ROLE=web`); o worker não migra, então suba o web antes do worker.
+3. Confira `curl https://backend-ai.miggomkt.com.br/health/` depois da troca.
+
+## Relacionados
+
+<Columns cols={3}>
+  <Card title="Variáveis de ambiente" icon="sliders-horizontal" href="/miggoai/configuracao" />
+  <Card title="Deploy da Plataforma" icon="server" href="/plataforma/deploy" />
+  <Card title="Ambientes" icon="globe" href="/arquitetura/ambientes" />
+</Columns>

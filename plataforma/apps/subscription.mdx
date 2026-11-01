@@ -1,0 +1,108 @@
+---
+title: "Assinaturas e cobrança"
+description: "Planos, assinaturas, faturas e a sincronização com Stripe e Asaas no app subscription."
+icon: "credit-card"
+---
+
+O app `subscription` é o núcleo de cobrança: modela planos, assinaturas e faturas, decide quem pode publicar e quem é pagante, e mantém a base local espelhada com **Stripe** e **Asaas**. O processamento dos webhooks dos dois gateways vive no app `webhooks` (veja [Webhooks](/plataforma/guias/webhooks)), mas grava nos models daqui.
+
+Endpoints: veja a [Referência de API](/plataforma/api-referencia) (grupos *Assinaturas* e *Planos*).
+
+## Models principais
+
+| Model | Papel |
+|---|---|
+| `Plan`, `PlanPrice`, `PlanFeature` | Plano vendido, seus preços (intervalo, moeda, gateway, fidelidade) e a lista de features exibida. |
+| `PlanMeta` | Chave/valor por plano. Ex.: `max_<formato>_month`, o limite mensal de posts por formato lido pelo app [`agenda`](/plataforma/apps/agenda). |
+| `Subscription` | Assinatura de um `Client` a um `PlanPrice`, com `status`, `start_date`, `expires_at` e `trial`. |
+| `SubscriptionMeta` | Chave/valor por assinatura (`stripe_subscription_id`, `asaas_subscription_id`, `cancel_at`, `status_reason`…). Única por `(subscription, key)`. |
+| `Invoice` | Fatura local, espelho de uma fatura Stripe ou de um pagamento Asaas (id com prefixo `asaas_`). |
+| `BillingIdentity` | Como o gateway chama o cliente: `(gateway, kind, value)` com `customer_id`, `subscription_id`, `payment_id`, `email` ou `documento`. Um mesmo id nunca aponta para dois clientes. |
+| `OrphanCharge` | Cobrança ou assinatura que existe no gateway e não achou dono localmente. Fica `PENDING` na fila de conciliação até alguém resolver ou ignorar. |
+| `StripeEvent`, `AsaasEvent` | Eventos de webhook já processados. O `event_id` único torna o reenvio um no-op. |
+| `SyncJob` | Execução assíncrona da sincronização manual (`PENDING → RUNNING → DONE/FAILED`). |
+
+## Status da assinatura
+
+| Status | Quem move |
+|---|---|
+| `PENDING` | Checkout criado e ainda não pago; `incomplete` na Stripe. |
+| `TRIAL` | Trial local sem cartão, ou `trialing` na Stripe. |
+| `ACTIVE` | Só o espelhamento da Stripe/Asaas (webhook ou sync). As views de checkout nunca ativam direto. |
+| `UNPAID` | `past_due`/`unpaid` no gateway. Mantém acesso por `BILLING_GRACE_DAYS` (default 5). |
+| `PAUSED` | `paused` na Stripe. |
+| `EXPIRED` | `expire_trials` (trial vencido) ou `check_subscriptions` (fim da carência, ou `ACTIVE` vencida sem assinatura no gateway). |
+| `CANCELLED` | Cancelamento imediato, ou `canceled` lido do gateway. |
+
+Status de fatura: `PAID`, `UNPAID`, `PENDING`, `OVERDUE`, `CANCELLED`.
+
+## Quem pode publicar e quem paga
+
+`app/subscription/access.py` é o **único** lugar que responde às duas perguntas. Não escreva `status__in=[...]` numa view nova.
+
+| Status | `pode_publicar(client)` | `e_pagante_ativo(client)` |
+|---|---|---|
+| `ACTIVE` | sim, sem olhar `expires_at` | sim |
+| `TRIAL` | sim, enquanto `expires_at >= agora` | **nunca** |
+| `UNPAID` | sim, dentro de `BILLING_GRACE_DAYS` | sim, dentro da carência |
+| demais, ou sem assinatura | não | não |
+
+- Basta **uma** assinatura do cliente dar direito: quem reassinou carrega a antiga cancelada ao lado.
+- `ACTIVE` ignora `expires_at` porque a data é a próxima cobrança, não validade; quem expira é o cron.
+- Cliente de agência (`client.agencia_id`) herda o direito da assinatura da agência.
+- `pode_publicar` devolve `(bool, motivo)`, com o motivo em texto de produto pronto para a tela.
+
+Versões para queryset, sem N+1: `com_direito_de_publicacao(qs)` (usada pela esteira diária do MiggoAI), `filtrar_por_tipo_de_conta(qs, 'all'|'trial'|'paid')`, `anotar_tipo_de_conta(qs)` e `anotar_suspenso_por_trial(qs)`. O teste de paridade em `app/subscription/tests_access.py` garante que a versão unitária e a de queryset leem a regra igual.
+
+## Fidelidade e cancelamento
+
+`PlanPrice.fidelity` (`none`, `3_months`, `6_months`, `12_months`) define a permanência mínima. Cancelamento pedido dentro dela **não encerra na hora**: `fidelity.data_de_encerramento` calcula o fim do compromisso, a Stripe recebe `cancel_at` e a assinatura local guarda `SubscriptionMeta.cancel_at`. O status vira `CANCELLED` quando a Stripe encerra e o webhook ou o sync leem `canceled`. Cancelamento imediato muda o status na hora.
+
+## Sincronização com os gateways
+
+- **Stripe** — `stripe_gateway.py` é a camada única: customer, checkout session (`payment_method_collection='always'`), billing portal, cancelamento e o espelhamento idempotente `sync_subscription_from_stripe` / `sync_invoice_from_stripe`. O mapa de status Stripe→local é `stripe_gateway.SUB_STATUS_MAP`.
+- **Asaas** — `asaas_gateway.py` lê pagamentos e assinaturas (`ASAAS_API_KEY`, `ASAAS_BASE_URL`) e espelha em `Invoice` com `sync_payment`. Recebe também webhook, deduplicado por `AsaasEvent`.
+- **Vínculo** — `billing_identity.resolver_cliente` acha o dono de um objeto do gateway por id, e-mail ou documento; cada caminho que vê um id novo o registra com `observar`.
+- **Estornos** — `refunds.aplicar` é a regra única para os dois gateways: nenhum deles muda o status da cobrança quando o dinheiro volta.
+- **Sync manual** — o botão de sincronizar enfileira um `SyncJob` na fila Celery `integracoes` (`tasks.py`), sem retry automático. Limites por `SYNCJOB_TASK_TIME_LIMIT` / `SYNCJOB_TASK_SOFT_TIME_LIMIT`.
+
+Regras de reconciliação de fatura: o valor é o `total` da fatura Stripe; `due_date` fica nulo em cobrança automática; `OVERDUE` é preservado enquanto a Stripe reportar `open`; `created_at` recebe a data de criação no gateway.
+
+## Rotinas agendadas
+
+Todas em `app/subscription/cron.py`, expostas como management commands e idempotentes. Agendamento: veja [Tarefas agendadas](/plataforma/tarefas-agendadas).
+
+| Comando | O que faz |
+|---|---|
+| `notify_trial_ending` | Avisa trial local em D-3 e D-1 (in-app + flow ManyChat). |
+| `expire_trials` | Expira trial vencido depois de reconferir na Stripe. Notifica os admins e dispara o flow de fim de teste (`TRIAL_ENDED_FLOW_ID`; vazio = não envia). |
+| `check_invoices` | Marca `OVERDUE` a fatura vencida depois de reler o gateway, e avisa o cliente no máximo a cada 48h. |
+| `check_subscriptions` | Expira `UNPAID` após a carência e `ACTIVE` vencida sem assinatura no gateway. |
+| `sync_stripe_billing`, `sync_asaas_billing` | Reespelham status e faturas de toda assinatura vinculada. |
+| `scan_gateway_orphans` | Varredura reversa: lê o gateway, casa o que dá e grava o resto em `OrphanCharge`. |
+| `disconnect_inactive_zernio_accounts` | Desconecta do Zernio contas de trial expirado (≥15 dias) e inadimplentes (≥40 dias). Sem `--apply`, dry-run. |
+| `sync_stripe_refunds`, `reconcile_invoice_amounts` | Reaplicam estornos e o valor recebido das faturas (`--dry-run` disponível). |
+| `backfill_billing_identities`, `end_stripe_trials` | Manutenção pontual; só gravam com `--apply`. |
+
+## Integrações
+
+| Com | Como |
+|---|---|
+| [`webhooks`](/plataforma/guias/webhooks) | Recebe eventos Stripe e Asaas e chama o espelhamento daqui. |
+| [`notification`](/plataforma/apps/notification) | Avisos de cobrança e de trial. |
+| [`conversation`](/plataforma/apps/conversation) | Flows ManyChat de trial e o rastro na thread do cliente. |
+| [`benefits`](/plataforma/apps/benefits) | Paywall por `e_pagante_ativo`. |
+| [`agencia`](/plataforma/apps/agencia) | Direito dos clientes de agência. |
+
+## Onde fica no código
+
+| Caminho | Conteúdo |
+|---|---|
+| `app/subscription/models.py` | Todos os models acima. |
+| `app/subscription/access.py` | `pode_publicar`, `e_pagante_ativo` e versões de queryset. |
+| `app/subscription/stripe_gateway.py`, `asaas_gateway.py` | Acesso aos gateways e espelhamento. |
+| `app/subscription/billing_identity.py`, `gateway_search.py` | Vínculo cliente ↔ gateway e busca por e-mail ou nome. |
+| `app/subscription/fidelity.py` | Permanência mínima. |
+| `app/subscription/cron.py`, `management/commands/` | Rotinas agendadas. |
+| `app/subscription/sync_jobs.py`, `tasks.py` | Sync manual em fila. |
+| `app/subscription/anomalies.py` | Classificação de cliente com mais de uma assinatura (cobrança dupla, dois gateways). |

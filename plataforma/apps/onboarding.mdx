@@ -1,0 +1,129 @@
+---
+title: "Onboarding na Plataforma"
+description: "Esteira de entrada do cliente no app onboarding: etapas, análise da marca, estratégia, calendário, grid e handoff do primeiro conteúdo para o MiggoAI."
+icon: "rocket"
+---
+
+O app `onboarding` conduz o cliente do cadastro até o primeiro conteúdo. Ele mantém uma sessão por cliente (`OnboardingSession`) com a etapa atual, as fontes da marca, o status das tarefas assíncronas e um `JSONField` (`data`) com revisão do briefing, estratégia, calendário proposto, estado do grid e primeiro conteúdo. Ainda atualiza o contador legado `Client.onboarding_step` por compatibilidade.
+
+Quem consome: o front do cliente (retoma o fluxo por `GET /api/v1/onboarding/state/`), crons do Dokploy (grids pendentes, lembretes de aprovação, primeira geração), o ManyChat (código de verificação e lembretes por WhatsApp) e o MiggoAI, que produz o grid, as peças de perfil e o primeiro post. A visão de ponta a ponta está em [Ciclo do conteúdo](/plataforma/ciclo-do-conteudo).
+
+## Models principais
+
+| Model | Papel |
+|---|---|
+| `OnboardingSession` | Estado do onboarding, um por cliente (`OneToOne` com `Client`). `is_complete` só é verdadeiro com `current_step == 'done'` **e** `completed_at` preenchido. |
+
+O app não tem `serializers.py`: a sessão é serializada nas views (`_serialize_session`).
+
+<Warning>
+`plan_choice` guarda o **id do `PlanPrice`** e aceita slugs legados (`instagram`, `linkedin`, `both`) só na leitura. Para saber a rede contratada use `services.network_type_for_session(session)`; ler o campo cru como slug devolve o plano errado.
+</Warning>
+
+## Etapas
+
+`ONBOARDING_STEPS`, na ordem:
+
+| Chave | Etapa | Concluída quando |
+|---|---|---|
+| `signup` | Cadastro | Há telefone. |
+| `verify` | Verificação por WhatsApp | A conexão de WhatsApp está ativa. |
+| `plan` | Escolha do plano | `plan_choice` preenchido ou assinatura `ACTIVE`/`TRIAL`. |
+| `source` | Como nos conheceu | `referral` preenchido. |
+| `brand` | Fonte de dados da marca | Há `@` do Instagram, site ou fonte informada. |
+| `analyzing` | Analisando a marca | Etapa de espera. |
+| `identity` | Identidade visual | Há logo real ou cor fora da paleta neutra. |
+| `review` | Revisão do briefing | `company`, `business`, `target` e `services` preenchidos e a tela confirmada. |
+| `generating` | Gerando estratégia | Etapa de espera. |
+| `strategy` | Estratégia | Todos os itens aprovados. |
+| `calendar` | Calendário editorial | Calendário proposto gravado. |
+| `media` | Fotos | Há mídia enviada. |
+| `grid` | Estilo visual | Grid **aprovado** pelo cliente (escolher a referência não basta). |
+| `publish` | Conectar redes | Há rede social conectada. |
+| `done` | Concluído | — |
+
+- `media`, `grid` e `publish` são opcionais (`OPTIONAL_ONBOARDING_STEPS`): `blocking_onboarding_steps` as exclui, e é essa lista que o `OnboardingGuard` do front usa.
+- Uma etapa pode ser adiada pela pessoa (`data['<etapa>_step']['deferred']`); `publish` conta sempre como adiada.
+- `resume_step_for(session)` decide onde retomar: a primeira pendência real anterior à posição atual, ou a própria etapa atual.
+- A conclusão grava `completed_at` só sem pendência bloqueante, e marca `Client.generation_requested_at` para o MiggoAI gerar o primeiro conteúdo.
+
+## Fontes da marca e análise
+
+- Fontes aceitas: `instagram`, `instagram_website`, `website`, `manual`.
+- **Validação.** O `@` é checado no Apify, com cache de 1 hora e um único run por `@` (o Apify é pago). Perfil sem bio ou com menos de `ONBOARDING_IG_MIN_POSTS` publicações é `generic`. Quando o Instagram ou o LinkedIn bloqueiam a checagem, o veredito é `unknown` e o cliente segue. Site é validado só pelo formato.
+- **Análise.** Instagram e site se complementam: o Instagram roda primeiro (tom de voz e público) e o site preenche só o que ficou vazio e traz os assets. Falha de uma fonte não reprova a análise. Ao final, a sessão vai para `identity`, porque a logo extraída precisa de confirmação.
+- **Travamento.** Sem heartbeat por `ONBOARDING_ANALYSIS_STALL` segundos (900 por padrão) com status `running`, a análise é considerada morta e pode ser refeita.
+
+## Estratégia e calendário
+
+- **Itens por plano:** `instagram` gera bio e capas de destaques; `linkedin`, resumo e banner; `both`, os quatro. As capas e o banner são gerados pelo MiggoAI e espelhados em `PlatformProfileConfig`.
+- **Formato imposto por código:** a bio do Instagram tem uma frase por linha, CTA na última e teto de 150 caracteres; o resumo do LinkedIn tem teto de 500 (empresa) ou 800 (pessoa).
+- **Fallback:** se a IA falhar, grava-se uma estratégia mínima montada do briefing e a etapa é liberada; o erro fica em `strategy_error`.
+- **Obsolescência:** estratégia e calendário guardam o hash do briefing que os gerou; se o briefing mudar depois, eles são marcados como desatualizados.
+- **Calendário:** a composição semanal por plano é imposta por código (story às terças e quintas no Instagram; no LinkedIn seg/qua/sex e no máximo um carrossel por semana). Tags e CTAs são travados no catálogo do [calendário editorial](/plataforma/apps/editorial-calendar). A aprovação cria os `EditorialCalendar` do cliente.
+
+## Grid (estilo visual)
+
+- O cliente escolhe entre três `DesignReference` do tipo `grid`, sorteadas sem repetir as já mostradas.
+- A escolha marca `grid.generation_status = 'pending'`; o cron `generate_pending_grids` gera o mosaico no MiggoAI (`POST /api/generations/grid/`), salva o PNG e espelha em `SocialNetworkGrid`.
+- **Idempotência:** cada geração lógica tem uma `generation_key` gravada antes da chamada. Retry e timeout reusam a chave; novo pedido do cliente, reset pelo admin e sucesso a rotacionam. Na queda, o backend consulta `GET /api/generations/grid/by-key/<chave>/` antes de contar a falha, para não pagar duas vezes pela mesma imagem.
+- **Falhas:** há backoff entre tentativas, teto de gerações pagas (`ONBOARDING_GRID_PAID_MAX`) e preservação da imagem anterior. Recusa do filtro de conteúdo da OpenAI (`422`, `error_kind: 'content_policy'`) não é retentada: a equipe é avisada com a categoria e o Request ID e só a troca de referência destrava.
+- Fora do onboarding, a aba Grid do brandkit reusa o mesmo pipeline (regerar, trocar referência, aprovar, pedir ajuste).
+
+## Primeiro conteúdo
+
+Nenhum post é produzido neste backend. `ensure_week_cards` cria, a partir do calendário ativo, os `Post` com status `pending` das próximas semanas; o MiggoAI escreve título, legenda e arte e devolve o card como `scheduled`. Se o disparo falhar, o card volta a `pending` (ou fica `processing`, se a geração já começou) e a rodada seguinte do MiggoAI o atende.
+
+<Note>
+O handoff do primeiro post usa a API antiga do MiggoAI (`/api/generate/...`) com usuário e senha. Grid, peças de perfil, regeração e "criar agora" usam a v2 (`/api/generations/...`), autenticada por `MIGGOAI_V2_API_KEY` quando configurada.
+</Note>
+
+## WhatsApp e ManyChat
+
+- O código de verificação (4 dígitos) é gravado em `UserMeta`, posto num campo do subscriber e enviado por um flow do ManyChat. Se o envio falhar, uma retentativa em background assume, sem duplicar código.
+- O ManyChat responde HTTP 200 mesmo em falha; o veredito está em `status` no corpo.
+- O lembrete de aprovação do grid vai a cada `GRID_APPROVAL_REMINDER_INTERVAL_HOURS` (24 por padrão), até `GRID_APPROVAL_MAX_REMINDERS` (3; `0` desliga). Pagantes não recebem. Pedido de ajuste reinicia a régua.
+- Toda chamada externa é auditada em `Integration`, com payload truncado acima de 4.000 caracteres.
+
+## Filas
+
+Com `ONBOARDING_ASYNC=1` e a fila ativa, análise, estratégia, primeiro post e grid rodam como tasks Celery na fila `interativo`; o veredito do Instagram (`APIFY_ASYNC=1`) e o reenvio do flow de verificação (`MANYCHAT_ASYNC=1`) vão para `integracoes`. As tasks recebem só ids, sem texto do cliente. Os limites de tempo se ajustam por `ONBOARDING_<ETAPA>_TIME_LIMIT` e `ONBOARDING_<ETAPA>_SOFT_TIME_LIMIT`. Veja [Filas e Celery](/plataforma/filas-e-celery).
+
+## Comandos e crons
+
+| Comando | Para quê |
+|---|---|
+| `generate_pending_grids --limit 20` | Gera os grids pendentes e reconcilia o espelho em `SocialNetworkGrid`. |
+| `send_grid_approval_reminders` | Cobra a aprovação do grid por WhatsApp. |
+| `pedir_primeira_geracao` | Rede de segurança: pede a primeira geração para quem está em trial, tem calendário ativo e nenhum conteúdo gerado, e liga o workflow do MiggoAI. |
+
+Agendamento em [Tarefas agendadas](/plataforma/tarefas-agendadas).
+
+## Variáveis de ambiente
+
+| Variável | Para quê |
+|---|---|
+| `MIGGOAI_API_URL`, `MIGGOAI_USERNAME`, `MIGGOAI_PASSWORD` | API antiga do MiggoAI (primeiro post). |
+| `MIGGOAI_V2_API_URL`, `MIGGOAI_V2_API_KEY` (ou `MIGGOAI_V2_USERNAME`/`MIGGOAI_V2_PASSWORD`) | API v2 do MiggoAI. |
+| `OPENAI_API_KEY`, `OPENAI_API_URL`, `OPENAI_MODEL` | Briefing, estratégia e calendário. |
+| `MANYCHAT_API_KEY`, `GRID_APPROVAL_FLOW_ID` | Verificação e lembretes por WhatsApp. |
+| `WHATSAPP_SEND_FLOW_DELAY`, `WHATSAPP_FLOW_RETRY_ATTEMPTS`, `WHATSAPP_FLOW_RETRY_BACKOFF` | Envio e retentativa do código. |
+| `ONBOARDING_IG_MIN_POSTS`, `ONBOARDING_WEBSITE_BUDGET`, `ONBOARDING_ANALYSIS_STALL`, `ONBOARDING_GRID_STALL` | Validação do perfil e guardas de tempo. |
+| `ONBOARDING_GRID_BACKOFF_1..3`, `ONBOARDING_GRID_PAID_MAX` | Retentativa e teto do grid. |
+| `GRID_APPROVAL_REMINDER_INTERVAL_HOURS`, `GRID_APPROVAL_MAX_REMINDERS` | Régua de lembretes. |
+
+Lista completa em [Variáveis de ambiente da Plataforma](/plataforma/configuracao).
+
+## Onde fica no código
+
+| Caminho | Conteúdo |
+|---|---|
+| `app/onboarding/models.py` | `OnboardingSession` e constantes do fluxo |
+| `app/onboarding/views.py` | Endpoints da esteira |
+| `app/onboarding/services.py` | Regras: validação de fontes, análise, estratégia, calendário, grid, WhatsApp, pendências, handoff |
+| `app/onboarding/miggoai.py` | Cliente HTTP do MiggoAI (API antiga e v2) |
+| `app/onboarding/tasks.py` | Tasks Celery das etapas |
+| `app/onboarding/cron.py` | Lembretes de aprovação do grid |
+| `app/onboarding/management/commands/` | Comandos agendados |
+
+Endpoints: veja a [Referência de API](/plataforma/api-referencia).

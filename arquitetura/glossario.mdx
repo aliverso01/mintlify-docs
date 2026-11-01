@@ -1,0 +1,40 @@
+---
+title: "Glossário"
+description: "O vocabulário do domínio Miggo e o nome que cada termo tem no código."
+icon: "book-a"
+---
+
+Termos que aparecem no código, nas conversas do time e nas outras páginas desta documentação. Quando o nome na interface é outro, ele aparece entre parênteses.
+
+| Termo | O que é | No código |
+| --- | --- | --- |
+| **Acervo** | Banco interno de imagens da Miggo, usado como referência pela IA. Nunca aparece para o cliente. | `app/media` (acervo interno); módulo `acervo` |
+| **Agência** | Conta que gerencia vários clientes, com marca, membros, plano e domínio próprios. | app `agencia`, model `Agencia`; rotas `/api/v1/agency/` |
+| **Brandkit** (na interface, "Minha marca") | Identidade da marca do cliente: cores, tipografia, logos, referências visuais e de texto, grid de estilo. | app `brandkit` |
+| **Card** | Um post planejado no calendário, antes e depois de ganhar conteúdo. No código é sempre um `Post`. | `app/post`, model `Post` |
+| **Calendário editorial** | Dias de postagem e temas de cada cliente; define em que dias a rodada de geração cria conteúdo. | app `editorial_calendar` |
+| **Dynamic Block** | Recurso do ManyChat em que o conteúdo da mensagem vem do backend a cada passo da conversa. | `app/conversation`; webhook `/webhooks/manychat/dynamic-block/continue/` |
+| **Execução** | Registro de uma geração no MiggoAI, com as etapas (spans) e o resultado; é o que o painel de IA mostra em "Execuções". | MiggoAI: model `Execucao` em `apps/generations` |
+| **Flow** | Fluxo de mensagens do ManyChat (aprovação de conteúdo, aprovação do grid, fim do trial). | variáveis `*_FLOW_ID`; `app/conversation` |
+| **Grid** | Conjunto inicial de posts gerado no fim do onboarding; no brandkit, também a grade de referência visual do cliente. | MiggoAI: `POST /api/generations/grid/`; Plataforma: `Brandkit - Grid` |
+| **Idempotency key** | Chave enviada pela Plataforma ao pedir grid ou peças de perfil, para um reenvio não gerar duas vezes. | `idempotency_key`; `GET /api/generations/grid/by-key/{chave}/` |
+| **Microângulo** | Recorte específico de um tema do calendário que vira o assunto de um post. | prompts de geração no MiggoAI e no onboarding |
+| **Módulo** | Permissão por área (clientes, conteúdo, financeiro, MiggoAI…) dada a membros da equipe Miggo ou da agência. O papel diz quem é; o módulo, o que pode usar. | `app/account/modulos.py`, model `UsuarioModulo` |
+| **Onboarding** | Cadastro guiado do cliente que termina com brandkit, calendário e grid prontos. | app `onboarding`; Web app `src/pages/Onboarding` |
+| **Peças de perfil** | Bio, banner e capas de destaque geradas para as redes do cliente. | MiggoAI: `/api/generations/perfil/*` |
+| **Rodada** | Uma passada de geração para os clientes elegíveis: diária ou disparada pelo admin ("Criar agora"). | MiggoAI: `apps/generations/services/rodada.py`, `generate_daily_contents` |
+| **Snapshot** | Foto das métricas de um post numa data, guardada localmente para o painel não depender do provedor. | model `PostInsightsSnapshot` |
+| **Trial** (na interface, "teste grátis") | Período de teste da assinatura, com limites de upload e de geração. | `app/subscription`, `STRIPE_TRIAL_DAYS` |
+| **Zernio** | Provedor que publica nas redes e devolve métricas; antes chamado Late (por isso `LATE_API_KEY`). | `app/post/zernio.py` |
+
+## Papéis de usuário
+
+| Papel | Quem é |
+| --- | --- |
+| `client` | Cliente final, área `/app` do Web app. |
+| `admin` | Equipe Miggo com todos os módulos. |
+| `manager` | Equipe Miggo com os módulos marcados pelo admin. |
+| `agencia_admin` | Dono da agência, com todos os módulos da agência. |
+| `agencia_membro` | Membro da agência, com os módulos marcados pelo `agencia_admin`. |
+
+Detalhes em [Contas e usuários](/plataforma/apps/account) e [Autenticação na Plataforma](/plataforma/autenticacao).

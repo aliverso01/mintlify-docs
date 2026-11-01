@@ -1,0 +1,93 @@
+---
+title: "Consumir a API no Web app"
+description: "Como uma tela do frontend-miggo chama a Plataforma e o MiggoAI: caminho relativo, token automático, refresh e tratamento de 401, 403 e erros de validação."
+icon: "plug"
+---
+
+**Objetivo:** buscar dados da Plataforma (ou do MiggoAI) numa tela, com token, renovação e erros tratados.
+
+**Pré-requisitos:** Web app e Plataforma rodando localmente ([Rodar o Web app localmente](/web/rodar-localmente)) e o endpoint já existente na [Referência de API da Plataforma](/plataforma/api-referencia).
+
+O Web app usa `fetch` nativo. Não há cliente HTTP nem interceptor por tela: `setupAuthFetchInterceptor()` (em `src/services/jwtAuth.ts`, instalado no `main.tsx`) já cuida do token para toda chamada de API.
+
+## Regras
+
+1. **Chame caminho relativo**: `/api/v1/...`. No dev, o proxy do Vite repassa para `VITE_API_BASE_URL`; em produção, o Nginx do container repassa para a Plataforma. Nunca escreva `https://api.miggomkt.com.br` no código.
+2. **Não monte `Authorization`.** O interceptor põe `Bearer <access>` e descarta qualquer outro esquema (por exemplo `Api-Key`, que é só para serviços).
+3. **Não guarde token.** O access fica em memória; o refresh, no cookie httpOnly. Veja [Sessão e login](/web/autenticacao).
+4. **Nunca ponha chave de API numa variável `VITE_*`.** Ela vai para o bundle público.
+5. Concentre as chamadas num hook ou service, não espalhadas pelo JSX.
+
+## Exemplo
+
+```tsx
+import { useEffect, useState } from "react";
+import { getErrorMessage } from "../../utils/errors";
+
+interface Notificacao {
+  id: number;
+  title: string;
+  read: boolean;
+}
+
+export function useNotificacoes() {
+  const [itens, setItens] = useState<Notificacao[]>([]);
+  const [erro, setErro] = useState<string | null>(null);
+  const [carregando, setCarregando] = useState(true);
+
+  useEffect(() => {
+    let cancelado = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/v1/notification/history/?page=1");
+        if (!res.ok) {
+          const corpo = await res.json().catch(() => ({}));
+          throw new Error(corpo.message || corpo.detail || "Não foi possível carregar as notificações.");
+        }
+        const dados = await res.json();
+        // Lista paginada pode vir como { results: [...] } ou array puro.
+        const lista = Array.isArray(dados) ? dados : dados.results ?? [];
+        if (!cancelado) setItens(lista);
+      } catch (e) {
+        if (!cancelado) setErro(getErrorMessage(e) || "Erro ao carregar.");
+      } finally {
+        if (!cancelado) setCarregando(false);
+      }
+    })();
+    return () => {
+      cancelado = true;
+    };
+  }, []);
+
+  return { itens, erro, carregando };
+}
+```
+
+Upload com `FormData` funciona igual: não defina `Content-Type`, o navegador põe o boundary. Para arquivo grande de mídia, use `src/services/uploadChunked.ts` (pedaços de 1 MiB, com reenvio).
+
+## Respostas que a tela precisa tratar
+
+| Status | O que aconteceu | O que fazer |
+|---|---|---|
+| `401` | Token expirado ou revogado | Nada na tela. O interceptor renova e repete uma vez; se o refresh falhar, manda para `/signin`. |
+| `403` | Usuário sem papel, módulo ou escopo para o recurso | Mostrar a mensagem do backend (`message` ou `detail`). Não é bug do front: é a autorização real funcionando. |
+| `400` | Validação do DRF: `{ "campo": ["erro"] }` ou `{ "detail": "..." }` | Mostrar por campo quando possível. O `AuthContext` tem `parseDRFError` como referência. |
+| `404` | Recurso inexistente ou fora do escopo do usuário (agência só vê os clientes dela) | Estado vazio ou mensagem. |
+| `5xx` / falha de rede | Backend fora ou erro interno | Mensagem genérica em pt-BR. O detalhe técnico vai para o console, nunca para a tela. |
+
+Formato de erro, paginação e códigos estão em [Referência de API da Plataforma](/plataforma/api-referencia).
+
+## Chamar o MiggoAI
+
+As telas do [painel de IA](/web/painel-de-ia) usam o cliente tipado `src/services/miggoai/api.ts`, que prefixa `VITE_MIGGOAI_API_URL` e transforma erro em `MiggoaiApiError`. O interceptor reconhece essa origem e anexa o mesmo token. Para uma chamada nova ao MiggoAI, acrescente uma função em `api.ts` e o tipo em `types.ts`, em vez de usar `fetch` direto na tela.
+
+<Warning>
+O token da Plataforma só sai do app para a origem de `VITE_MIGGOAI_API_URL`. Chamada para qualquer outro domínio vai sem `Authorization`, de propósito.
+</Warning>
+
+## Verifique
+
+- Na aba Network do navegador, a chamada vai para `/api/v1/...` (caminho relativo) com `Authorization: Bearer <token>`.
+- Quando o access expira (30 min), a próxima chamada recebe `401`, o interceptor chama `token/refresh/` e repete a chamada com sucesso.
+- Com um usuário sem permissão, a tela mostra a mensagem do `403` em vez de quebrar.
+- `npm run lint` e `npm run build` passam.

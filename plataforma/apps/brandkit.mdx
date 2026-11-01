@@ -1,0 +1,74 @@
+---
+title: "Brandkit"
+description: "Identidade visual do cliente e biblioteca de referências no app brandkit: logos, cores, tipografia, assets, grid, referências de design e de copy."
+icon: "palette"
+---
+
+O app `brandkit` (na interface, "Minha marca") guarda a identidade visual de cada cliente — logos, paleta, tipografia, assets e o mosaico de referência da rede social — e a biblioteca global de referências que a equipe Miggo usa para orientar a geração: referências visuais de grid e post (`DesignReference`) e referências de copy (`CopyReference`). Ele também faz a raspagem de sites usada pelo onboarding.
+
+## Models principais
+
+| Model | Papel |
+|---|---|
+| `Brandkit` | Kit de identidade de um cliente. Um por cliente. |
+| `BrandLogo` | Logo enviado ou importado, com análise por visão (`logo_type`, cores detectadas, `is_placeholder`). |
+| `BrandColor` | Cor da paleta (`primary`, `secondary`, `neutral` etc.), única por hex no brandkit. |
+| `BrandTypography` | Fonte da marca. |
+| `BrandAsset` | Arquivo complementar (`pattern`, `illustration`, `icon_set`, `background`, `logo`, `favicon`, `banner`, `photo`…), com `origin` (upload ou site) e `content_hash` para não duplicar. |
+| `SocialNetworkGrid` | Mosaico 3x3 do perfil do cliente; `generated=True` quando veio do pipeline de grid. |
+| `DesignReference` | Referência visual global, do tipo `grid` ou `post`, com descrição técnica gerada por visão. |
+| `CopyReference` | Referência de texto por formato (`story`, `feed`, `carrossel`, `reel`) e `style_tag`, decomposta em um `framework` de etapas. |
+| `IngestionJob` | Job assíncrono de ingestão: `copy_url`, `website` ou `instagram`, com status `PENDING` → `RUNNING` → `SUCCESS`/`FAILED`. |
+| `ReferenceImportJob` / `ReferenceImportImagem` | Captura de um post do Instagram ou pin do Pinterest por link, e as imagens capturadas. |
+
+## Regras de negócio
+
+**Logo e paleta**
+
+- O upload de logo chama a visão da OpenAI para preencher tipo, contexto de fundo, cores e descrição. Falha da IA não impede o salvamento.
+- **Avatar não é logo.** Se a análise indica um avatar genérico (silhueta, inicial do nome), o logo é marcado `is_placeholder` e não gera cores: a cor de fundo do avatar não pode virar cor da marca.
+- **Fundo não é cor da marca.** Cores de baixa saturação são reclassificadas como `neutral`; neutros só entram na paleta quando a marca tem menos de duas cores próprias.
+- Logo em SVG é convertido para PNG no upload (`logo_svg.py`), porque a geração de arte e a visão não leem vetor. Formatos que a visão não aceita são convertidos só para a chamada de análise (`logo_vision.py`); o arquivo do cliente é o que fica salvo.
+
+**Raspagem de site** (`website.py`)
+
+- GET simples com limite de 3 MiB; se o site bloquear (401, 403, 429, 503 etc.), a leitura cai para o Chromium do Playwright.
+- Extrai título, textos, imagens, links sociais, cores e fontes do CSS. Importa até 24 imagens como `BrandAsset`, priorizando logo sobre favicon, sem duplicar por URL e hash.
+- `ensure_logo_from_website` promove o melhor candidato a logo, sem sobrescrever um logo real existente.
+
+**Referências**
+
+- `DesignReference` de tipo `grid` alimenta a escolha de estilo do [Onboarding na Plataforma](/plataforma/apps/onboarding); as de tipo `post` orientam a arte. A descrição técnica é gerada por visão em segundo plano.
+- `CopyReference` é criada a partir de texto colado, de um link ou de prints. A ordem dos slides é a ordem de upload, e cada print é transcrito separadamente. O `style_tag` é validado contra a taxonomia de estilos por formato.
+- **Importar por link** (Instagram ou Pinterest): o servidor abre o post num navegador, sem conta logada, e captura o elemento do post (várias imagens só em carrossel). Uma captura por vez por processo. O resultado pode virar referência visual, de copy ou as duas, ligadas por `par_id`.
+
+<Warning>
+As rotas de importação por link exigem usuário da equipe (`IsManagementUserOnly`) e não aceitam Api-Key: elas abrem um navegador contra uma URL vinda do corpo. A URL passa por allowlist de hosts e bloqueio de destino na rede interna, e o log registra só host e plataforma.
+</Warning>
+
+**Grid do cliente**
+
+As views de grid (regerar, status, aprovar, pedir ajuste) delegam a `app.onboarding.services`, que concentra o pipeline e a idempotência da geração. Veja [Onboarding na Plataforma](/plataforma/apps/onboarding#grid-estilo-visual).
+
+## Filas
+
+Com a fila ativa, duas flags independentes movem trabalho para a fila `interativo`:
+
+- `INGESTAO_ASYNC=1`: a análise de referência de design roda em task, sem mudar o contrato da API.
+- `INGESTAO_JOBS_ASYNC=1`: copy por URL e importar site passam a responder `202` com um `IngestionJob` para polling. Só ligue com o front preparado para o `202`.
+
+Sem fila, a mesma função roda dentro da requisição. As tasks recebem só ids, não fazem retry (raspagem e LLM custam) e transformam estouro de tempo em erro com mensagem fixa. Veja [Filas e Celery](/plataforma/filas-e-celery).
+
+## Onde fica no código
+
+| Caminho | Conteúdo |
+|---|---|
+| `app/brandkit/models.py` | Models do app |
+| `app/brandkit/views.py` | Endpoints e análise por visão de logo, referência e copy |
+| `app/brandkit/website.py` | Raspagem de site e importação de assets |
+| `app/brandkit/logo_svg.py`, `logo_vision.py` | Conversão de logo para PNG e para a visão |
+| `app/brandkit/copy_ingest.py` | Texto de copy a partir de link e prints |
+| `app/brandkit/ingestao.py`, `tasks.py` | Ingestão longa (inline ou em fila) |
+| `app/brandkit/import_views.py`, `reference_import.py`, `social_capture.py` | Importação de referência por link |
+
+Endpoints: veja a [Referência de API](/plataforma/api-referencia).

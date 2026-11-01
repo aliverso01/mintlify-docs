@@ -1,0 +1,61 @@
+---
+title: "Log de integrações"
+description: "Como o app integration registra as chamadas do backend a serviços externos e onde consultá-las."
+icon: "scroll-text"
+---
+
+O app `integration` define um único model, `Integration`: o **log de auditoria das chamadas a serviços externos** (Stripe, Asaas, ManyChat, Instagram, Zernio, MiggoAI, Jira). O app não escreve nesse log; quem escreve são os módulos que fazem a chamada de saída. Ele só expõe leitura e exclusão.
+
+Endpoints: veja a [Referência de API](/plataforma/api-referencia) (grupo *Integrações*). As três rotas (listar, detalhe, apagar) exigem usuário de gestão com o módulo `logs` (`IsManagementUser` + `TemModulo('logs')`).
+
+## Model
+
+| Campo | Papel |
+|---|---|
+| `client` | Cliente ligado à chamada; nulo em rotinas administrativas. |
+| `service` | Nome do serviço (`"Stripe"`, `"ManyChat"`, `"sendFlow Trial Ended"`…). Texto livre. |
+| `path`, `method` | Rota chamada e verbo. `method` também aceita rótulos (`CRON`, `POST_WHATSAPP`). |
+| `payload`, `response`, `status_code` | O que foi enviado e o que voltou. |
+
+## Como registrar uma chamada
+
+Não há serviço central: cada módulo cria a linha no ponto da chamada, às vezes por um helper local (`_log`, `_log_integration`, `_log_trial_ended`).
+
+```python
+from app.integration.models import Integration
+
+Integration.objects.create(
+    client=client,
+    service='ManyChat',
+    path='/fb/sending/sendFlow',
+    method='POST',
+    payload=body,
+    response=response_data,
+    status_code=status_code,
+)
+```
+
+Convenções que os registros existentes seguem:
+
+- desfecho de negócio sem erro HTTP (ex.: "flow não configurado", "cliente sem subscriber") é gravado com `200` e o motivo no `response`;
+- rotinas agendadas usam `method='CRON'` e um `path` descritivo (`/cron/billing/expire_trials`).
+
+<Warning>
+`payload` e `response` guardam o corpo bruto da chamada. Não grave token, senha ou chave de API nesses campos.
+</Warning>
+
+## Relação com outros logs
+
+| Log | Cobre |
+|---|---|
+| `Integration` | Chamadas da plataforma para fora. |
+| [`History`](/plataforma/apps/history) | Alterações feitas por clientes dentro da plataforma. |
+| `PostStatusEvent` ([`post`](/plataforma/apps/post)) | Transições de status de post. |
+| `Message` ([`conversation`](/plataforma/apps/conversation)) | Mensagens de WhatsApp trocadas com o cliente. |
+
+## Onde fica no código
+
+| Caminho | Conteúdo |
+|---|---|
+| `app/integration/models.py` | `Integration`. |
+| `app/integration/views.py` | Listagem paginada, detalhe e exclusão. |

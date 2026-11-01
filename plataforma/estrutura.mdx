@@ -1,0 +1,88 @@
+---
+title: "Estrutura da Plataforma"
+description: "Onde fica cada coisa no backend-miggo: pastas da raiz, o pacote core e os 17 apps de negócio."
+icon: "folder-tree"
+---
+
+## Raiz do repositório
+
+```
+backend-miggo/
+├── app/                   # os 17 apps de negócio
+├── core/                  # settings, urls, Celery, rotinas e commands de infraestrutura
+├── utils/                 # pagination.py (StandardPagination) e toolkit.py
+├── templates/             # templates de e-mail
+├── docs/                  # notas técnicas do repo (Celery, billing, ManyChat, comandos)
+├── testes/                # scripts manuais (seed, chamadas a serviços reais) — não é a suíte
+├── .github/workflows/     # docker-ecr.yml: build da imagem no ECR
+├── manage.py
+├── dockerfile             # imagem de produção (Python 3.11)
+├── docker-entrypoint.sh   # escolhe web ou worker pela variável ROLE
+├── docker-compose.yml
+├── run_cron.py            # rotinas em laço para desenvolvimento local
+├── requirements.txt
+└── .env.example           # chaves de ambiente, sem valor
+```
+
+A raiz também guarda scripts avulsos de manutenção de dados. Eles não são carregados pelo Django e não fazem parte da arquitetura.
+
+## `core/`
+
+| Arquivo | Papel |
+|---|---|
+| `settings.py` | Configuração global, lida do ambiente — ver [Variáveis de ambiente](/plataforma/configuracao) |
+| `urls.py` | Roteamento raiz: `/health/`, `/admin/`, `/api/v1/<app>/`, `/api/schema/` e `/webhooks/*` |
+| `views.py` | `health_check` (healthcheck do Dokploy) |
+| `jwt_keys.py` | Deriva a chave pública do JWT a partir da privada |
+| `celery.py`, `celery_config.py` | App Celery, filas e limites |
+| `fila.py`, `tasks.py`, `rotinas.py` | Flags `*_ASYNC`, tasks de infraestrutura e a tabela de rotinas agendadas que podem ir para a fila |
+| `flower_guard.py` | Sobe o Flower só com autenticação válida |
+| `cache_config.py`, `cache_redis.py` | Cache compartilhado em Redis, quando ligado |
+| `management/commands/` | `celery_ping` |
+| `wsgi.py`, `asgi.py` | Entrypoints; produção usa WSGI via Gunicorn |
+
+Filas e worker: [Filas e Celery](/plataforma/filas-e-celery).
+
+## Anatomia de um app
+
+Nem todo app tem todos os arquivos. O padrão é:
+
+| Arquivo | Papel |
+|---|---|
+| `models.py` | Modelos do ORM |
+| `serializers.py` | Serializers do DRF |
+| `views.py` | Views DRF (`APIView` e `generics.*`) |
+| `urls.py` | Rotas, incluídas em `core/urls.py` sob `/api/v1/<prefixo>/` |
+| `services.py` e módulos de domínio | Regras de negócio e clientes de integração (ex.: `app/post/zernio.py`, `app/onboarding/miggoai.py`, `app/subscription/stripe_gateway.py`) |
+| `tasks.py` | Tasks Celery do app |
+| `cron.py` | Funções das rotinas periódicas |
+| `signals.py` | Signals Django |
+| `management/commands/` | Management commands — ver [Comandos](/plataforma/comandos) |
+| `tests.py`, `tests_*.py` | Suíte do app — ver [Testes](/plataforma/testes) |
+| `migrations/` | Migrations |
+
+## Os 17 apps
+
+| App | Prefixo da API | O que faz |
+|---|---|---|
+| [`account`](/plataforma/apps/account) | `/api/v1/account/` | Usuários (`CustomUser`), tokens, papéis, módulos, time, suporte e integração com o Jira |
+| [`agencia`](/plataforma/apps/agencia) | `/api/v1/agency/` | Agências parceiras: carteira de clientes, membros, marca própria, domínio próprio e plano da agência |
+| [`client`](/plataforma/apps/client) | `/api/v1/client/` | Perfil do cliente (`Client`), ciclo de vida, trials, materiais da marca |
+| [`onboarding`](/plataforma/apps/onboarding) | `/api/v1/onboarding/` | Cadastro guiado: verificação de WhatsApp, marca, plano, estratégia, calendário, grid e primeiro conteúdo |
+| [`brandkit`](/plataforma/apps/brandkit) | `/api/v1/brandkit/` | Identidade visual: logos, cores, tipografia, assets, grid e referências |
+| [`post`](/plataforma/apps/post) | `/api/v1/post/` | Posts, status, publicação nas redes pelo Zernio, insights e integrações de plataforma |
+| [`editorial-calendar`](/plataforma/apps/editorial-calendar) | `/api/v1/editorial-calendar/` | Calendário editorial e o catálogo que o alimenta |
+| [`media`](/plataforma/apps/media) | `/api/v1/media/` | Galeria do cliente, análise por IA e acervo Miggo |
+| [`agenda`](/plataforma/apps/agenda) | `/api/v1/agenda/` | Sugestões de pauta enviadas pelo cliente |
+| [`subscription`](/plataforma/apps/subscription) | `/api/v1/subscription/` | Planos, assinaturas, faturas e sincronização com Stripe e Asaas |
+| [`benefits`](/plataforma/apps/benefits) | `/api/v1/benefits/` | Rede de benefícios entre clientes |
+| [`conversation`](/plataforma/apps/conversation) | `/api/v1/conversation/` | Conversas de WhatsApp via ManyChat, flows dinâmicos e automações |
+| [`emailmarketing`](/plataforma/apps/emailmarketing) | `/api/v1/email-marketing/` | Régua de e-mail marketing por evento do ciclo de vida |
+| [`notification`](/plataforma/apps/notification) | `/api/v1/notification/` | Notificações in-app |
+| [`history`](/plataforma/apps/history) | `/api/v1/history/` | Auditoria e relatórios do painel administrativo |
+| [`integration`](/plataforma/apps/integration) | `/api/v1/integration/` | Log das chamadas a serviços externos |
+| `webhooks` | `/webhooks/` (fora de `/api/v1/`) | Recepção dos webhooks de Stripe, Asaas e Zernio — ver [Webhooks](/plataforma/guias/webhooks) |
+
+<Note>
+  O app `webhooks` não tem `urls.py` nem models próprios: as views são registradas direto em `core/urls.py`, e o que elas gravam fica em models de `subscription`, `post` e `conversation`, com o log em `integration`. Os webhooks do ManyChat moram em `app/conversation/webhooks.py`.
+</Note>

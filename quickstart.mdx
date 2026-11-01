@@ -1,105 +1,77 @@
 ---
 title: "Quickstart"
-description: "Suba backend, frontend e MiggoAI na sua máquina em uma sessão."
+description: "Suba a Plataforma, o Web app e o MiggoAI juntos na sua máquina."
 icon: "rocket"
 ---
 
-Guia condensado para ter o ambiente local completo. Cada repositório tem uma página de instalação detalhada — use esta como roteiro e recorra a elas quando travar.
+Roteiro curto para o ambiente local completo. Cada software tem um guia detalhado; recorra a ele quando travar.
 
 <Warning>
-  Nenhum arquivo `.env` está versionado. Peça os valores de desenvolvimento a alguém do time; **nunca** commite segredos nem copie chaves de produção para a sua máquina.
+  Nenhum `.env` é versionado. Cada repo traz um `.env.example` com os nomes das variáveis; os valores de desenvolvimento vêm do time. Nunca use chaves de produção na sua máquina.
 </Warning>
 
 ## Pré-requisitos
 
 | Ferramenta | Para quê |
 | --- | --- |
-| Python 3.14 | `backend-miggo` e `miggoai` (o venv do backend vive em `backend-miggo/venv`) |
-| Node.js + npm | `frontend-miggo` e o frontend do `miggoai` |
-| PostgreSQL 16 | Banco dos dois serviços Django (a imagem usada em compose é `postgres:16`) |
-| Git | Clonagem dos repositórios |
-| Docker (opcional) | Subir o Postgres sem instalar localmente |
+| Python 3 (o mesmo dos `Dockerfile` de cada repo) | Plataforma e MiggoAI |
+| Node.js + npm | Web app |
+| PostgreSQL | Banco da Plataforma e do MiggoAI (um banco para cada) |
+| Redis (opcional) | Só para rodar tarefas em fila com Celery; sem ele as tarefas rodam no próprio processo. Veja [Filas e Celery](/plataforma/filas-e-celery) |
 
-## 1. Backend (`backend-miggo`)
+## Portas locais
 
-<Steps>
-  <Step title="Ambiente virtual e dependências">
-    ```bash
-    cd backend-miggo
-    python -m venv venv
-    ./venv/Scripts/python.exe -m pip install -r requirements.txt
-    ```
-  </Step>
-  <Step title="Arquivo .env">
-    Crie o `.env` na raiz do repositório. A lista completa de variáveis está em [Configuração do backend](/backend/configuracao); o mínimo para subir é `SECRET_KEY`, `DEBUG`, `ALLOWED_HOSTS` e as `DB_*`.
-  </Step>
-  <Step title="Banco e migrations">
-    ```bash
-    ./venv/Scripts/python.exe manage.py migrate
-    ./venv/Scripts/python.exe manage.py createsuperuser
-    ```
-  </Step>
-  <Step title="Rodar">
-    ```bash
-    ./venv/Scripts/python.exe manage.py runserver
-    ```
-    A API sobe em `http://localhost:8000`. O schema interativo fica em `/api/schema/swagger-ui/`.
-  </Step>
-</Steps>
+| Serviço | Porta | Por quê |
+| --- | --- | --- |
+| Plataforma | `8000` | `runserver` padrão |
+| MiggoAI | `8010` | padrão do Web app para o MiggoAI (`src/services/miggoai/config.ts`) |
+| Web app | `5173` | padrão do Vite |
 
-## 2. Frontend (`frontend-miggo`)
+## 1. Plataforma
 
-<Steps>
-  <Step title="Dependências">
-    ```bash
-    cd frontend-miggo
-    npm install
-    ```
-  </Step>
-  <Step title="Arquivo .env">
-    O frontend lê apenas variáveis prefixadas com `VITE_`. Veja a lista em [Configuração do frontend](/frontend/configuracao) — elas apontam para a API local e para o client ID do Google.
-  </Step>
-  <Step title="Rodar">
-    ```bash
-    npm run dev
-    ```
-  </Step>
-</Steps>
+```bash
+cd backend-miggo
+python -m venv venv
+./venv/Scripts/python.exe -m pip install -r requirements.txt   # Linux/macOS: ./venv/bin/python
+cp .env.example .env    # preencha conforme /plataforma/configuracao
+./venv/Scripts/python.exe manage.py migrate
+./venv/Scripts/python.exe manage.py runserver 8000
+```
 
-## 3. MiggoAI (`miggoai`)
+O `.env.example` não traz a `JWT_PRIVATE_KEY`, obrigatória: gere uma chave RSA e acrescente (veja [Rodar a Plataforma localmente](/plataforma/rodar-localmente)). Para a Plataforma falar com o MiggoAI local, defina `MIGGOAI_V2_API_URL=http://localhost:8010` no `.env`. Detalhes em [Rodar a Plataforma localmente](/plataforma/rodar-localmente).
 
-<Steps>
-  <Step title="Dependências">
-    ```bash
-    cd miggoai-2.0/miggoai_v2
-    python -m venv backend/venv
-    ./backend/venv/Scripts/python.exe -m pip install -r backend/requirements.txt
-    ```
-  </Step>
-  <Step title="Arquivo .env e migrations">
-    Consulte [Configuração do MiggoAI](/miggoai/configuracao). Depois:
-    ```bash
-    cd backend
-    ./venv/Scripts/python.exe manage.py migrate
-    ./venv/Scripts/python.exe manage.py createsuperuser
-    ./venv/Scripts/python.exe manage.py runserver 10000
-    ```
-  </Step>
-  <Step title="Ligar ao backend principal">
-    O backend fala com o MiggoAI através de `MIGGOAI_API_URL`, `MIGGOAI_USERNAME` e `MIGGOAI_PASSWORD`, definidas no `.env` do `backend-miggo` (cliente em `app/onboarding/miggoai.py`). Aponte-as para a instância local.
-  </Step>
-</Steps>
+## 2. MiggoAI
+
+```bash
+cd miggoai-2.0/miggoai_v2/backend
+python -m venv venv
+./venv/Scripts/python.exe -m pip install -r requirements.txt
+cp .env.example .env    # MIGGO_API_BASE_URL=http://localhost:8000/api/v1/
+./venv/Scripts/python.exe manage.py migrate
+./venv/Scripts/python.exe manage.py seed_prompts   # sem os prompts, toda geração falha
+./venv/Scripts/python.exe manage.py runserver 8010
+```
+
+O MiggoAI valida o token da Plataforma com a chave pública `MIGGO_JWT_PUBLIC_KEY`, par da `JWT_PRIVATE_KEY` da Plataforma. Ela é obrigatória e não está no `backend/.env.example`: acrescente-a ao `.env`. Detalhes em [Rodar o MiggoAI localmente](/miggoai/rodar-localmente) e [Autenticação no MiggoAI](/miggoai/autenticacao).
+
+## 3. Web app
+
+```bash
+cd frontend-miggo
+npm install
+cp .env.example .env    # VITE_API_BASE_URL=http://localhost:8000
+npm run dev
+```
+
+Abra `http://localhost:5173`. Detalhes em [Rodar o Web app localmente](/web/rodar-localmente).
 
 ## Verificação
 
-<Columns cols={2}>
-  <Card title="Backend saudável" icon="check">
-    `./venv/Scripts/python.exe manage.py check` sem erros e `/api/schema/swagger-ui/` abrindo.
-  </Card>
-  <Card title="Frontend saudável" icon="check">
-    `npm run lint` sem erros e o login funcionando contra a API local.
-  </Card>
-</Columns>
+| Serviço | Sinal de saúde |
+| --- | --- |
+| Plataforma | `curl http://localhost:8000/health/` devolve `200` e `POST /api/v1/account/token/` devolve `access` |
+| MiggoAI | `curl http://localhost:8010/health/` devolve `200` |
+| Web app | `npm run lint` e `npm run build` sem erros e o login funcionando contra a API local |
 
 ## Próximos passos
 
@@ -108,6 +80,6 @@ Guia condensado para ter o ambiente local completo. Cada repositório tem uma p�
     Como os três serviços se conectam.
   </Card>
   <Card title="Convenções" icon="ruler" href="/arquitetura/convencoes">
-    O que seguir antes de abrir o primeiro PR.
+    O que vale para os três repos antes do primeiro PR.
   </Card>
 </Columns>

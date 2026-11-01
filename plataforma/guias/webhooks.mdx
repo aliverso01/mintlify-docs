@@ -1,0 +1,167 @@
+---
+title: "Webhooks da Plataforma"
+description: "Como a Plataforma recebe e valida os eventos de Stripe, Asaas, Zernio, ManyChat e Jira, e como testá-los localmente."
+icon: "webhook"
+---
+
+Os webhooks ficam **fora** de `/api/v1/`, registrados direto em `core/urls.py`. Nenhum usa o JWT: cada um autentica pelo mecanismo do provedor. As views estão em `app/webhooks/views.py` (pagamento e Zernio) e `app/conversation/webhooks.py` (ManyChat).
+
+| Rota | Provedor | Validação | Variável |
+|---|---|---|---|
+| `POST /webhooks/` | Stripe | Assinatura HMAC do header `Stripe-Signature` | `STRIPE_WEBHOOK_SECRET` |
+| `POST /webhooks/asas/` (alias `/webhooks/asaas/`) | Asaas | Token no header `asaas-access-token` | `ASAAS_WEBHOOK_TOKEN` |
+| `POST /webhooks/zernio/status/` | Zernio | Token no header `Zernio-Webhook-Token` (ou `X-Webhook-Token`) | `ZERNIO_WEBHOOK_TOKEN` |
+| `POST /webhooks/zernio/account/` | Zernio | **Nenhuma** | — |
+| `POST /webhooks/manychat/` | ManyChat | Token no header `X-Miggo-Token` (ou `Authorization: Bearer`) | `MANYCHAT_WEBHOOK_TOKEN` |
+| `POST /webhooks/manychat/dynamic-block/continue/` | ManyChat | Mesmo token do anterior | `MANYCHAT_WEBHOOK_TOKEN` |
+| `POST /api/v1/account/support/jira-webhook/` | Jira | Token no header `X-Miggo-Token` (ou `Authorization: Bearer`) | `JIRA_WEBHOOK_TOKEN` |
+
+Regras comuns a todos os que validam:
+
+- **Variável vazia → `503`.** O webhook recusa todo evento até a variável ser configurada, e loga o motivo em nível `error`.
+- **Token ou assinatura errados → `401`** (Stripe: `400 invalid signature`). Tokens são comparados com `hmac.compare_digest`.
+- **Toda chamada vira uma linha em `Integration`** (exceto ManyChat e Jira), com payload, resposta e status. É o primeiro lugar para investigar — tela `/admin/logs` ou [Log de integrações](/plataforma/apps/integration).
+
+## Stripe
+
+Recebe os eventos de cobrança e espelha assinatura e fatura locais.
+
+**Validação.** `stripe.Webhook.construct_event` sobre o corpo bruto e o header `Stripe-Signature`, com `STRIPE_WEBHOOK_SECRET`. Corpo que não é JSON ou assinatura inválida: `400`.
+
+**Idempotência.** Cada `event.id` vira uma linha em `StripeEvent` (`event_id` único). Reenvio responde `200 {"detail": "already_processed"}` sem reprocessar.
+
+**Eventos tratados:**
+
+| Evento | Efeito |
+|---|---|
+| `checkout.session.completed`, `checkout.session.async_payment_succeeded` | Vincula a assinatura Stripe à local, sincroniza e notifica o cliente |
+| `checkout.session.async_payment_failed` | Assinatura `UNPAID` |
+| `customer.subscription.created`, `customer.subscription.updated` | Espelha a assinatura, inclusive a virada de trial para ativa |
+| `customer.subscription.deleted` | Assinatura `CANCELLED` |
+| `customer.subscription.trial_will_end` | Aviso de fim de teste, sem duplicar o aviso da rotina diária |
+| `invoice.created`, `invoice.finalized` | Cria ou atualiza a `Invoice` |
+| `invoice.paid`, `invoice.payment_succeeded` | Fatura paga; reativa quem estava `UNPAID`, `PENDING` ou `EXPIRED`; notifica uma vez só |
+| `invoice.payment_failed` | Fatura `OVERDUE` e assinatura `UNPAID` |
+| `credit_note.created`, `credit_note.updated`, `credit_note.voided`, `charge.refunded` | Aplica estornos e notas de crédito na fatura |
+
+Outros tipos respondem `200 {"detail": "ignored_event"}`, para a Stripe não reenviar.
+
+**Falha.** O processamento roda numa transação. Se o handler quebrar, o `StripeEvent` é apagado e a resposta é `500`: a Stripe reenvia e o evento é processado do zero.
+
+## Asaas
+
+Recebe os eventos `PAYMENT_*` e espelha a cobrança na `Invoice`. Pagamento confirmado reativa a assinatura em atraso, pela mesma regra da Stripe.
+
+**Validação.** Token fixo cadastrado no painel do Asaas, devolvido no header `asaas-access-token` e comparado com `ASAAS_WEBHOOK_TOKEN`. O Asaas não assina o corpo.
+
+**Idempotência.** O `id` do evento (ou `evento:pagamento:status`, quando o Asaas não manda id) vira uma linha em `AsaasEvent`. Reentrega: `200 already_processed`.
+
+<Warning>
+  A fila de webhooks do Asaas é **sequencial** e para no primeiro evento que não recebe `200`. O endpoint devolve `401` para token errado, `400` para evento sem nome ou `PAYMENT_*` sem `payment.id`, e `500` quando o processamento falha. Um `400` também trava a fila: corrija a origem e reenvie pelo painel. Evento de outro tipo ou cobrança sem assinatura local respondem `200` e ficam no log para tratamento manual.
+</Warning>
+
+O painel do Asaas aponta para `/webhooks/asas/`; `/webhooks/asaas/` é um alias com a grafia correta. A rotina `sync_asaas_billing` continua como rede de segurança para evento perdido.
+
+## Zernio: desfecho da publicação
+
+`/webhooks/zernio/status/` tira o post de "Enviando": quando o Zernio termina a publicação, a `PostPublication` correspondente vira `published` (com `permalink` e `published_at`) ou `failed`.
+
+**Validação.** Token cadastrado no painel do Zernio, devolvido em `Zernio-Webhook-Token` (aceita `X-Webhook-Token`) e comparado com `ZERNIO_WEBHOOK_TOKEN`.
+
+**Eventos.** `post.published` e `post.failed`, além das grafias equivalentes que o Zernio pode mandar (`published`, `post.publish.success`, `post.error`...). O resto responde `200 ignored_event`; o webhook nunca devolve `500`, que faria o Zernio reenviar sem fim.
+
+**Idempotência e casamento.** A chave do evento fica registrada em `Integration` (`service='Zernio Status'`); reentrega responde `200 already_processed`. Só atualiza publicação cujo `external_post_id` já existe no banco; id desconhecido responde `200 publication_not_found`.
+
+O comando `reconcile_zernio_posts` é a rede de segurança: fecha as publicações que ficaram em `sending` ou `pending` quando o webhook não chegou. Ver [Comandos](/plataforma/comandos).
+
+## Zernio: conta conectada
+
+`/webhooks/zernio/account/` trata só `account.connected`: acha a `PlatformIntegration` pendente pelo `profileId` (e pela rede, quando resolve) e a ativa, notificando o cliente.
+
+| Resposta | Quando |
+|---|---|
+| `200 integration_activated` | Integração ativada |
+| `200 ignored_event` | Outro evento |
+| `400 missing_platform_or_profile` | Payload sem `account.platform` ou `account.profileId` |
+| `404 integration_not_found` | Nenhuma integração pendente com aquele perfil |
+
+<Warning>
+  Este endpoint **não valida** origem: qualquer `POST` bem formado ativa a integração correspondente. Reenvio do mesmo evento repete a notificação ao cliente.
+</Warning>
+
+## ManyChat
+
+O WhatsApp chega pelo ManyChat, que chama a Plataforma por *External Request* dentro do flow.
+
+| Rota | O que faz |
+|---|---|
+| `/webhooks/manychat/` | Registra a mensagem do cliente na `Conversation` e roda as automações |
+| `/webhooks/manychat/dynamic-block/continue/` | URL fixa do Dynamic Block: renderiza o passo atual do flow ou aplica o botão que o cliente tocou |
+
+**Validação.** O ManyChat não assina o payload; o token compartilhado vai no header `X-Miggo-Token` (ou `Authorization: Bearer <token>`) e é comparado com `MANYCHAT_WEBHOOK_TOKEN`.
+
+O Dynamic Block decide o que mostrar pelo `ConversationFlowState`, nunca por parâmetro da URL. Por isso a mesma URL serve a qualquer flow criado na Plataforma. Erro de processamento no `/webhooks/manychat/` responde `200`, porque um `500` faria o ManyChat reenviar em laço. Detalhes do motor de flows em [Conversas de WhatsApp](/plataforma/apps/conversation).
+
+## Jira
+
+`/api/v1/account/support/jira-webhook/` é a volta do Jira para os tickets de suporte: quando o issue de um ticket muda de coluna, o status do `SupportTicket` acompanha. Configure no Jira uma automação "issue transicionado → enviar requisição web" para essa URL, com o header `X-Miggo-Token` igual a `JIRA_WEBHOOK_TOKEN` e o corpo padrão do issue. Issue que não veio de ticket responde `200` sem efeito.
+
+## Testar localmente
+
+**Objetivo:** fazer um evento de cada provedor chegar ao backend local e conferir o efeito.
+
+**Pré-requisitos:**
+
+- Plataforma rodando em `localhost:8000` ([Rodar a Plataforma localmente](/plataforma/rodar-localmente)).
+- A variável do webhook preenchida no `.env` (tabela acima); sem ela a rota responde `503`.
+- Stripe: a [Stripe CLI](https://docs.stripe.com/stripe-cli) logada na conta de teste.
+
+<Tabs>
+  <Tab title="Stripe">
+    Com a [Stripe CLI](https://docs.stripe.com/stripe-cli):
+
+    ```bash
+    stripe listen --forward-to localhost:8000/webhooks/
+    ```
+
+    O comando imprime um `whsec_...`: coloque-o em `STRIPE_WEBHOOK_SECRET` e reinicie o runserver. Em outro terminal, dispare eventos:
+
+    ```bash
+    stripe trigger invoice.paid
+    ```
+  </Tab>
+  <Tab title="ManyChat">
+    O comando `trigger_manychat_webhook` simula o ManyChat contra o backend local, já com o token:
+
+    ```bash
+    python manage.py trigger_manychat_webhook --subscriber-id 123 --text "oi"
+    python manage.py trigger_manychat_webhook --subscriber-id 123 --continue --option aprovar
+    ```
+  </Tab>
+  <Tab title="Asaas, Zernio e Jira">
+    Chame a rota com `curl` e o token configurado no `.env`:
+
+    ```bash
+    curl -X POST http://localhost:8000/webhooks/zernio/status/ \
+      -H "Content-Type: application/json" \
+      -H "Zernio-Webhook-Token: $ZERNIO_WEBHOOK_TOKEN" \
+      -d '{"event": "post.published", "postId": "<external_post_id>"}'
+    ```
+
+    Para o Asaas, o header é `asaas-access-token`; para o Jira, `X-Miggo-Token`.
+  </Tab>
+</Tabs>
+
+**Resultado esperado:**
+
+| Provedor | O que conferir |
+|---|---|
+| Stripe | A CLI mostra `200` para cada evento e há uma linha nova em `Integration` com o tipo do evento. |
+| ManyChat | O comando imprime a resposta do backend e a mensagem aparece na `Conversation` do cliente. |
+| Zernio | `200` com `already_processed`, `publication_not_found` ou o desfecho aplicado à `PostPublication`; a chave do evento fica em `Integration` (`service='Zernio Status'`). |
+| Asaas | `200` e a `Invoice` espelhada; `401` indica token errado. |
+| Jira | `200`; o `SupportTicket` do issue muda de status. |
+
+## Depois de um deploy ou troca de domínio
+
+Confirme no painel de cada provedor que a URL aponta para o host do ambiente (`https://api.miggomkt.com.br` em produção, `https://test-api.miggomkt.com.br` em homologação) e que o segredo do painel é o mesmo da variável daquele ambiente. Homologação usa o endpoint de teste da Stripe, com o seu próprio `STRIPE_WEBHOOK_SECRET`.

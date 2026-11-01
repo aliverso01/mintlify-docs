@@ -1,0 +1,62 @@
+---
+title: "Calendário editorial"
+description: "Grade semanal de pautas do cliente no app editorial_calendar, com a matriz Formato x Estilo e o catálogo fechado de palavras-chave e CTAs."
+icon: "calendar-days"
+---
+
+O app `editorial_calendar` guarda a grade semanal de conteúdo de cada cliente: para cada dia e horário, a pauta (`subject`), os formatos, as palavras-chave (estilos) e o tipo de CTA. Estilos e CTAs **não são texto livre**: vêm de um catálogo fechado, e a combinação formato x estilo só vale se existir na matriz `FormatStyleRule`.
+
+O MiggoAI lê o detalhe de cada entrada para montar o prompt do post, e os `Post` gerados herdam pauta, tags, objetivo, macro-objetivo e CTA da entrada que os originou.
+
+## Models principais
+
+| Model | Papel |
+|---|---|
+| `EditorialCalendar` | Uma entrada (dia) da grade de um cliente: `week_day`, `time`, `subject`, `formats`, `styles`, `ctas`, `objetivo`, `macro_objetivo`, `cta_required`, `active`. `tags` e `cta` são espelhos textuais dos M2M, mantidos pelo próprio model. |
+| `ContentStyle` | Palavra-chave do catálogo (ex.: `dica-rapida`, `storytelling`, `quiz`). `requires_client_input` marca estilos que dependem de material do cliente, como depoimento. |
+| `CTACategory` / `CTAOption` | Tipo de CTA (compartilhamento, salvamento, comentário, novo seguidor, link na bio, DM/WhatsApp, orçamento) e suas frases prontas. |
+| `FormatStyleRule` | Célula válida da matriz: formato (`stories`, `feed`, `carousel`, `reels`) x estilo, com objetivo específico, macro-objetivo, instrução de formatação, `cta_required` e categoria de CTA sugerida. |
+
+## Regras de negócio
+
+**Validação de uma entrada** (`validate_catalog_selection`):
+
+1. Ao menos uma palavra-chave.
+2. Estilo que depende de material do cliente não pode ser o único do dia.
+3. Cada estilo precisa ser compatível com ao menos um dos formatos do dia.
+4. Estilos e CTAs inativos são recusados.
+5. CTA é obrigatório só quando alguma regra aplicável marca `cta_required`.
+
+Escolher um CTA é escolher o **tipo**: a entrada guarda todas as frases ativas da categoria, e a geração do post varia dentro delas.
+
+**Macro-objetivo** (`entreter`, `inspirar`, `educar`, `convencer`) é a lente de funil do dia. Quando não informado, vale o mais frequente entre as regras aplicáveis.
+
+**Propagação para os posts.** Editar uma entrada atualiza os `Post` derivados que ainda não foram publicados: pauta, horário, tags, objetivo, macro-objetivo, CTA e formatos sugeridos. A legenda só é trocada se ainda for a sugestão automática; texto editado à mão é preservado.
+
+**Escrita.** Criar aceita um objeto ou uma lista. Atualizar é sempre parcial, mesmo em `PUT`; a matriz só é revalidada quando `formats`, `styles` ou `ctas` vêm no corpo. Escrita exige usuário de gestão ou Api-Key.
+
+## Texto livre para catálogo
+
+`selection.py` traduz saída de LLM e dados legados para a seleção fechada:
+
+- `resolve_styles` e `resolve_cta_options` casam nomes livres (sem acento e caixa) com o catálogo e descartam o que não casa.
+- `coerce_slot` normaliza um dia inteiro: sem estilo reconhecido, usa até dois estilos compatíveis que não dependem do cliente; só preenche CTA quando ele é exigido.
+- `rules_for_post` devolve as regras aplicáveis a um `Post`, e os blocos `matrix_prompt_block` e `cta_prompt_block` montam o trecho do prompt restrito à matriz.
+
+O [Onboarding na Plataforma](/plataforma/apps/onboarding) usa essas funções para travar o calendário proposto pela IA.
+
+## Catálogo
+
+`catalog.py` é a fonte única dos dados pré-cadastrados: os 4 macro-objetivos, os 4 formatos da matriz e o mapeamento dos nomes de `PostFormat` para eles, 25 estilos, 7 categorias de CTA com frases e a matriz completa. É o material usado para semear o banco.
+
+## Onde fica no código
+
+| Caminho | Conteúdo |
+|---|---|
+| `app/editorial_calendar/models.py` | Models, validação e espelhos |
+| `app/editorial_calendar/serializers.py` | Escrita transacional e propagação para os posts |
+| `app/editorial_calendar/views.py` | CRUD e leitura do catálogo (`options/` traz tudo em uma chamada) |
+| `app/editorial_calendar/catalog.py` | Catálogo oficial |
+| `app/editorial_calendar/selection.py` | Ponte texto livre → catálogo e blocos de prompt |
+
+Endpoints: veja a [Referência de API](/plataforma/api-referencia).

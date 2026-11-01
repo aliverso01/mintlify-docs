@@ -1,0 +1,85 @@
+---
+title: "Estado e dados no Web app"
+description: "Como o frontend-miggo busca, guarda e compartilha dados: contextos, hooks e services."
+icon: "database"
+---
+
+O app não usa biblioteca de estado nem de cache de requisição (sem Redux, React Query ou SWR). O desenho é simples:
+
+- **Estado global pequeno** em React Contexts (sessão, marca, tema, layout).
+- **Dados de servidor** buscados com `fetch` dentro de hooks (`src/hooks/`, ou um `use*.ts` ao lado da tela em `src/pages/`) e de services (`src/services/`).
+- **Autenticação transparente:** `setupAuthFetchInterceptor()` (em `src/main.tsx`) substitui `window.fetch` uma vez. Toda chamada a `/api/*` recebe o JWT sem que a tela precise montar cabeçalho. Veja [Consumir a API](/web/guias/consumir-a-api).
+
+## Árvore de providers
+
+```text
+main.tsx
+└── GoogleOAuthProvider        (só com VITE_GOOGLE_CLIENT_ID)
+    └── ThemeProvider
+        └── AuthProvider
+            └── MarcaProvider
+                └── AppWrapper (HelmetProvider)
+                    └── App
+                        └── AppLayout   (rotas autenticadas, depois dos guards)
+                            └── SidebarProvider
+                                └── SearchProvider
+                                    └── SupportChatProvider
+```
+
+## Contextos
+
+| Contexto | Hook | Guarda | Escopo |
+|---|---|---|---|
+| `ThemeContext` | `useTheme()` | `theme` (`light`/`dark`) em `localStorage`; alterna a classe `dark` no `<html>`. | App inteira |
+| `AuthContext` | `useAuthContext()`; nas telas, `useAuth()` de `src/hooks/authHook.ts` | `user`, `loading`, `error` e as operações de conta (login, Google, cadastro, logout, reset de senha). | App inteira |
+| `MarcaContext` | `useMarca()` | `marca` da agência (`null` = marca Miggo) e `nome`. | App inteira, inclusive telas públicas |
+| `SidebarContext` | `useSidebar()` | Menu expandido, aberto no mobile, item ativo, submenu aberto. | Área autenticada |
+| `SearchContext` | `useSearch()` | Texto da busca do cabeçalho. | Área autenticada |
+| `SupportChatContext` | `useSupportChat()` (em `src/context/supportChat.ts`) | Chat de suporte aberto ou fechado, para qualquer ponto do app abrir o chat. | Área autenticada |
+
+### `MarcaContext`
+
+Carrega a marca com `fetchMarca()` (`src/utils/marca.ts`) antes de renderizar as rotas, com uma tela neutra enquanto isso, e de novo a cada troca de usuário (login, logout, troca de conta). A Plataforma resolve a marca pelo usuário logado ou, sem sessão, pelo host (`X-Miggo-Host`). `applyMarca`/`clearMarca` aplicam a paleta. O Google Analytics só carrega no host Miggo. O logo da marca vem do componente `MarcaLogo` (`src/components/common/MarcaLogo.tsx`).
+
+O `main.tsx` apaga a chave legada `miggo_preview_mode` do navegador.
+
+## Hooks de dados
+
+| Hook | Para quê |
+|---|---|
+| `useAuth` | Wrapper de `useAuthContext` que navega para a home da área depois de login ou cadastro. |
+| `useRoleArea` | Área do usuário (`/admin`, `/agency` ou `/app`) e o helper `path('content')` para montar links. |
+| `useClient` | Resolve o `clientId` do usuário cliente logado (com cache por usuário no `localStorage`). |
+| `useClientPlatforms` | Redes liberadas para o cliente, derivadas do nome do plano da assinatura ativa; cai nas integrações ativas quando o plano não mapeia. Devolve também o WhatsApp: listas de "publicar em" precisam filtrar só as redes que publicam. |
+| `useBrandkit` | `useBrandkits(clientId, isAdmin)` e as funções de CRUD do brandkit (logo, cores, tipografia, referências). |
+| `useOnboarding` | Status do onboarding do cliente e as etapas pendentes. |
+| `useSubscription`, `useInvoices`, `useBillingPortal` | Assinatura, faturas e abertura do portal de cobrança da Stripe. |
+| `useWelcomeTour` | Exibe o tour de boas-vindas uma vez só; o "já vi" fica em `ClientMeta` (`welcome_tour_seen`), não no navegador. |
+| `useGoogleAnalytics`, `useFacebookPixel` | Enviam o page view a cada troca de rota. Fora de produção viram no-op. |
+| `useModal`, `useGoBack` | Utilitários de UI (abrir/fechar modal, voltar com fallback para `/`). |
+
+Telas grandes têm o próprio hook ao lado, por exemplo `src/pages/Content/useContentBoard.ts` e `src/pages/Dashboard/useDashboard.ts`.
+
+## Services
+
+| Service | Para quê |
+|---|---|
+| `src/services/jwtAuth.ts` | Token em memória, refresh pelo cookie e o interceptor de `fetch`. |
+| `src/services/onboardingApi.ts` | Todas as chamadas do onboarding (`/api/v1/onboarding/...`) num objeto `onboardingApi`, sobre o helper `fetchApi`. |
+| `src/services/editorialCalendarCatalog.ts` | Catálogo do calendário editorial (formatos, estilos, CTAs), com cache em memória por sessão e as regras formato × estilo. |
+| `src/services/subscriptionSync.ts` | Dispara a sincronização de assinaturas em background e faz polling até terminar. |
+| `src/services/uploadChunked.ts` | Upload de mídia em pedaços de 1 MiB, com reenvio por pedaço e progresso real. |
+| `src/services/clarity.ts` | Microsoft Clarity, só no onboarding, só em produção e só com consentimento. |
+| `src/services/miggoai/` | Cliente tipado da API do MiggoAI para o [painel de IA](/web/painel-de-ia) (`config.ts`, `api.ts`, `types.ts`). |
+
+Utilitários sem estado ficam em `src/utils/` (ex.: `getErrorMessage` em `errors.ts`, `safeUrl.ts`, `marca.ts`).
+
+## Onde guardar um dado novo
+
+| O dado é | Guarde em |
+|---|---|
+| Resposta da API usada por uma tela | Estado local da tela ou de um hook dela. |
+| Resposta usada por várias telas sem relação | Um hook em `src/hooks/` que as telas chamam. |
+| Estado de sessão ou de layout que precisa estar em todo lugar | Um contexto novo, montado em `main.tsx` ou em `AppLayout`. |
+| Preferência do usuário que precisa valer em outro dispositivo | Na Plataforma (ex.: `ClientMeta`), não no `localStorage`. |
+| Token | Nunca no `localStorage`. O access fica em memória; o refresh, no cookie httpOnly. |

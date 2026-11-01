@@ -1,0 +1,82 @@
+---
+title: "Integração do MiggoAI com a Plataforma"
+description: "O que o MiggoAI lê e escreve no backend-miggo, com que credencial, e como a entrega do post funciona."
+icon: "link"
+---
+
+A conversa entre os dois serviços é de mão dupla, cada sentido com a sua chave:
+
+| Sentido | Credencial | Configuração |
+|---|---|---|
+| MiggoAI → `backend-miggo` | `Authorization: Api-Key <MIGGO_API_KEY>` | `MIGGO_API_BASE_URL` e `MIGGO_API_KEY` no MiggoAI; a chave é criada no `backend-miggo` |
+| MiggoAI → banco de imagens do `backend-miggo` | `Acervo-Service-Token: <ACERVO_SERVICE_TOKEN>` | mesmo valor nos dois serviços |
+| `backend-miggo` → MiggoAI | `Authorization: Api-Key <MIGGOAI_V2_API_KEY>` | chave criada no Django admin do MiggoAI; `MIGGOAI_V2_API_URL` e `MIGGOAI_V2_API_KEY` no `backend-miggo` |
+| Painel de IA → MiggoAI | `Authorization: Bearer <token da plataforma>` | `MIGGO_JWT_PUBLIC_KEY` no MiggoAI; `VITE_MIGGOAI_API_URL` no `frontend-miggo` |
+
+Cada ambiente aponta para o par do **mesmo** ambiente. Chave de produção em homologação faz a homologação ler e escrever em produção.
+
+Todo acesso de saída passa por `apps/common/miggo_client.py` (`get`, `post`, `patch`, `get_acervo`, `post_acervo`). Falha de comunicação vira `MiggoAPIError`, que as views de proxy repassam como `{"error": ...}` com o status do `backend-miggo` (ou `502`).
+
+## O que o MiggoAI lê
+
+Nada é sincronizado nem copiado: cada geração busca ao vivo. A exceção é o histórico de posts, guardado uma vez por dia por cliente em `ClientPostHistory`.
+
+| Recurso no `backend-miggo` | Endpoint | Função no MiggoAI |
+|---|---|---|
+| Clientes | `client/list/` | `apps.clients.services.list_clients`, `get_client_detail` |
+| Clientes com o workflow ligado | `client/list/?miggoai_workflow_enabled=true` | `list_workflow_enabled_clients` (já vem filtrado por elegibilidade: trial vencido e inadimplente fora da carência não entram) |
+| Briefing (client-meta) | `client/client-meta/list/` | `get_briefing` |
+| Grid 3x3 do brandkit | `brandkit/grid/list/` | `get_client_grid` |
+| Logo | `brandkit/list/`, `brandkit/logo/list/` | `get_client_logo` |
+| Galeria de mídia | `media/list/` | `get_client_media_library` |
+| Preferência de assinatura | `client/signature-preference/<id>/` | `get_signature_preference` |
+| Predefinição de foto real | `client/media-preference/<id>/` | `get_client_media_preference` (`usage`, `reuse_days`, `use_stock`) |
+| Dias de postagem | `editorial-calendar/list/?client_id=` | `get_posting_weekdays` |
+| Intervalo mínimo entre formatos | `subscription/format-intervals/?client_id=` | `get_format_intervals` |
+| Referências de design | `brandkit/design-reference/list/?reference_type=post` | `get_design_references` |
+| Banco de imagens elegível | `media/acervo/elegiveis/?client_id=&fadiga=1` | `get_acervo_elegiveis` (token do acervo) |
+| Posts | `post/list/`, `post/detail/<id>/` | `apps.posts.services.list_posts`, `get_post_detail` |
+| Formatos e status de post | `post/format/list/`, `post/status/list/` | `get_post_formats`, `get_post_statuses` |
+
+## O que o MiggoAI escreve
+
+A escrita acontece na entrega do post (`apps/generations/services/delivery.py`) e no registro de uso do banco de imagens.
+
+| Ação | Endpoint |
+|---|---|
+| Reservar o card para gerar | `PATCH post/update/<id>/` → `processing` |
+| Subir cada imagem gerada | `POST media/create/` (multipart, com `from_media_library=false` e `skip_ai_analysis=true`) |
+| Ligar a imagem ao card | `POST post/media-post/create/`, com `sort_order` na ordem dos cards |
+| Concluir o card | `PATCH post/update/<id>/` com `title`, `content`, `post_format` (só se o card estava sem formato) e, por último, `scheduled` |
+| Devolver o card em falha | `PATCH post/update/<id>/` → `pending` |
+| Registrar uso de foto do banco | `POST media/acervo/uso/` (token do acervo) |
+| Pedir análise das fotos ainda não analisadas da galeria | `POST media/analyze-pending/` |
+| Apagar o pedido de geração atendido | `DELETE client/miggoai-generate-now/<id>/` |
+
+O que vai em cada campo:
+
+- `title`: no feed e no story, o texto da arte; no carrossel, o texto de **todos** os cards na ordem, separados por linha horizontal, sem corte.
+- `content`: legenda com as hashtags no fim (o post não tem campo próprio de hashtags).
+- As imagens são enviadas em bytes, não por URL: o bucket do MiggoAI é privado e a URL assinada expira em uma hora.
+- Imagens novas são **somadas** às mídias que o card já tinha.
+
+### Entrega idempotente
+
+Sob a fila, a entrega roda na task `generations.entregar` com `acks_late`, que pode ser reexecutada. `Generation.entregue_em` marca a entrega concluída: com ele preenchido, a reentrega não sobe a mesma arte de novo. Retry automático só em falha de conexão, `429` e `5xx`.
+
+## O que o backend-miggo chama
+
+| Endpoint do MiggoAI | Origem na Plataforma |
+|---|---|
+| `POST /api/generations/gerar-agora/` | botão de criar agora no admin |
+| `POST /api/generations/gerar-card/` | geração de um card específico |
+| `POST /api/generations/regenerate/` e `GET regenerate/status/` | regenerar título, imagem, legenda ou hashtags de um card |
+| `POST /api/generations/grid/` e `GET grid/by-key/` | grid do onboarding |
+| `POST /api/generations/perfil/{bio,banner,destaques}/` e `GET perfil/by-key/` | peças de perfil do onboarding |
+
+O cliente desse lado vive em `app/onboarding/miggoai.py` do `backend-miggo`. Contratos de cada chamada em [Gerar conteúdo](/miggoai/guias/gerar-conteudo).
+
+<Columns cols={2}>
+  <Card title="Autenticação" icon="key-round" href="/miggoai/autenticacao">Credenciais de entrada e saída.</Card>
+  <Card title="Arquitetura" icon="network" href="/miggoai/arquitetura">Visão do serviço inteiro.</Card>
+</Columns>

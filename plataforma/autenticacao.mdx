@@ -1,0 +1,167 @@
+---
+title: "Autenticação na Plataforma"
+description: "Como obter, renovar e usar o token da Plataforma, quando usar a Api-Key de serviço e como o backend decide quem vê o quê."
+icon: "shield-check"
+---
+
+A API aceita duas credenciais:
+
+| Credencial | Header | Quem usa |
+|---|---|---|
+| **JWT** (access token) | `Authorization: Bearer <access>` | Pessoas: o Web app, scripts de quem tem conta |
+| **Api-Key de serviço** | `Authorization: Api-Key <chave>` | Serviços internos, como o MiggoAI |
+
+A permissão padrão de toda view (`HasAPIKeyOrIsAuthenticated`) aceita qualquer uma das duas. Views mais restritas pedem papel, módulo ou recusam a Api-Key, como descrito abaixo.
+
+## Obter um token
+
+<Steps>
+  <Step title="Pedir o par de tokens">
+    ```bash
+    curl -X POST https://api.miggomkt.com.br/api/v1/account/token/ \
+      -H "Content-Type: application/json" \
+      -d '{"email": "voce@exemplo.com", "password": "<senha>"}'
+    ```
+
+    ```json
+    { "access": "eyJhbGciOiJSUzI1NiIs...", "refresh": "eyJhbGciOiJSUzI1NiIs..." }
+    ```
+
+    O login é sempre por e-mail. O `access` vale **30 minutos**; o `refresh`, **7 dias**.
+  </Step>
+
+  <Step title="Chamar a API">
+    ```bash
+    curl https://api.miggomkt.com.br/api/v1/account/modules/ \
+      -H "Authorization: Bearer $ACCESS"
+    ```
+
+    A rota devolve os módulos liberados para o usuário do token, o que serve de teste rápido da credencial.
+  </Step>
+
+  <Step title="Renovar o access">
+    ```bash
+    curl -X POST https://api.miggomkt.com.br/api/v1/account/token/refresh/ \
+      -H "Content-Type: application/json" \
+      -d '{"refresh": "'"$REFRESH"'"}'
+    ```
+
+    A resposta traz um `access` novo e, como os refresh tokens são rotacionados, um `refresh` novo. Guarde o novo.
+  </Step>
+</Steps>
+
+<Note>
+  Os exemplos usam a produção. Para homologação, troque a base por `https://test-api.miggomkt.com.br`; localmente, `http://localhost:8000`.
+</Note>
+
+### No navegador: refresh em cookie httpOnly
+
+O Web app não usa `/token/`. Ele entra por `POST /api/v1/account/login/` (e-mail e senha) ou `POST /api/v1/account/google/` (ID token do Google). Essas rotas devolvem o `access` no corpo e gravam o refresh num **cookie httpOnly** (`miggo_refresh`, `path=/api/v1/account/`), que o JavaScript não lê.
+
+Para renovar, o navegador chama `POST /api/v1/account/token/refresh/` com o **corpo vazio**: o refresh vai no cookie e o rotacionado volta no cookie. Quem manda `refresh` no corpo recebe-o de volta no corpo também. `POST /api/v1/account/logout/` apaga o cookie.
+
+Como o front consome isso: [Autenticação no Web app](/web/autenticacao).
+
+## O token: RS256 e claims
+
+O token é assinado em **RS256** com a `JWT_PRIVATE_KEY` do backend. A chave pública é derivada dela, e o **MiggoAI valida o mesmo access** com a sua cópia da pública (`MIGGO_JWT_PUBLIC_KEY`). Por isso o painel de IA no `/admin` do Web app usa o token da Plataforma, sem login próprio.
+
+| Configuração | Valor |
+|---|---|
+| Algoritmo | `RS256` |
+| Audiência (`aud`) | `miggo` e `miggoai` |
+| Validade | access 30 min · refresh 7 dias, com rotação |
+| Serializer de emissão | `app.account.tokens.MiggoTokenObtainPairSerializer` |
+
+Claims extras, no access e no refresh:
+
+| Claim | Valor |
+|---|---|
+| `email` | e-mail do usuário |
+| `is_management` | `true` para a equipe Miggo (mesma regra das permissões de gestão) |
+| `is_superuser` | `true` para superusuário (no MiggoAI, só ele altera modelo e preço) |
+
+Os claims são **recalculados a cada refresh**: quem sai da gestão perde o acesso ao MiggoAI no próximo access, em até 30 minutos.
+
+<Warning>
+  `JWT_PRIVATE_KEY` (backend) e `MIGGO_JWT_PUBLIC_KEY` (MiggoAI) são **um par**. Trocar a privada sem atualizar a pública faz o painel de IA responder `401`; trocar a chave invalida todos os tokens já emitidos.
+</Warning>
+
+## Api-Key de serviço
+
+Chamadas máquina-a-máquina usam o pacote `rest_framework_api_key`: a chave é validada contra a tabela de chaves do banco, não contra uma variável de ambiente.
+
+```bash
+curl https://api.miggomkt.com.br/api/v1/client/list/ \
+  -H "Authorization: Api-Key <chave>"
+```
+
+- **Criar uma chave:** no Django Admin (`/admin/`), em *API Keys*. O valor completo aparece uma única vez, na criação.
+- **Quem usa:** o MiggoAI, para ler clientes, calendário e posts e gravar o conteúdo gerado.
+- **O que ela abre:** tudo que aceita `HasAPIKeyOrIsAuthenticated`, `IsManagementUser`, `IsAdminUser` e `IsGestorDeCarteira`, com visão de **todos** os clientes.
+- **O que ela não abre:** rotas com as permissões `*Only` e `IsGestorSemApiKey`, que exigem pessoa logada.
+
+<Warning>
+  A chave de serviço é uma só e não tem escopo por cliente. Não a coloque em código de front nem em variável `VITE_*`.
+</Warning>
+
+O acervo Miggo tem uma credencial à parte: o header `Acervo-Service-Token`, comparado com `ACERVO_SERVICE_TOKEN`, só nas rotas `media/acervo/elegiveis/` e `media/acervo/uso/`.
+
+## Papéis
+
+O papel vem do campo `CustomUser.role`, somado a `is_staff` e `is_superuser`:
+
+| Papel | Quem é | Enxerga |
+|---|---|---|
+| `client` (padrão) | cliente final | só o próprio `Client` |
+| `manager` | equipe Miggo | a gestão, limitada aos módulos marcados para ele |
+| `admin` ou superusuário | equipe Miggo | tudo, inclusive financeiro, planos e time |
+| `agencia_admin` | dono de uma agência parceira | a carteira da própria agência, todos os módulos da agência |
+| `agencia_membro` | membro da agência | a carteira da própria agência, só os módulos marcados |
+
+Agência **nunca** é equipe Miggo: `is_staff` não abre a gestão para ela, e agência suspensa perde a carteira na hora, inclusive com token já emitido.
+
+## Permissões
+
+Definidas em `app/account/permissions.py`:
+
+| Classe | Passa |
+|---|---|
+| `HasAPIKeyOrIsAuthenticated` (padrão) | Api-Key ou qualquer usuário autenticado |
+| `IsManagementUser` | Api-Key ou equipe Miggo |
+| `IsAdminUser` | Api-Key ou admin/superusuário |
+| `IsManagementUserOnly`, `IsAdminUserOnly` | como as anteriores, **sem** Api-Key |
+| `IsGestorDeCarteira` | Api-Key, equipe ou agência ativa |
+| `IsGestorSemApiKey` | equipe ou agência ativa, sem Api-Key |
+| `IsAgenciaAtiva`, `IsAgenciaAdminAtiva` | usuário (ou só o admin) de agência ativa |
+| `TemModulo(m)`, `ModuloDeCarteira(m)` | quem tem o módulo `m`; a segunda também deixa passar o cliente final |
+
+### Escopo de clientes
+
+`app/account/escopo.py` decide **quais clientes** uma requisição enxerga (`clientes_visiveis`). A regra é lista positiva: Api-Key e equipe veem todos; agência ativa vê os seus; cliente vê a si mesmo; qualquer outro caso vê nenhum. Recurso de outro cliente responde **`404`**, não `403`, para não confirmar que ele existe.
+
+### Módulos
+
+O papel diz quem é; o módulo diz o que pode usar. `GET /api/v1/account/modules/` devolve o catálogo da área de quem está logado. Os códigos da equipe são `clientes`, `conteudo`, `trials`, `financeiro`, `conversas`, `email_marketing`, `miggoai`, `acervo`, `beneficios`, `suporte`, `logs` e `time`; os da agência, `clientes`, `conteudo`, `membros`, `plano` e `marca`. Admin e `agencia_admin` têm todos sem marcação; `manager` e `agencia_membro` têm só os marcados.
+
+## Erros
+
+| Status | Quando |
+|---|---|
+| `401` | Sem credencial, access expirado ou inválido, refresh ausente ou expirado, e-mail ou senha errados |
+| `403` | Credencial válida sem permissão (papel ou módulo), conta ou cliente inativo, agência suspensa, ou login pelo host errado (usuário de agência no domínio da Miggo, ou o contrário) |
+| `404` | Recurso de um cliente fora do seu escopo |
+
+```json
+{ "detail": "Given token not valid for any token type", "code": "token_not_valid" }
+```
+
+As rotas de conta respondem com `{"message": "..."}`; as demais seguem o padrão do DRF, `{"detail": "..."}`.
+
+<Tip>
+  Recebeu `401` com um access que acabou de funcionar? Ele expirou: renove pelo refresh e repita a chamada uma vez. Se o refresh também der `401`, faça login de novo.
+</Tip>
+
+## Redefinição de senha
+
+O pedido envia um código de 6 dígitos por e-mail e responde `200` mesmo para e-mail inexistente. O código vale 15 minutos e cai após 5 tentativas erradas. As rotas (redefinição, verificação de e-mail, cadastro) estão no grupo **Autenticação** dos endpoints da Plataforma; veja a [Introdução à API da Plataforma](/plataforma/api-referencia).

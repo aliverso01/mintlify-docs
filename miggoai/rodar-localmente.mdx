@@ -1,0 +1,108 @@
+---
+title: "Rodar o MiggoAI localmente"
+description: "Sobe o backend do MiggoAI (Django + DRF) na máquina, com banco, prompts e, se precisar, o worker do Celery."
+icon: "terminal"
+---
+
+O MiggoAI é o serviço de IA da Miggo: gera título, imagem, legenda, hashtags, grid e peças de perfil a partir dos dados de cliente e post do `backend-miggo`. O código fica em `miggoai-2.0/miggoai_v2/backend/`. A interface do MiggoAI é o [painel de IA](/web/painel-de-ia) no `/admin` do `frontend-miggo`.
+
+## Pré-requisitos
+
+- Python 3.13 (a imagem de produção usa `python:3.13-slim`).
+- PostgreSQL acessível. Não há fallback para SQLite nas settings.
+- Um `backend-miggo` para consumir: local (`http://localhost:8000/api/v1/`) ou a homologação.
+- Chave da OpenAI, se for gerar de verdade.
+- Redis, só se for testar a fila (sem ele as tasks rodam no próprio processo).
+
+## Passo a passo
+
+<Steps>
+  <Step title="Criar o venv e instalar as dependências">
+    Em `miggoai-2.0/miggoai_v2/backend/`:
+
+    ```bash
+    python -m venv venv
+    source venv/bin/activate        # Windows: venv\Scripts\activate
+    pip install -r requirements.txt
+    playwright install chromium     # só para banner e capas de destaque
+    ```
+
+    O Chromium do Playwright compõe o banner do LinkedIn e as capas de destaque a partir de HTML. Sem ele, só essas duas peças falham.
+  </Step>
+
+  <Step title="Configurar o .env">
+    ```bash
+    cp .env.example .env
+    ```
+
+    Preencha pelo menos `SECRET_KEY`, `DEBUG`, `DB_*`, `MIGGO_API_KEY`, `MIGGO_API_BASE_URL` e `MIGGO_JWT_PUBLIC_KEY`. Tabela completa em [Variáveis de ambiente](/miggoai/configuracao).
+  </Step>
+
+  <Step title="Migrar e carregar os prompts">
+    ```bash
+    python manage.py migrate
+    python manage.py seed_prompts      # workflows, prompts e variáveis
+    python manage.py seed_precos       # tabela de preço dos modelos (custos)
+    ```
+
+    `seed_prompts` é idempotente e casa por chave natural (`slug`, `key`). Sem ele, toda geração falha com `PromptDefinition.DoesNotExist`.
+  </Step>
+
+  <Step title="Criar um usuário (opcional)">
+    ```bash
+    python manage.py createsuperuser
+    ```
+
+    Serve para o Django admin (`/admin/`) e para o token local (`POST /api/token/`). O painel de IA não precisa dele: entra com o token da plataforma. Ver [Autenticação](/miggoai/autenticacao).
+  </Step>
+
+  <Step title="Subir o servidor">
+    ```bash
+    python manage.py runserver 8010
+    ```
+
+    `8010` é a porta que o `frontend-miggo` usa por padrão quando `VITE_MIGGOAI_API_URL` está vazia. Confira com `curl http://localhost:8010/health/`.
+  </Step>
+</Steps>
+
+## Worker do Celery (opcional)
+
+A fila só entra em jogo com `REDIS_URL` definida **e** a flag do fluxo ligada (`GRID_ASYNC`, `FILA_ASYNC` ou `PERFIL_ASYNC`). Sem isso, tudo roda em thread ou dentro da requisição.
+
+```bash
+celery -A core worker -Q ia_interativo,ia_lote,composicao,entrega -l info -P solo   # -P solo no Windows
+python manage.py celery_ping            # OK {"pong": true, ...} com o worker no ar
+```
+
+Detalhes das filas em [Gerar conteúdo](/miggoai/guias/gerar-conteudo#fila-celery).
+
+## Geração diária
+
+O MiggoAI não tem agendador próprio. Para simular a rodada local:
+
+```bash
+python manage.py generate_daily_contents --dry-run              # só lista os cards
+python manage.py generate_daily_contents --client-id 7 --limit 1
+```
+
+## Problemas comuns
+
+<AccordionGroup>
+  <Accordion title="As settings não carregam (KeyError / UndefinedValueError)">
+    Falta variável sem default: `SECRET_KEY`, `DEBUG`, `DB_*`, `MIGGO_API_KEY`, `MIGGO_API_BASE_URL` ou `MIGGO_JWT_PUBLIC_KEY`. O `python-decouple` procura o `.env` a partir do diretório em que o comando roda: rode de dentro de `backend/`.
+  </Accordion>
+  <Accordion title="Geração de imagem falha com grid ausente">
+    A imagem do post usa o grid 3x3 do brandkit do cliente como referência. Cliente sem grid no `backend-miggo` não gera imagem, e a rodada diária pula o cliente.
+  </Accordion>
+  <Accordion title="401 no painel de IA local">
+    O token da Plataforma é validado com `MIGGO_JWT_PUBLIC_KEY`. Ela precisa ser a pública do par da `JWT_PRIVATE_KEY` do `backend-miggo` que emitiu o token.
+  </Accordion>
+  <Accordion title="Banco de imagens da Miggo nunca é usado">
+    Sem `ACERVO_SERVICE_TOKEN` o banco é ignorado (com `WARNING` no log) e a geração segue só com a galeria do cliente.
+  </Accordion>
+</AccordionGroup>
+
+<Columns cols={2}>
+  <Card title="Variáveis de ambiente" icon="sliders-horizontal" href="/miggoai/configuracao">O que cada variável liga.</Card>
+  <Card title="Autenticação" icon="key-round" href="/miggoai/autenticacao">Como chamar a API.</Card>
+</Columns>

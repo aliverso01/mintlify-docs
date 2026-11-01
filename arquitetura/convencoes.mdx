@@ -1,6 +1,6 @@
 ---
 title: "Convenções de código"
-description: "Regras que valem para os três repositórios: estilo, migrations, lint, encoding, segredos e fluxo de trabalho."
+description: "Regras que valem para os três repositórios: estilo, migrations, lint, encoding, segredos e contratos entre serviços."
 icon: "ruler"
 ---
 
@@ -31,64 +31,35 @@ Os repositórios têm histórico de **mojibake** (`Ã§`, `Ã£` no lugar de `ç
 | --- | --- |
 | Migrations | Toda alteração de model exige `makemigrations` + `migrate`. Não edite migrations já aplicadas em produção. |
 | Verificação antes de concluir | `./venv/Scripts/python.exe manage.py check` precisa passar. |
-| Testes | O banco de teste pode falhar por permissão no Postgres local. Quando `manage.py test` não conseguir criar o banco, valide com `manage.py check` mais um import isolado do módulo alterado. Veja [Testes](/backend/testes). |
-| Organização do app | Siga a anatomia já usada pelos apps existentes (models, serializers, views, urls, services). Veja [Estrutura](/backend/estrutura). |
+| Testes | Comportamento novo ou bug corrigido vem com teste. Veja [Testes da Plataforma](/plataforma/testes) e [Testes do MiggoAI](/miggoai/testes). |
+| Organização do app | Siga a anatomia já usada pelos apps existentes (models, serializers, views, urls, services). Veja [Estrutura](/plataforma/estrutura). |
 | Auditoria de chamadas externas | Toda chamada a terceiro deve registrar em `Integration`, de forma *best-effort* — falhar a auditoria nunca pode derrubar o fluxo real. |
 
 ## Frontend (React 19 + TypeScript)
 
-| Regra | Detalhe |
-| --- | --- |
-| TypeScript estrito | Nenhum `any` novo. Tipos explícitos em props, retornos de hooks e respostas de API. |
-| Lint obrigatório | `npm run lint` sem erros antes de concluir. |
-| Build verifica tipos | `npm run build` roda `tsc -b` antes do Vite — um build verde é a garantia de tipagem. |
-| Componentes | Funcionais com hooks. Reaproveite os componentes existentes antes de criar novos. |
-| Rotas por papel | Respeite a separação `/app` (cliente) e `/admin` (equipe). Veja [Roteamento](/frontend/roteamento). |
+TypeScript estrito (nenhum `any` novo), `npm run lint` e `npm run build` (`tsc -b`) sem erros. As convenções do Web app (rotas por área, chamadas à API, componentes, tokens de cor) estão em [Qualidade e verificação do Web app](/web/qualidade).
 
-## Checklist antes de considerar pronto
+## Como abrir um PR
 
-<Steps>
-  <Step title="Entender">
-    Localize o código relevante e leia só o necessário.
-  </Step>
-  <Step title="Implementar">
-    Mudança mínima, no estilo do repositório.
-  </Step>
-  <Step title="Verificar">
-    Rode o check/lint/teste do repositório tocado e relate o resultado real. Se falhou, diga que falhou.
-  </Step>
-  <Step title="Revisar">
-    Para mudanças não triviais, passe uma revisão de código antes de fechar: correção primeiro, depois segurança, regressão, simplicidade e testes.
-  </Step>
-  <Step title="Atualizar o board">
-    Mova o card no Jira e registre um comentário técnico do que foi feito.
-  </Step>
-</Steps>
+1. Crie a branch a partir da `develop` atualizada.
+2. Rode a verificação do repositório tocado: `manage.py check` e a suíte nos backends; `npm run lint` e `npm run build` no Web app.
+3. Abra um PR por repositório, contra a `develop`. Mudança que cruza repositórios: Plataforma primeiro, depois quem consome o contrato.
 
-## Prioridades de revisão de código
+O caminho até a produção está em [Ambientes](/arquitetura/ambientes).
 
-Correção antes de estilo. Na ordem:
-
-1. **Correção** — faz o que promete? Casos de borda, `null`/`undefined`, erros silenciados.
-2. **Segurança** — entrada não validada, injeção, dado sensível em log, permissão e autorização.
-3. **Regressão** — quebra algo existente? Atenção especial aos contratos de API entre os três repositórios.
-4. **Simplicidade e reuso** — dá para usar o que já existe? Há duplicação?
-5. **Testes** — o caminho crítico está coberto?
-
-Reporte achados no formato `arquivo:linha` — problema — correção sugerida.
 
 ## Contratos entre repositórios
 
 Mudar o formato de uma resposta da API do backend quebra o frontend e possivelmente o MiggoAI. Antes de alterar um serializer ou uma rota:
 
-- Procure os consumidores no `frontend-miggo` (`src/services/`, `src/hooks/`).
-- Verifique se o MiggoAI depende do campo (`modules/miggo.py` no repositório do MiggoAI).
+- Procure os consumidores no Web app (`src/services/`, `src/hooks/`).
+- Verifique se o MiggoAI depende do campo (cliente da Plataforma em `apps/common/miggo_client.py` e serviços de `apps/clients` e `apps/posts` no MiggoAI).
 - Prefira adicionar campos a renomear ou remover; quando remover for inevitável, faça em duas etapas.
 
 ## Relacionados
 
 <Columns cols={2}>
-  <Card title="Ambientes" icon="layers" href="/arquitetura/ambientes">
+  <Card title="Ambientes" icon="globe" href="/arquitetura/ambientes">
     Como a mudança chega a homologação e produção.
   </Card>
   <Card title="Glossário" icon="book-a" href="/arquitetura/glossario">
