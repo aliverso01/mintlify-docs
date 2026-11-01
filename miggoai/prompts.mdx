@@ -23,7 +23,7 @@ Ver models completos em <a href="/miggoai/modelo-de-dados">Modelo de Dados</a>. 
 - **`Workflow`** — um dos 4 tipos: `title`, `image`, `caption`, `hashtags`. Tem uma `WorkflowConfig` (modelo de IA, temperatura, `max_tokens`).
 - **`PromptDefinition`** — o template em si, identificado por `slug` único. Um workflow pode ter mais de um prompt (o de `title` tem 3: `titulo-story`, `titulo-feed`, `titulo-carrossel`).
 - **`PromptVariable`** — declaração das chaves `{{...}}` aceitas pelo template, com `label`, `default_value` e `required`.
-- **`PromptVersion`** — snapshot do conteúdo anterior, criado automaticamente a cada `PUT` que muda `content`.
+- **`PromptVersion`** — snapshot do conteúdo anterior, criado automaticamente a cada `PUT` que muda `content` e a cada restauração de versão. As duas operações passam por `apps/prompts/services/versionamento.py::trocar_conteudo` (MIG-508), que arquiva o texto atual com número acima do último já arquivado e nunca reescreve o histórico.
 
 ## Prompts existentes (seed)
 
@@ -102,7 +102,7 @@ CONTRACT_BY_SLUG = {
 
 ## Como editar um prompt
 
-1. **Frontend**: tela `Prompts` (`frontend/src/pages/Prompts.tsx`) lista os prompts por workflow; `PromptEditor` (`frontend/src/pages/PromptEditor.tsx`) edita o conteúdo, com botão de preview (`POST .../preview/`) e detecção de variáveis (`POST .../detect-variables/`).
+1. **Painel no `/admin` da plataforma** (MIG-507/508): `frontend-miggo`, rotas `/admin/miggoai/prompts` e `/admin/miggoai/prompts/<id>` (`src/pages/Admin/MiggoAI/Prompts.tsx` e `PromptEditor.tsx`), com preview do rascunho ainda não salvo (`POST .../preview/` com `content`), detecção de variáveis, histórico com restauração (`POST .../versions/<n>/restore/`) e o autor da última edição (`editado_por`). O painel próprio do repo (`frontend/src/pages/Prompts.tsx` e `PromptEditor.tsx`) continua no código.
 2. **API direta**: `PUT /api/prompts/<pk>/` com `{"content": "...", "change_note": "..."}` — versiona automaticamente o conteúdo anterior.
 3. **Seed versionado**: editar `backend/apps/prompts/data/seed_prompts.json` e rodar `python manage.py seed_prompts` — idempotente, casado por chave natural (`slug`/`key`), seguro para rodar em qualquer ambiente.
 

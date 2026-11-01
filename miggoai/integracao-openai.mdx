@@ -149,6 +149,14 @@ A resposta traz a imagem em base64 em `data[0].b64_json`, decodificada antes de 
   A função devolve **bytes**, não caminho de arquivo. Quem grava em `outputs/` é o workflow que a chamou. Veja [Workflows](/miggoai/workflows).
 </Note>
 
+## Versão em produção: `openai_service.chat_json`
+
+As seções acima descrevem o protótipo `modules/openai.py`. O caminho que roda em produção é `backend/apps/generations/services/openai_service.py`; o `chat_json` dele (structured output dos workflows de título, legenda e hashtags) mudou nesta versão:
+
+- **Modelos de raciocínio** (fix de 29/10): `max_tokens` vai como `max_completion_tokens` (os modelos de raciocínio recusam o nome antigo, e neles o limite inclui os tokens de raciocínio). `temperature` só é enviada às famílias em `PREFIXOS_COM_TEMPERATURA = ('gpt-4', 'gpt-3.5')`; as demais (gpt-5*, gpt-6*, o1/o3/o4*) só aceitam o default.
+- **400 reconhecido repete uma vez** sem o parâmetro recusado: `temperature`, ou o `json_schema` (cai para `json_object`). Qualquer outro 400 falha de vez. Resposta vazia com `finish_reason == 'length'` vira o erro "Resposta cortada por limite de tokens".
+- **Duas mensagens de sistema** (MIG-509): `PAPEL_COPYWRITER` (persona e critério de qualidade) separada de `INSTRUCAO_JSON` (formato).
+
 ## Tratamento de erro
 
 Não há exceção propagada para o chamador: **toda falha volta como `dict` com a chave `error`**.
