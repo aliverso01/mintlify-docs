@@ -99,7 +99,9 @@ CONTRACT_BY_SLUG = {
 
 1. **Painel de IA** no `/admin` do `frontend-miggo` (`/admin/miggoai/prompts`): edição com preview do rascunho ainda não salvo, detecção de variáveis, histórico com restauração e o autor da última edição (`editado_por`). Ver [Painel de IA](/web/painel-de-ia).
 2. **API**: `PUT /api/prompts/<id>/` com `{"content": "...", "change_note": "..."}` versiona o conteúdo anterior; `POST /api/prompts/<id>/versions/<n>/restore/` restaura uma versão como versão nova, sem apagar histórico; `POST /api/prompts/<id>/preview/` renderiza com `values` (e, opcionalmente, um `content` de rascunho) sem chamar IA.
-3. **Seed versionado**: editar `backend/apps/prompts/data/seed_prompts.json` e rodar `python manage.py seed_prompts`. Idempotente, casa por chave natural (`slug`/`key`), roda a cada subida do container web.
+3. **Seed versionado**: `backend/apps/prompts/data/seed_prompts.json`, aplicado por `python manage.py seed_prompts` a cada subida do container web. Casa por chave natural (`slug`/`key`) e **só cria o que falta**: não sobrescreve prompt nem config existentes. Para resetar um prompt para o texto do repositório: `seed_prompts --overwrite --slug <slug>`.
+
+Passo a passo em [Editar um prompt do MiggoAI](/miggoai/guias/editar-um-prompt).
 
 Config de modelo do workflow (`PATCH /api/prompts/workflows/<id>/`: `text_model`, `image_model`, `temperature` de 0 a 2, `max_tokens` de 1 a 128000) só por superusuário.
 
