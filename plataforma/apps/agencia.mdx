@@ -1,36 +1,14 @@
 ---
 title: "Agência"
-description: "App app/agencia: agências parceiras com carteira própria de clientes, papéis, cobrança por faixa, domínio e marca próprios"
+description: "Agências parceiras com carteira própria de clientes, papéis, cobrança por faixa, domínio e marca próprios no app agencia."
 icon: "building-2"
 ---
 
-## Responsabilidade
-
-`app/agencia` (MIG-513 a MIG-517) modela a **agência parceira**: uma empresa que gerencia a própria carteira de clientes dentro da Miggo, com usuários próprios, assinatura por faixa de clientes, domínio próprio e identidade visual aplicada nas telas, nos metadados do HTML e nos e-mails enviados aos clientes dela.
+O app `agencia` modela a **agência parceira**: uma empresa que gerencia a própria carteira de clientes dentro da Miggo, com usuários próprios, assinatura por faixa de clientes, domínio próprio e identidade visual aplicada nas telas, nos metadados do HTML e nos e-mails enviados aos clientes dela.
 
 Registrado em `INSTALLED_APPS` como `app.agencia.apps.AgenciaConfig` e montado em `core/urls.py` sob **`/api/v1/agency/`** (rotas em inglês, nomes de código em pt-BR).
 
-## Arquivos
-
-| Arquivo | Conteúdo |
-|---|---|
-| `models.py` | `Agencia`, `AssinaturaAgencia`, `DominioAgencia`, `MarcaAgencia` e os validadores de nome e hostname |
-| `views.py` | Todas as views da API (equipe Miggo, agência logada e rotas públicas de marca) |
-| `serializers.py` | Serializers de agência, usuário da agência, domínio (com a instrução de CNAME) e marca |
-| `urls.py` | Rotas de `/api/v1/agency/` |
-| `limite.py` | `garantir_vaga()` e `LimiteDeClientesAtingido` (`402`): teto de clientes ativos do plano |
-| `billing.py` | Checkout e portal da Stripe da agência; roteamento e espelhamento dos eventos de webhook da agência |
-| `host.py` | Reconhecimento da agência pelo host da requisição (`agencia_do_host`, `agencia_do_cadastro`, `host_nao_pertence_ao_usuario`) |
-| `urls_base.py` | `url_base_da_agencia()` / `url_base_do_cliente()`: URL base dos links enviados ao cliente |
-| `cloudflare.py` | Cliente da API de *custom hostnames* da Cloudflare for SaaS |
-| `dominios.py` | Cadastro, verificação e remoção de domínios |
-| `marca.py` | Marca vista de fora: contexto público, meta-tags e manifest do PWA, avisos de contraste |
-| `paleta.py` | Escala de cores 25..950 a partir da cor primária e contraste WCAG |
-| `imagens.py` | Validação dos arquivos de marca e recorte da borda do logo |
-| `marca_email.py` | Contexto de marca e montagem dos e-mails para clientes de agência |
-| `tests.py`, `tests_dominio.py`, `tests_marca.py` | Suíte do app |
-
-## Modelos
+## Models principais
 
 | Modelo | Campos principais | Observações |
 |---|---|---|
@@ -58,56 +36,24 @@ As duas permissões exigem agência com `status = ativa`. A agência nunca fica 
 
 O cadastro de agências, usuários, domínios e marca pelo lado da Miggo é **só do admin pleno** (`IsAdminUserOnly`).
 
-## Endpoints (`/api/v1/agency/`)
+## Superfícies da API
 
-<AccordionGroup>
-  <Accordion title="Equipe Miggo — IsAdminUserOnly">
-    | Método | Rota | O que faz |
-    |---|---|---|
-    | GET, POST | `/` | Lista e cria agências |
-    | GET, PATCH | `<pk>/` | Detalhe e edição |
-    | GET, PATCH | `<pk>/brand/` | Marca da agência (multipart) |
-    | GET, POST | `<pk>/users/` | Usuários da agência |
-    | GET, PATCH | `<pk>/users/<uid>/` | Perfil, papel e senha (`modo_senha`: `definir` ou `email`) |
-    | PUT | `<pk>/users/<uid>/modules/` | Módulos de um membro |
-    | POST | `<pk>/clients/link/` | `{client_id}`: migra um cliente direto para a agência (confere a vaga; `forcar=true` só para a equipe) |
-    | GET, POST | `<pk>/domains/` | Domínios da agência |
-    | DELETE | `<pk>/domains/<did>/` | Remove na Cloudflare e depois no banco |
-    | POST | `<pk>/domains/<did>/verify/` | Consulta o status na Cloudflare |
-  </Accordion>
+Tudo fica sob `/api/v1/agency/`, em três grupos:
 
-  <Accordion title="Agência logada">
-    | Método | Rota | Permissão | O que faz |
-    |---|---|---|---|
-    | GET | `me/` | `IsAgenciaAtiva` | Dados e contadores da agência (home) |
-    | GET, POST | `me/members/` | `IsAgenciaAtiva` + módulo `membros` | Membros |
-    | PATCH, DELETE | `me/members/<pk>/` | idem | Edita ou remove membro |
-    | PUT | `me/members/<pk>/modules/` | `IsAgenciaAdminAtiva` | Módulos do membro |
-    | GET, PATCH | `me/brand/` | `IsAgenciaAtiva` + módulo `marca` | Marca própria |
-    | POST | `me/clients/` | `IsAgenciaAdminAtiva` + módulo de carteira `clientes` | Cria cliente na carteira; confere a vaga; credenciais vão por e-mail ao cliente |
-    | GET | `plans/` | `IsAgenciaAtiva` + módulo `plano` | Faixas visíveis (`Plan.publico='agencia'`, com `max_clientes`) |
-    | GET | `subscription/` | idem | Plano, status, limite e uso |
-    | POST | `subscription/checkout/` | idem | `{plan_price_id}` → URL do checkout da Stripe |
-    | POST | `subscription/portal/` | idem | URL do portal da Stripe |
-  </Accordion>
+- **Equipe Miggo** (`IsAdminUserOnly`): CRUD de agências, usuários, módulos de membros, marca e domínios, e o vínculo de um cliente direto à agência (`<pk>/clients/link/`, que confere a vaga; `forcar=true` só para a equipe).
+- **Agência logada** (`me/...`, `plans/`, `subscription/...`): home, membros, marca, cadastro de cliente na carteira (credenciais vão por e-mail ao cliente), faixas de plano, checkout e portal da Stripe. Cada rota exige `IsAgenciaAtiva` ou `IsAgenciaAdminAtiva` e o módulo correspondente.
+- **Públicas, pela marca do host**: `context/` (agência e marca da tela; logado responde `private, no-store`, anônimo tem cache curto por host), `meta-tags/` (fragmento do `<head>` incluído pelo nginx do front via SSI) e `manifest.webmanifest` (manifest do PWA com a marca).
 
-  <Accordion title="Públicas — marca pelo host">
-    | Método | Rota | O que faz |
-    |---|---|---|
-    | GET | `context/` | Agência e marca da tela. Logado: a do usuário (equipe Miggo = `null`), resposta `private, no-store`. Anônimo: a do host, com cache curto por host |
-    | GET | `meta-tags/` | Fragmento HTML do `<head>` com a marca do host (incluído pelo nginx do front via SSI) |
-    | GET | `manifest.webmanifest` | Manifest do PWA com nome, cor e ícone da marca |
-  </Accordion>
-</AccordionGroup>
+Endpoints: veja a [Referência de API](/plataforma/api-referencia).
 
-## Cobrança por faixa (MIG-515)
+## Cobrança por faixa
 
 - A data migration `agencia/0003_planos_de_agencia` cria três planos com `publico='agencia'`, preço mensal em BRL e `PlanMeta` `max_clientes`: **Starter** (4), **Agência** (10) e **Scale** (20). O `stripe_price_id` nasce vazio e é preenchido em `/admin/plans`; nada é criado na Stripe por código.
 - `limite_clientes()` lê `max_clientes` da assinatura **com direito** (`ACTIVE`, ou `UNPAID` dentro de `BILLING_GRACE_DAYS`, com a agência ativa); sem ela o limite é `0`.
 - `garantir_vaga()` levanta `402` quando os clientes ativos chegam ao limite. Vale no cadastro de cliente pela agência, no vínculo pelo admin e no cadastro pelo domínio da agência (com mensagem que não expõe o plano).
 - No webhook da Stripe (`app/webhooks/views.py`), `billing.evento_e_da_agencia()` desvia todo evento de agência para `billing.processar_evento()`, fora do fluxo dos clientes diretos. Troca de faixa pelo portal atualiza o `plan_price` local.
 
-## Domínio próprio (MIG-516)
+## Domínio próprio
 
 Dois tipos de `DominioAgencia`:
 
@@ -126,23 +72,13 @@ Com o host reconhecido:
 No front, o Traefik ganhou um router *catch-all* (`HostRegexp`, `priority=1`) para os domínios de agência, com TLS terminado na Cloudflare. O *fallback origin* do Cloudflare for SaaS e o DNS são configurados à mão, fora do código.
 </Warning>
 
-## Marca própria (MIG-517)
+## Marca própria
 
 - `dados_publicos()` expõe só o necessário para a tela (nome, cores por elemento, escala de cores, URLs das imagens), sem id ou e-mail.
 - `paleta.escala_de_cores()` gera a escala 25..950 em HSL a partir da cor primária; `avisos_de_contraste()` aponta pares texto/fundo abaixo de 4,5:1.
 - Imagens: PNG, JPG, WEBP ou ICO até 2 MB; `icone_pwa` só PNG quadrado de no mínimo 512 px. O logo tem a borda transparente ou de cor sólida recortada no upload.
 - `meta_tags_html()` escapa todo valor com `format_html`. O nginx do front inclui `/api/v1/agency/meta-tags/` no `index.html` via SSI.
 - E-mails para clientes de agência (`account`, `client`, suporte) usam `marca_email.contexto_de_marca()`: nome, logo (só PNG/JPG), remetente e reply-to da agência; quem não é de agência recebe a marca Miggo.
-
-## Migrations
-
-| Migration | Card |
-|---|---|
-| `0001_initial` | MIG-513 |
-| `0002_mig515_faturamento_agencia` | MIG-515 |
-| `0003_planos_de_agencia` (data migration) | MIG-515 |
-| `0004_dominio_agencia` | MIG-516 |
-| `0005_marca_agencia`, `0006_validadores_da_marca`, `0007_cores_por_elemento_da_marca` | MIG-517 |
 
 ## Variáveis de ambiente
 
@@ -154,13 +90,34 @@ No front, o Traefik ganhou um router *catch-all* (`HostRegexp`, `priority=1`) pa
 | `AGENCIA_CNAME_ALVO` | Destino do CNAME mostrado à agência; também entra em `HOSTS_PLATAFORMA` |
 | `HOSTS_PLATAFORMA` | Hosts extras da Miggo (CSV), somados aos fixos e aos derivados de `FRONTEND_URL`/`BACKEND_URL` |
 
+## Onde fica no código
+
+Tudo em `app/agencia/`:
+
+| Arquivo | Conteúdo |
+|---|---|
+| `models.py` | `Agencia`, `AssinaturaAgencia`, `DominioAgencia`, `MarcaAgencia` e os validadores de nome e hostname |
+| `views.py` | Todas as views da API (equipe Miggo, agência logada e rotas públicas de marca) |
+| `serializers.py` | Serializers de agência, usuário da agência, domínio (com a instrução de CNAME) e marca |
+| `urls.py` | Rotas de `/api/v1/agency/` |
+| `limite.py` | `garantir_vaga()` e `LimiteDeClientesAtingido` (`402`): teto de clientes ativos do plano |
+| `billing.py` | Checkout e portal da Stripe da agência; roteamento e espelhamento dos eventos de webhook da agência |
+| `host.py` | Reconhecimento da agência pelo host da requisição (`agencia_do_host`, `agencia_do_cadastro`, `host_nao_pertence_ao_usuario`) |
+| `urls_base.py` | `url_base_da_agencia()` / `url_base_do_cliente()`: URL base dos links enviados ao cliente |
+| `cloudflare.py` | Cliente da API de *custom hostnames* da Cloudflare for SaaS |
+| `dominios.py` | Cadastro, verificação e remoção de domínios |
+| `marca.py` | Marca vista de fora: contexto público, meta-tags e manifest do PWA, avisos de contraste |
+| `paleta.py` | Escala de cores 25..950 a partir da cor primária e contraste WCAG |
+| `imagens.py` | Validação dos arquivos de marca e recorte da borda do logo |
+| `marca_email.py` | Contexto de marca e montagem dos e-mails para clientes de agência |
+
 ## Relacionados
 
 <Columns cols={2}>
-  <Card title="Account" icon="user" href="/backend/apps/account">
+  <Card title="Contas e usuários" icon="user-round" href="/plataforma/apps/account">
     `CustomUser`, papéis e módulos.
   </Card>
-  <Card title="Área administrativa" icon="shield" href="/frontend/area-admin">
+  <Card title="Área administrativa" icon="shield" href="/web/area-admin">
     Telas de agências no `/admin` e a área `/agency`.
   </Card>
 </Columns>

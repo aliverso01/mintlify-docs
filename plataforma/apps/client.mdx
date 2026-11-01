@@ -1,671 +1,91 @@
 ---
-title: "Client"
-description: "Gestão do cliente Miggo: cadastro, ativação, onboarding, ciclo de vida, trials, assinatura visual e integração com Instagram/IA"
-icon: "user-round"
+title: "Clientes"
+description: "Registro do cliente, ativação, ciclo de vida, trials, predefinições de criação e materiais da marca no app client."
+icon: "briefcase"
 ---
 
-## Responsabilidade
+O app `client` guarda o `Client`, dono de tudo que os outros apps referenciam (brandkit, assinatura, posts, mídia). Ele controla a ativação da conta, calcula o ciclo de vida do cliente, mantém o painel de trials, as predefinições de criação de conteúdo (assinatura visual, foto real, workflow do MiggoAI) e os materiais de marca que alimentam o briefing.
 
-O app `client` é o núcleo de identidade e ciclo de vida do cliente final da Miggo. Ele guarda o registro `Client` (dono de tudo que outros apps referenciam — brandkit, subscription, post, media), controla a ativação de conta por código enviado por e-mail, expõe o status e o avanço do onboarding, calcula o ciclo de vida do lead (`lead` / `active` / `unconverted` / `churned` / `inactive`), resolve a predefinição de assinatura visual (logo/@ do Instagram/texto) usada nas gerações de conteúdo, e integra com o Apify (raspagem de perfil do Instagram) e a OpenAI (preenchimento automático de briefing e geração de bio) para acelerar o onboarding do cliente.
+## Models principais
 
-É consumido pelo frontend (área `/admin`, para gestão de clientes e trials, e área `/app`, para o próprio cliente ver seu status de onboarding), por outros apps do backend (`app.brandkit`, `app.subscription`, `app.post`, `app.onboarding` referenciam `Client` como FK), pelo cron `check_trials` (bloqueio de trial expirado) e por management commands operacionais (`fix_active_onboarding`).
-
-## Arquivos
-
-| Arquivo | Conteúdo |
+| Model | Papel |
 |---|---|
-| `app/client/models.py` | Models `Client`, `ClientMeta`, `ClientSignaturePreference`, `BrandMaterial` |
-| `app/client/serializers.py` | `ClientSerializer`, `ClientMetaSerializer`, `ClientSignaturePreferenceSerializer` |
-| `app/client/views.py` | Todas as views (CRUD de cliente, ativação, onboarding, trials, assinatura, Instagram/IA, materiais da marca) |
-| `app/client/urls.py` | Rotas do app, montadas sob `/api/v1/client/` |
-| `app/client/admin.py` | Registro no Django Admin de `Client`, `ClientMeta`, `ClientSignaturePreference` |
-| `app/client/apps.py` | `AppConfig` (`ClientConfig`) |
-| `app/client/brand_materials.py` | Extração de texto de PDF/DOCX/PPTX/TXT, geração de propostas de briefing pela LLM e atualização de `brand_knowledge` (MIG-396) |
-| `app/client/instagram.py` | Raspagem de perfil do Instagram via Apify, com cache por perfil (usada pela view de scraping) |
-| `app/client/lifecycle.py` | Cálculo de `stage` (etapa real do onboarding) e `lifecycle` (lead/ativo/inativo) via anotações de queryset |
-| `app/client/signature.py` | Regra de predefinição de assinatura/logo por cliente e formato (MIG-266) |
-| `app/client/trials.py` | Painel de gestão de trials: checklist, funil, linha do tempo, notificação de onboarding completo (MIG-246) |
-| `app/client/utils.py` | Funções `scrape_social_profile`/`analyze_profile_data` — não referenciadas por nenhuma view do app (ver Pontos de atenção) |
-| `app/client/management/commands/check_trials.py` | Comando de cron: bloqueia contas com trial de 7 dias expirado |
-| `app/client/management/commands/fix_active_onboarding.py` | Comando de correção manual: destrava onboarding de clientes ativos em produção |
+| `Client` | Cliente final. `OneToOne` com `CustomUser`; `agencia` (FK opcional) quando o cliente pertence a uma agência; `niche` (FK para `Niche`); `miggoai_workflow_enabled` e `generation_requested_at` controlam a geração automática. |
+| `ClientMeta` | Par chave/valor do cliente: campos do briefing, código de ativação, raspagem do Instagram, `brand_knowledge`. Sem `unique_together` em `(client, key)`: grave com upsert. |
+| `Niche` | Taxonomia de nicho de mercado, usada pelo acervo para restringir fotos por segmento. Começa com a linha "Não informado". |
+| `ClientSignaturePreference` | Assinatura manual por formato (`story`, `feed`, `carrossel`, `reel`): `logo`, `instagram`, `text` ou `none`. Único por `(client, format)`. |
+| `ClientMediaPreference` | Uso de foto real na geração de imagem, um por cliente: `usage` (`always`, `never`, `alternate`), `reuse_days` (janela anti-repetição) e `use_stock` (permite o banco de imagens). |
+| `BrandMaterial` | Material de referência da marca (PDF, DOCX, PPTX, TXT ou texto colado). Só o texto extraído é guardado. |
 
-## Modelos
+## Ciclo de vida e onboarding
 
-### Client
+- **Ativação.** O signal de `account` cria o `Client` com um `ClientMeta` `activation_code`. O código vai por e-mail; usá-lo ativa a conta (`active = True`) e o apaga.
+- **Etapa do onboarding.** `Client.onboarding_step` (0 a 5) é o marco legado e nunca regride. A etapa real vem de `OnboardingSession` (app [`onboarding`](/plataforma/apps/onboarding)). `lifecycle.annotate_lifecycle` anota sem N+1 a etapa efetiva (`stage`, `stage_estimated` quando veio do legado) e o `lifecycle`:
 
-Representa o cliente final da plataforma — um `CustomUser` com papel `client` ganha um `Client` associado. `app/client/models.py:15`.
+| `lifecycle` | Regra |
+|---|---|
+| `lead` | Trial em vigor e onboarding incompleto. |
+| `active` | Assinatura ativa ou trial em vigor. |
+| `unconverted` | Onboarding concluído sem nunca ter assinado. |
+| `churned` | Já assinou e a assinatura foi encerrada. |
+| `inactive` | Abandonou o onboarding sem nunca assinar, ou está em assinatura `PENDING`, `UNPAID`, `EXPIRED`, `PAUSED` ou `CANCELLED`. |
 
-| Campo | Tipo | Obrigatório | Default/Choices | Descrição |
-|---|---|---|---|---|
-| `user` | `OneToOneField(CustomUser)` | Sim | `on_delete=CASCADE`, `related_name='client'` | Usuário de autenticação dono deste registro |
-| `hash` | `CharField(64)` | Não (auto) | `default=generate_unique_hash`, `unique=True`, `editable=False` | Identificador opaco do cliente, usado por outros apps (ex.: `Media.client_hash`) |
-| `name` | `CharField(255)` | Sim | — | Nome do cliente/marca |
-| `email` | `EmailField` | Sim | `unique=True` | E-mail de contato |
-| `phone` | `CharField(20)` | Não | `blank=True, null=True` | Telefone |
-| `active` | `BooleanField` | Não | `default=True` | Conta ativa (controla acesso; sincronizado com `CustomUser.is_active` em `ToggleClientActiveView`) |
-| `company` | `CharField(255)` | Não | `blank=True, null=True` | Nome da empresa |
-| `onboarding_step` | `IntegerField` | Não | `default=0`, choices `ONBOARDING_STEP_CHOICES` (0–5) | Contador legado de marcos do onboarding — nunca regride |
-| `onboarding_skipped` | `BooleanField` | Não | `default=False` | Se o cliente escolheu pular o onboarding |
-| `niche` | `ForeignKey(Niche)` | Não | `null=True, blank=True`, `on_delete=PROTECT`, `related_name='clients'` | Nicho de mercado (MIG-456). **`NULL` = ainda não reclassificado**, não "sem nicho genérico" — a reclassificação da carteira é uma data migration posterior. `PROTECT`: nicho em uso não se apaga por acidente |
-| `miggoai_workflow_enabled` | `BooleanField` | Não | `default=False` | Workflow do agente MiggoAI ligado — o `generate_daily_contents` do miggoai-2.0 só gera para quem está `True`. Muda só pelo toggle `miggoai-workflow/<pk>/` (migration `0014`). Ligar o toggle não reativa cliente suspenso por trial — a esteira diária usa `com_direito_de_publicacao` e só volta com assinatura ativa ou trial estendido |
-| `created_at` | `DateTimeField` | Não (auto) | `auto_now_add=True` | Data de criação |
+- **Status do onboarding.** O endpoint de status recalcula a etapa a partir de condições reais (conta verificada, assinatura, rede conectada, logo no brandkit, briefing) e reconcilia as conexões com o Zernio quando o webhook `account.connected` não chegou. Quem já comprou (`trials.has_purchased`) é sempre tratado como concluído.
 
-`ONBOARDING_STEP_CHOICES` (`app/client/models.py:5`): `0=Não iniciado`, `1=Conta verificada`, `2=Plano escolhido`, `3=Redes sociais conectadas`, `4=Brandkit enviado`, `5=Briefing preenchido (Completo)`.
+## Trials
 
-**Relacionamentos**: `user` (OneToOne com `CustomUser`), `meta` (reverse FK de `ClientMeta`), `signature_preferences` (reverse FK de `ClientSignaturePreference`); referenciado por FK em outros apps (`Brandkit`, `Subscription`, `OnboardingSession`, `PlatformIntegration`, `Media.client_hash`, etc., conforme uso observado em `views.py`/`trials.py`/`lifecycle.py`).
+`trials.py` monta o painel de trials do `/admin`: um checklist de 10 itens, dos quais são obrigatórios `briefing`, `colors`, `style`, `calendar` e `grid_generated`. O estágio é `completo` (obrigatórios feitos), `novo` (cadastro há menos de 7 dias) ou `incompleto`. Quem já comprou sai do painel. Quando um lead fecha os obrigatórios, `check_trial_ready` avisa os admins uma única vez.
 
-**Propriedades**
-- `is_onboarding_complete` (`app/client/models.py:31-33`) — `True` se `onboarding_step >= 5`. É o marco legado; a etapa "real" da esteira vive em `OnboardingSession` (app `onboarding`) e é lida via `app/client/lifecycle.py`.
+**Suspensão por fim de trial** é um filtro de leitura, não um campo: `app.subscription.access.com_direito_de_publicacao` exclui quem não pode publicar (trial vencido, inadimplente fora da carência, sem assinatura). O cliente volta sozinho quando assina.
 
-**Métodos**
-- `__str__` — retorna `self.name`.
+## Geração automática pelo MiggoAI
+
+- `miggoai_workflow_enabled` liga a rodada diária. Este backend não chama o MiggoAI ao ligar: o MiggoAI lê a carteira por `GET /api/v1/client/list/?miggoai_workflow_enabled=true`.
+- Com `?miggoai_workflow_enabled=true` ou `?generation_requested_at__isnull=false`, a listagem devolve **só clientes com direito de publicação**. O painel do admin e a consulta por id continuam vendo a base inteira.
+- **Criar agora** marca `generation_requested_at` e chama `POST /api/generations/gerar-agora/` do MiggoAI. A resposta traz `disparo: 'imediato'` só quando o MiggoAI responde `status: 'aceito'`; qualquer outro desfecho (fila, erro, resposta inesperada) vira `disparo: 'fila'`, e a rodada seguinte do MiggoAI atende o pedido pendente.
 
 <Note>
-`ONBOARDING_STEP_CHOICES` define 6 etapas (0 a 5), mas o texto descritivo do `Meta.fieldsets` em `app/client/admin.py:21-24` lista apenas até "4=Brandkit enviado (Completo)", sem mencionar a etapa 5 ("Briefing preenchido"). É uma divergência de texto no admin, não no dado.
+Ligar o workflow não reativa um cliente suspenso por trial. Ele só volta a receber geração automática ao assinar ou ter o teste estendido.
 </Note>
 
-### Niche
+## Predefinições de criação
 
-Nicho de mercado do cliente — a taxonomia que o acervo usa para restringir foto por segmento. `app/client/models.py:14` (MIG-456), migrations `0021_niche_client_niche` e `0022_seed_niche_nao_informado`.
+- **Assinatura visual** (`signature.py`): sem preferência manual, vale o padrão automático, calculado ao vivo: logo do brandkit, senão o `@` do Instagram, senão "Nome da marca | Ramo". `mode='auto'` remove a preferência manual.
+- **Foto real** (`ClientMediaPreference`): `usage` diz quando usar foto real, `use_stock` diz se o banco de imagens entra. `reuse_days` é a mesma janela para a galeria do cliente e para o banco. Quem lê é o MiggoAI, na geração de imagem.
 
-| Campo | Tipo | Obrigatório | Default | Descrição |
-|---|---|---|---|---|
-| `nome` | `CharField(120)` | Sim | `unique=True` | — |
-| `slug` | `CharField(140)` | Sim | `unique=True` | — |
-| `ativo` | `BooleanField` | Não | `default=True` | Nicho desativado continua rotulando vínculos que já existem |
+## Briefing assistido
 
-`Meta`: `ordering = ['nome']`, `verbose_name='Nicho'`.
+- **Instagram.** A raspagem do perfil público usa o Apify (`instagram.py`), com cache de 1 hora por perfil. O JSON bruto vai para `ClientMeta` `scrapping_instagram`, a OpenAI propõe o briefing e a foto de perfil vira logo se o cliente ainda não tiver um e a imagem for classificada como logotipo. Em `preview`, nada do briefing é gravado: o cliente revisa a proposta e aplica.
+- **Materiais da marca** (`brand_materials.py`): aceita `.pdf`, `.docx`, `.pptx` e `.txt` até 10 MB, ou texto colado até 50.000 caracteres, no máximo 10 materiais por cliente. Há proteção contra zip bomb e limite de páginas e slides. A IA propõe valores para as 16 chaves de `BRIEFING_PROPOSAL_KEYS`; o cliente confirma e aplica.
+- **`brand_knowledge`.** Resumo de até 1.500 caracteres de todos os materiais, refeito a cada inclusão ou remoção de material — na fila `leve` do Celery (task `client.atualizar_brand_knowledge`) com `BRANDKNOWLEDGE_ASYNC=1` e fila ativa, ou em segundo plano no próprio processo sem ela, e consumido pelo MiggoAI. Sem materiais, a chave é apagada.
+- **Bio.** A geração de bio e nome de exibição é feita pelo MiggoAI, com fallback determinístico quando ele falha.
 
-**Tabela, e não texto livre**, porque a restrição de uma foto do acervo aponta para uma linha daqui: texto solto faria "Saúde" e "saude" serem dois nichos diferentes para o isolamento. Não confundir com o `CharField` `nicho` do `StockPhoto`, que é eixo de **busca**, não de permissão — ver [media](/backend/apps/media).
-
-<Note>
-  Nesta volta a tabela nasce com **uma linha só**: "Não informado" (`slug='nao-informado'`), semeada pela migration `0022`. É o estado explícito de quem ainda não foi classificado (31% da carteira). A taxonomia validada e a reclassificação dos clientes atuais são decisão de negócio pendente e entram numa data migration posterior.
-</Note>
-
-### ClientMeta
-
-Par chave/valor arbitrário associado a um cliente — usado para armazenar campos de briefing, códigos de ativação, dados de scraping, sugestões de IA, etc. `app/client/models.py:38`.
-
-| Campo | Tipo | Obrigatório | Default/Choices | Descrição |
-|---|---|---|---|---|
-| `client` | `ForeignKey(Client)` | Sim | `on_delete=CASCADE`, `related_name='meta'` | Cliente dono da meta |
-| `key` | `CharField(255)` | Sim | — | Nome da chave (ex.: `activation_code`, `business`, `scrapping_instagram`) |
-| `value` | `TextField` | Sim | — | Valor (texto livre; pode conter JSON serializado) |
-
-**Métodos**
-- `__str__` — retorna `"{key}: {value}"`.
-
-<Note>
-Não há `unique_together` em `(client, key)`. Várias views tratam isso via `update_or_create` (upsert) ou usam `.last()`/`.filter(...).delete()` antes de criar (ex.: código de ativação), indicando que múltiplas linhas para a mesma chave podem coexistir temporariamente. Entre as chaves geradas automaticamente pelo backend está `brand_knowledge` (resumo de até 1.500 caracteres dos materiais da marca, atualizado assincronamente pelo módulo `brand_materials` e consumido pelo MiggoAI).
-</Note>
-
-### ClientSignaturePreference
-
-Predefinição **manual** (definida pelo admin) de assinatura/logo nas gerações de conteúdo, por cliente e por formato de post (MIG-266). `app/client/models.py:63`.
-
-| Campo | Tipo | Obrigatório | Default/Choices | Descrição |
-|---|---|---|---|---|
-| `client` | `ForeignKey(Client)` | Sim | `on_delete=CASCADE`, `related_name='signature_preferences'` | Cliente |
-| `format` | `CharField(20)` | Sim | choices `SIGNATURE_FORMAT_CHOICES` | Formato do post |
-| `mode` | `CharField(20)` | Sim | choices `SIGNATURE_MODE_CHOICES` | Tipo de assinatura escolhido |
-| `text` | `CharField(255)` | Não | `blank=True, default=''` | Texto livre, usado só quando `mode='text'` |
-| `updated_at` | `DateTimeField` | Não (auto) | `auto_now=True` | Última atualização |
-
-`SIGNATURE_FORMAT_CHOICES` (`app/client/models.py:48-53`): `story` (Stories), `feed` (Feed — card único), `carrossel` (Carrossel), `reel` (Reels).
-`SIGNATURE_MODE_CHOICES` (`app/client/models.py:55-60`): `logo` (Logo), `instagram` (Instagram @), `text` (Assinatura textual), `none` (Sem assinatura).
-
-**Meta** (`app/client/models.py:83-85`): `unique_together = ('client', 'format')`; `ordering = ['client_id', 'format']`.
-
-**Métodos**
-- `__str__` — retorna `"{client.name} — {format label} — {mode label}"`.
-
-<Note>
-Sem registro para um `(client, format)`, o formato segue o **padrão automático** (logo > @ do Instagram > "Nome da marca | Ramo"), calculado ao vivo em `signature.resolve_signature` — não existe valor "auto" gravado no banco.
-</Note>
-
-### ClientMediaPreference
-
-Predefinição de uso de foto real nas gerações de imagem do MiggoAI — **um registro por cliente**. `app/client/models.py:170` (MIG-248), estendida pela MIG-457.
-
-| Campo | Tipo | Obrigatório | Default/Choices | Descrição |
-|---|---|---|---|---|
-| `client` | `OneToOneField(Client)` | Sim | `on_delete=CASCADE`, `related_name='media_preference'` | — |
-| `usage` | `CharField(20)` | Não | choices `MEDIA_USAGE_CHOICES`, default `alternate` | **Dimensão 1 — quando** usar foto real: `always`, `never`, `alternate` |
-| `reuse_days` | `PositiveSmallIntegerField` | Não | `DEFAULT_MEDIA_REUSE_DAYS` (30) | Janela anti-repetição, 0–365 (o PUT recusa fora disso). `0` desliga |
-| `use_stock` | `BooleanField` | Não | `default=False` | **Dimensão 2 — de onde** vem a foto (MIG-457): `False` = só a galeria do cliente; `True` = galeria **unida** ao banco Miggo elegível |
-
-**Duas dimensões ortogonais, não seis opções.** `usage` responde *quando*, `use_stock` responde *de onde*, e elas se combinam livremente: com `usage='never'` a segunda é inócua (não há foto real para buscar em lugar nenhum) — quem explica isso é a tela, o backend aceita qualquer par. O default `False` é o que mantém a política atual de quem já existe sem ninguém reconfigurar nada.
-
-O `reuse_days` é a **mesma janela** para a galeria e para o banco: a fadiga do banco é aplicada server-side pelo `?fadiga=1` do `/acervo/elegiveis/` (ver [media](/backend/apps/media)). Duas réguas para "repetiu cedo demais" divergiriam na primeira mudança.
-
-### BrandMaterial
-
-Material de referência da marca (PDF, DOCX, PPTX, TXT ou texto colado) enviado pelo cliente para enriquecer o contexto de IA e propor atualizações no briefing (MIG-396). `app/client/models.py:235`, migration `0021_brandmaterial` (merge com `0021_niche_client_niche` em `0024_merge_20261015_2043`).
-
-| Campo | Tipo | Obrigatório | Default/Choices | Descrição |
-|---|---|---|---|---|
-| `client` | `ForeignKey(Client)` | Sim | `on_delete=CASCADE`, `related_name='brand_materials'` | Cliente dono do material |
-| `kind` | `CharField(10)` | Sim | choices `BRAND_MATERIAL_KIND_CHOICES` (`file` = Arquivo, `text` = Texto colado) | Origem do material |
-| `name` | `CharField(255)` | Sim | — | Nome original do arquivo ou "Texto colado" |
-| `file` | `FileField` | Não | `upload_to=brand_material_upload_path`, `null=True, blank=True` | Não utilizado nas views ativas (sempre nulo): por privacidade e segurança, o arquivo bruto não é mantido no S3/disco |
-| `extracted_text` | `TextField` | Não | `default='', blank=True` | Texto extraído do arquivo ou texto colado, cortado em no máximo 50.000 caracteres |
-| `char_count` | `PositiveIntegerField` | Não | `default=0` | Quantidade de caracteres em `extracted_text` |
-| `created_at` | `DateTimeField` | Não (auto) | `auto_now_add=True` | Data e hora de criação |
-
-**Meta**: `ordering = ['-created_at', '-id']`.
-
-
-## Endpoints
-
-Prefixo comum: `/api/v1/client/` (definido em `core/urls.py:31`).
-
-| Método | Rota completa | View | Permissão |
-|---|---|---|---|
-| POST | `/api/v1/client/create/` | `CreateClientView` | Default (`HasAPIKeyOrIsAuthenticated`) |
-| PUT/PATCH | `/api/v1/client/update/<int:pk>/` | `UpdateClientView` | Default; PATCH exige `verification_code` se `user.role == 'client'` |
-| DELETE | `/api/v1/client/delete/<int:pk>/` | `DeleteClientView` | `IsAdminUser` |
-| GET | `/api/v1/client/list/` | `ListClientsView` | Default (escopo restrito a si mesmo se `role == 'client'`) |
-| GET | `/api/v1/client/retrieve/<int:pk>/` | `RetrieveClientView` | Default (escopo restrito a si mesmo se `role == 'client'`) |
-| POST | `/api/v1/client/client-meta/create/` | `ClientMetaCreateView` | Default |
-| PUT/PATCH | `/api/v1/client/client-meta/update/<int:pk>/` | `UpdateClientMetaView` | Default |
-| DELETE | `/api/v1/client/client-meta/delete/<int:pk>/` | `DeleteClientMetaView` | Default |
-| GET | `/api/v1/client/client-meta/list/` | `ListClientMetaView` | Default (filtra por `?client_id=`) |
-| GET | `/api/v1/client/generate-activation-code/<int:pk>/` | `GenerateClientCodeView` | Default |
-| POST | `/api/v1/client/activate-account/<int:pk>/` | `ActivateClientView` | Default |
-| POST | `/api/v1/client/verify-code/<int:pk>/` | `VerifyClientCodeView` | Default |
-| PATCH | `/api/v1/client/toggle-active/<int:pk>/` | `ToggleClientActiveView` | `IsManagementUser` |
-| GET | `/api/v1/client/trials/` | `TrialsPanelView` | `IsManagementUser` |
-| GET/PUT | `/api/v1/client/signature-preference/<int:pk>/` | `ClientSignaturePreferenceView` | `IsManagementUser` |
-| GET/PUT | `/api/v1/client/media-preference/<int:pk>/` | `ClientMediaPreferenceView` | `IsManagementUser` |
-| PUT | `/api/v1/client/miggoai-workflow/<int:pk>/` | `ClientMiggoAIWorkflowView` | `IsManagementUser` |
-| POST/DELETE | `/api/v1/client/miggoai-generate-now/<int:pk>/` | `ClientMiggoAIGenerateNowView` | `IsManagementUser` |
-| GET | `/api/v1/client/onboarding-status/<int:pk>/` | `OnboardingStatusView` | Default |
-| PATCH | `/api/v1/client/onboarding-step/<int:pk>/` | `UpdateOnboardingStepView` | Default |
-| POST | `/api/v1/client/onboarding-skip/<int:pk>/` | `SkipOnboardingView` | Default |
-| POST | `/api/v1/client/instagram-scrape/` | `InstagramScrapeAndFillView` | Default |
-| POST | `/api/v1/client/create-bio-agent/` | `CreateBioAgentView` | Default |
-| POST | `/api/v1/client/send-generic-password/` | `SendGenericPasswordView` | `IsManagementUser` + checagem manual `role in ['admin','manager']`/`is_staff` |
-| GET | `/api/v1/client/brand-materials/` | `BrandMaterialListCreateView` | Default (filtra por `?client_id=`; cliente restrito ao próprio) |
-| POST | `/api/v1/client/brand-materials/` | `BrandMaterialListCreateView` | Default (multipart: `client_id` + `file` ou `text`; throttle 20/h para cliente) |
-| DELETE | `/api/v1/client/brand-materials/<int:pk>/` | `BrandMaterialDetailView` | Default (cliente restrito ao próprio) |
-| POST | `/api/v1/client/briefing/apply/` | `BriefingApplyView` | Default (`client_id` + `values`; cliente restrito ao próprio) |
-
-"Default" = sem `permission_classes` explícito na view, então vale `DEFAULT_PERMISSION_CLASSES = ['app.account.permissions.HasAPIKeyOrIsAuthenticated']` (`core/settings.py:139-141`): aceita API key de serviço OU usuário autenticado — **não** restringe por papel, exceto onde a própria view faz a checagem (ex.: `UpdateClientView.patch`, `ListClientsView.get_queryset`).
-
-<AccordionGroup>
-
-<Accordion title="POST /create/ — CreateClientView">
-Cria um `Client` (CreateAPIView padrão do DRF, sem lógica extra). `app/client/views.py:29-32`.
-
-<ParamField path="user" type="int" required>ID do CustomUser dono do registro</ParamField>
-<ParamField path="name" type="string" required>Nome do cliente</ParamField>
-<ParamField path="email" type="string" required>E-mail (único)</ParamField>
-<ParamField path="phone" type="string">Telefone</ParamField>
-<ParamField path="company" type="string">Empresa</ParamField>
-
-<ResponseField name="id" type="int">ID do cliente criado</ResponseField>
-<ResponseField name="hash" type="string">Hash único gerado automaticamente</ResponseField>
-
-Erros: `400` em validação padrão do serializer (ex.: e-mail duplicado).
-</Accordion>
-
-<Accordion title="PUT/PATCH /update/<pk>/ — UpdateClientView">
-Atualiza um `Client`. PATCH tem regra extra (`app/client/views.py:40-64`): se o usuário autenticado tem `role == 'client'`, é **obrigatório** enviar `verification_code` no corpo, validado contra o último `ClientMeta(key='activation_code')` do próprio cliente; código correto é deletado após uso (uso único). PUT apenas redireciona para o mesmo `patch`.
-
-<ParamField path="verification_code" type="string">Obrigatório apenas quando o usuário autenticado é `role='client'`</ParamField>
-<ParamField path="name" type="string">Novo nome</ParamField>
-<ParamField path="email" type="string">Novo e-mail — se mudar, também atualiza `CustomUser.email` (serializer `update`, `app/client/serializers.py:81-87`)</ParamField>
-<ParamField path="phone" type="string">Novo telefone</ParamField>
-<ParamField path="company" type="string">Nova empresa</ParamField>
-
-Erros: `401` sem autenticação; `403` `role='client'` sem `verification_code`; `400` código inválido/expirado.
-</Accordion>
-
-<Accordion title="DELETE /delete/<pk>/ — DeleteClientView">
-Remove o `Client` e, em seguida, o `CustomUser` associado (`app/client/views.py:162-167`). Restrito a `IsAdminUser`.
-</Accordion>
-
-<Accordion title="GET /list/ — ListClientsView">
-Lista clientes (`role='client'`), paginada (`StandardPagination`), com `select_related('user')` e `prefetch_related('meta', 'user__meta', 'subscription_set__plan_price__plan')`. `app/client/views.py:67-131`.
-
-Escopo: se o usuário autenticado é `role='client'`, o queryset é restrito ao próprio `Client` mesmo que outro filtro seja passado (o endpoint é reaproveitado pelo app do cliente para descobrir o próprio `client_id` via `?user=<id>`).
-
-<ParamField path="active" type="bool">Filtro exato (django-filter)</ParamField>
-<ParamField path="onboarding_step" type="int">Filtro exato</ParamField>
-<ParamField path="subscription__status" type="string">Filtro exato</ParamField>
-<ParamField path="subscription__plan_price__plan" type="int">Filtro exato</ParamField>
-<ParamField path="subscription" type="bool">`isnull`</ParamField>
-<ParamField path="user" type="int">Filtro exato</ParamField>
-<ParamField path="miggoai_workflow_enabled" type="bool">Filtro exato — usado pela geração diária do MiggoAI para listar só os clientes com o workflow ligado. **Com `true`, a lista passa a ser de elegíveis** (ver abaixo)</ParamField>
-<ParamField path="generation_requested_at__isnull" type="bool">`false` lista os clientes com pedido de geração pendente (MIG-356). **Também devolve só elegíveis**</ParamField>
-<ParamField path="suspenso_por_trial" type="bool">`1` ou `true` (MIG-399) — filtra clientes com geração suspensa por fim de teste grátis (`anotar_suspenso_por_trial`). Restrito a usuários de gestão (`is_management_user`); ignorado para clientes</ParamField>
-<ParamField path="integration" type="string">Filtra por plataforma integrada ativa (`icontains` em `platform_integrations__platform__name`)</ParamField>
-<ParamField path="lifecycle" type="string">Lista separada por vírgula — filtra pelo `lifecycle` anotado (`lead`, `active`, `unconverted`, `churned`, `inactive`)</ParamField>
-<ParamField path="stage" type="string">Lista separada por vírgula — filtra pela etapa real da esteira (`stage` anotado), distinto do `onboarding_step` legado</ParamField>
-<ParamField path="stage_estimated" type="bool">Quando `false`, esconde clientes cuja etapa é só aproximada (calculada pelo contador legado)</ParamField>
-<ParamField path="search" type="string">Busca textual em `name`, `email`, `company`, `phone`</ParamField>
-<ParamField path="ordering" type="string">`name`, `created_at`, `onboarding_step`, `stage`, `lifecycle`</ParamField>
-
-<Note>
-**Nos dois caminhos da esteira, a lista é de elegíveis** (MIG-399). Quando a requisição traz `?miggoai_workflow_enabled=true` **ou** `?generation_requested_at__isnull=false` — exatamente os dois filtros que o `miggoai-2.0` usa para montar a rodada —, o queryset passa por `subscription.access.com_direito_de_publicacao` e **quem não pode publicar agora sai da lista** (trial vencido, inadimplente fora da carência, sem assinatura). Antes, conta com teste vencido continuava recebendo post da esteira diária e a operação pausava na mão.
-
-A reativação é automática: assinou, volta a aparecer no ciclo seguinte — a lista é dinâmica e o MiggoAI não guarda carteira. A **forma da resposta não mudou**, então o `miggoai-2.0` não precisou de alteração nenhuma.
-
-Fora da pausa, de propósito: o painel do admin e a consulta por `?id=` continuam enxergando a base inteira, inclusive quem está fora — e o disparo manual (`gerar-agora`) é ação deliberada do operador.
-</Note>
-
-Resposta: lista paginada de `ClientSerializer`.
-</Accordion>
-
-<Accordion title="GET /retrieve/<pk>/ — RetrieveClientView">
-Detalhe de um cliente, com a mesma restrição de escopo do `/list/` (cliente só recupera o próprio registro — evita IDOR por pk) e as mesmas anotações de `lifecycle`/`stage`. `app/client/views.py:134-150`.
-</Accordion>
-
-<Accordion title="POST /client-meta/create/ — ClientMetaCreateView">
-Cria uma ou várias `ClientMeta` — aceita lista no corpo (`many=isinstance(request.data, list)`). `app/client/views.py:178-183`.
-</Accordion>
-
-<Accordion title="PUT/PATCH /client-meta/update/<pk>/ — UpdateClientMetaView">
-UpdateAPIView padrão sobre `ClientMeta`.
-</Accordion>
-
-<Accordion title="GET /client-meta/list/ — ListClientMetaView">
-Lista `ClientMeta`, filtrável por `?client_id=`.
-</Accordion>
-
-<Accordion title="DELETE /client-meta/delete/<pk>/ — DeleteClientMetaView">
-Remove uma `ClientMeta`.
-</Accordion>
-
-<Accordion title="GET /generate-activation-code/<pk>/ — GenerateClientCodeView">
-Gera um novo código de ativação (`generate_code()`), apaga códigos anteriores do mesmo cliente, salva como `ClientMeta(key='activation_code')` e envia por e-mail (template `emails/activation_code.html`). `app/client/views.py:216-245`.
-
-<ResponseField name="code" type="string">Código gerado (também retornado na resposta, além de ser enviado por e-mail)</ResponseField>
-
-Status: `201`.
-</Accordion>
-
-<Accordion title="POST /activate-account/<pk>/ — ActivateClientView">
-Ativa a conta (`client.active = True`) se `activation_code` no corpo bater com o último código salvo; código é deletado após uso. `app/client/views.py:249-273`.
-
-<ParamField path="activation_code" type="string" required>Código enviado por e-mail</ParamField>
-
-Erros: `404` cliente não encontrado; `400` código ausente ou inválido.
-</Accordion>
-
-<Accordion title="POST /verify-code/<pk>/ — VerifyClientCodeView">
-Só verifica se o código é válido, sem ativar a conta — usado para validar alteração de perfil. `app/client/views.py:277-300`.
-
-<ParamField path="code" type="string" required>Código a validar</ParamField>
-</Accordion>
-
-<Accordion title="GET /onboarding-status/<pk>/ — OnboardingStatusView">
-Retorna o status detalhado do onboarding, recalculando o `onboarding_step` "efetivo" a partir de condições reais e persistindo se mudou. `app/client/views.py:303-473`. Lógica detalhada em [Regras de negócio e funções](#onboardingstatusview-logica-do-step-efetivo).
-
-<ResponseField name="onboarding_step" type="int">Step efetivo (`max(client.onboarding_step, computed_step)`), persistido se diferente do salvo</ResponseField>
-<ResponseField name="is_onboarding_complete" type="bool">Se a esteira (`OnboardingSession`) está concluída, ou fallback pelo contador legado; sempre `true` se `trials.has_purchased(client)`</ResponseField>
-<ResponseField name="onboarding_current_step" type="string">Etapa atual de `OnboardingSession.current_step`, ou `null` sem sessão</ResponseField>
-<ResponseField name="grid_reference_chosen" type="bool">Se já foi escolhida a referência de grid (distinto de aprovar o mosaico)</ResponseField>
-<ResponseField name="pending_steps" type="array">Etapas bloqueantes pendentes (esvaziado se `has_purchased`)</ResponseField>
-<ResponseField name="onboarding_skipped" type="bool">Flag do cliente</ResponseField>
-<ResponseField name="steps" type="object">`account_verified`, `plan_selected`, `social_connected`, `brandkit_uploaded`, `briefing_completed` (cada um `bool`)</ResponseField>
-</Accordion>
-
-<Accordion title="POST /onboarding-skip/<pk>/ — SkipOnboardingView">
-Marca `client.onboarding_skipped = True`. `app/client/views.py:477-491`.
-</Accordion>
-
-<Accordion title="PATCH /onboarding-step/<pk>/ — UpdateOnboardingStepView">
-Avanço/recuo manual do step (uso administrativo). `app/client/views.py:494-526`.
-
-<ParamField path="onboarding_step" type="int" required>Inteiro entre 0 e 5</ParamField>
-
-Erros: `400` se ausente ou fora do intervalo `[0,5]`.
-</Accordion>
-
-<Accordion title="POST /instagram-scrape/ — InstagramScrapeAndFillView">
-Fluxo de raspagem do perfil público do Instagram via Apify e proposta/preenchimento automático de briefing via IA (MIG-396 adicionou o modo `preview`). `app/client/views.py:664-1397` (o `post` autoriza via `_cliente_visivel` e delega ao miolo `_scrape_and_fill(client, username, force, preview)`). Detalhado em [Regras de negócio e funções](#instagramscrapeandfillview). Throttle de 20 POST/hora por usuário cliente; equipe e API key ficam isentas (`_PostThrottle`, `throttle_scope = 'instagram_scrape'`).
-
-<ParamField path="client_id" type="int" required>ID do cliente</ParamField>
-<ParamField path="instagram_username" type="string" required>Handle do Instagram (com ou sem `@`)</ParamField>
-<ParamField path="force" type="bool">Ignora o cache do Apify e força nova raspagem</ParamField>
-<ParamField path="preview" type="bool">`true`/`1`/`sim`: não grava briefing, bio nem logo e retorna a proposta para conferência (`{proposed, current}`). O JSON bruto (`ClientMeta scrapping_instagram`) e o log `Integration` são gravados mesmo assim</ParamField>
-
-<ResponseField name="instagram_username" type="string">Handle analisado</ResponseField>
-<ResponseField name="preview" type="bool">Presente e `true` quando chamado em modo preview</ResponseField>
-<ResponseField name="proposed" type="object">Mapa `{chave: valor_proposto}` com sugestões de alteração (apenas em modo preview)</ResponseField>
-<ResponseField name="current" type="object">Mapa `{chave: valor_atual}` dos campos do briefing (apenas em modo preview)</ResponseField>
-<ResponseField name="briefing_keys_filled" type="array">Chaves de briefing preenchidas ou propostas</ResponseField>
-<ResponseField name="warning" type="string">Só em preview: aviso quando a IA falhou e a proposta veio do fallback</ResponseField>
-<ResponseField name="message" type="string">Só quando `preview=false`</ResponseField>
-<ResponseField name="bio_saved" type="bool">Se a bio atual foi salva em `PlatformProfileConfig` (apenas quando `preview=false`)</ResponseField>
-<ResponseField name="raw_scrape_saved" type="bool">Sempre `true` quando a raspagem é salva (apenas quando `preview=false`)</ResponseField>
-<ResponseField name="logo_from_profile" type="bool">Se a foto de perfil virou `BrandLogo` (apenas quando `preview=false`)</ResponseField>
-
-Erros: `400` campos obrigatórios ausentes; `404` cliente não encontrado ou Apify sem dados para o username; `429` limite de requisições excedido (mais de 20 análises na última hora); `502` falha de transporte com o Apify (`ApifyUnavailable`).
-</Accordion>
-
-<Accordion title="PATCH /toggle-active/<pk>/ — ToggleClientActiveView">
-Ativa/inativa o cliente; se `active` vier no corpo usa esse valor, senão inverte o estado atual. Sincroniza `CustomUser.is_active`. `app/client/views.py:1197-1232`. Restrito a `IsManagementUser`.
-
-<ParamField path="active" type="bool">Estado desejado (opcional — sem ele, inverte)</ParamField>
-</Accordion>
-
-<Accordion title="POST /send-generic-password/ — SendGenericPasswordView">
-Redefine a senha do usuário associado para uma senha temporária fixa e envia e-mail com as credenciais. `app/client/views.py:1236-1297`. Restrito a `IsManagementUser` **e** checagem redundante (`request.user.is_superuser` ou `role in ['admin','manager']` ou `is_staff`).
-
-<ParamField path="client_id" type="int" required></ParamField>
+Throttles: análise de Instagram e envio de materiais limitados a 20 requisições por hora por cliente; equipe e Api-Key ficam isentas na análise de Instagram.
 
 <Warning>
-A senha temporária está hardcoded no código-fonte (`"Miggo@2026#!#"`, `app/client/views.py:1258`) e é enviada em texto plano por e-mail — não é um segredo de ambiente, mas é sensível o bastante para revisão de segurança.
+A chave do Apify (`APIFY_TOKEN`) nunca vai em URL, log ou mensagem de erro. Com `APIFY_ASYNC=1` e fila ativa, o veredito do `@` roda em task; `APIFY_JOBS_ASYNC=1` faz a análise responder `202` com job, e só pode ser ligada com o front preparado para tratar o `202`.
 </Warning>
 
-Erros: `403` sem papel adequado; `400` sem `client_id`; `404` cliente não encontrado; `500` senha alterada mas falha no envio do e-mail.
-</Accordion>
-
-<Accordion title="POST /create-bio-agent/ — CreateBioAgentView">
-Gera bio + nome de exibição otimizados para uma plataforma via OpenAI, com fallback determinístico. `app/client/views.py:1306-1548`.
-
-<ParamField path="client_id" type="int" required></ParamField>
-<ParamField path="platform" type="string" required>Nome da `SocialNetwork` (ex.: `Instagram`)</ParamField>
-
-<ResponseField name="bio" type="string">Bio gerada (máx. 150 caracteres, multilinhas)</ResponseField>
-<ResponseField name="display_name" type="string">Nome de exibição (máx. 40 caracteres)</ResponseField>
-<ResponseField name="config_id" type="int">ID do `PlatformProfileConfig` atualizado</ResponseField>
-<ResponseField name="used_fallback" type="bool">Se caiu no fallback determinístico por falha/ausência da OpenAI</ResponseField>
-<ResponseField name="display_name_meta_key" type="string">Chave de `ClientMeta` onde o nome de exibição sugerido foi salvo</ResponseField>
-
-Erros: `400` campos ausentes; `404` cliente ou plataforma não encontrados.
-</Accordion>
-
-<Accordion title="GET /trials/ — TrialsPanelView">
-Painel de gestão de trials (MIG-246) — ver [`app/client/trials.py`](#regras-de-negocio-e-funcoes). `app/client/views.py:1553-1626`. Restrito a `IsManagementUser`.
-
-<ParamField path="stage" type="string">`novo` | `incompleto` | `completo`</ParamField>
-<ParamField path="subscription" type="string">`trial` | `expirada` | `sem_assinatura`</ParamField>
-<ParamField path="search" type="string">Nome, e-mail ou empresa</ParamField>
-
-<ResponseField name="total" type="int">Total em vigor (funil não muda com filtros)</ResponseField>
-<ResponseField name="funnel" type="array">Contagem por estágio</ResponseField>
-<ResponseField name="winback" type="object">`total` e `by_stage` de trials expirados sem conversão</ResponseField>
-<ResponseField name="stages" type="array">Lista de estágios possíveis</ResponseField>
-<ResponseField name="results" type="array">Linhas filtradas (checklist, timeline, dados de assinatura)</ResponseField>
-</Accordion>
-
-<Accordion title="GET/PUT /signature-preference/<pk>/ — ClientSignaturePreferenceView">
-GET devolve a predefinição efetiva dos 4 formatos; PUT aplica um `mode` a um ou mais formatos de uma vez, ou remove a preferência manual (`mode='auto'`). `app/client/views.py:1630-1703`. Restrito a `IsManagementUser`.
-
-<ParamField path="formats" type="array" required>Lista de formatos (`story`, `feed`, `carrossel`, `reel`)</ParamField>
-<ParamField path="mode" type="string" required>`logo` | `instagram` | `text` | `none` | `auto`</ParamField>
-<ParamField path="text" type="string">Texto livre, usado quando `mode='text'`</ParamField>
-
-Erros: `404` cliente não encontrado; `400` `formats` ausente, formato inválido, ou `mode` inválido (quando diferente de `auto`).
-
-O GET também devolve `miggoai_workflow_enabled` (estado do toggle do agente MiggoAI) e `suspenso_por_trial` (booleano via `access.esta_suspenso_por_trial(client)`, MIG-399), que o modal **Predefinições de Criação de Conteúdo** (`frontend-miggo/src/components/Clients/ContentPresetsModal.tsx`) usa para montar o switch e exibir o alerta de suspensão por trial expirado.
-</Accordion>
-
-<Accordion title="GET/PUT /media-preference/<pk>/ — ClientMediaPreferenceView">
-Predefinição de foto real do cliente (`app/client/views.py:2174`). `IsManagementUser`. Quem **lê** é o MiggoAI, na geração de imagem.
-
-**GET** devolve a preferência **efetiva** — o padrão quando não há registro — mais o que o formulário precisa:
-
-<ResponseField name="200 OK" type="object">
-`{client_id, usage, reuse_days, use_stock, source, usages, library_count}`. `source` é `manual` (há registro) ou `default`; `usages` são os pares valor/rótulo da dimensão 1; `library_count` conta as fotos do cliente **no mesmo recorte que o MiggoAI consulta** (`from_media_library=True`), para o número da tela bater com o que o agente enxerga — é o que permite avisar que "Sempre" com galeria vazia continua gerando a imagem do zero.
-</ResponseField>
-
-**PUT**
-
-<ParamField body="usage" type="string">`always` | `never` | `alternate`.</ParamField>
-<ParamField body="reuse_days" type="integer">Janela anti-repetição, 0–365; `0` desliga.</ParamField>
-<ParamField body="use_stock" type="boolean">Dimensão 2 (MIG-457). **Ausente no corpo, não altera o valor gravado** — tratar a ausência como `False` desligaria o banco toda vez que alguém salvasse pela tela antiga.</ParamField>
-
-Erros: `400` com `usage` inválido ou `reuse_days` fora de 0–365; `404` cliente não encontrado. O PUT devolve o mesmo corpo do GET.
-</Accordion>
-
-<Accordion title="PUT /miggoai-workflow/<pk>/ — ClientMiggoAIWorkflowView">
-Liga/desliga o workflow do agente MiggoAI do cliente — grava `Client.miggoai_workflow_enabled`. Não chama o MiggoAI: é o `generate_daily_contents` do miggoai-2.0 que lê a flag via `client/list/?miggoai_workflow_enabled=true` e gera os cards pendentes com 1 dia de antecedência no trial e 2 fora dele. Restrito a `IsManagementUser`.
-
-<ParamField path="enabled" type="bool" required>`true` liga, `false` desliga. Precisa ser booleano JSON.</ParamField>
-
-<ResponseField name="client_id" type="int">Id do cliente</ResponseField>
-<ResponseField name="miggoai_workflow_enabled" type="bool">Estado gravado</ResponseField>
-<ResponseField name="suspenso_por_trial" type="bool">Se o cliente está suspenso por fim de teste grátis (MIG-399)</ResponseField>
-
-<Note>
-**Ligar o toggle não reativa um cliente suspenso por trial:** a esteira diária do MiggoAI filtra a carteira por `com_direito_de_publicacao` (`app.subscription.access`). O cliente suspenso só volta a receber geração automática quando assinar um plano ou tiver o prazo de teste estendido.
-</Note>
-
-Erros: `404` cliente não encontrado; `400` `enabled` ausente ou não booleano.
-</Accordion>
-
-<Accordion title="POST/DELETE /miggoai-generate-now/<pk>/ — ClientMiggoAIGenerateNowView">
-Dispara a geração fora da rodada diária — é o que o botão **Criar agora** do painel aciona. Restrito a `IsManagementUser`.
-
-O POST faz duas coisas, nesta ordem (MIG-379): marca `Client.generation_requested_at` e chama `POST /api/generations/gerar-agora/` do MiggoAI (`app/onboarding/miggoai.py:gerar_agora_v2`). A marca é a **redundância**: se a chamada falhar, o `generate_daily_contents` do MiggoAI ainda atende o pedido pendente na próxima passada (até 15 min). Por isso falha de chamada não vira erro para o painel — vira `disparo: 'fila'`. O DELETE limpa o pedido (`generation_requested_at = None`).
-
-<ResponseField name="client_id" type="int">Id do cliente</ResponseField>
-<ResponseField name="generation_requested_at" type="string">Quando o pedido foi marcado (`null` no DELETE)</ResponseField>
-<ResponseField name="disparo" type="string">`imediato` — o MiggoAI aceitou e a rodada começou agora. `fila` — o pedido ficou para a rodada do MiggoAI.</ResponseField>
-<ResponseField name="detalhe" type="string">Frase pronta para a tela, conforme o `disparo`.</ResponseField>
-
-<Warning>
-  **`imediato` sai SÓ quando o MiggoAI responde `status: 'aceito'`.** O `202` do `gerar-agora/` diz apenas que o pedido chegou: com uma rodada em andamento o MiggoAI adia o pedido e responde `status: 'na_fila'` — também `202`, de propósito. `na_fila`, campo ausente, corpo que não é dict, valor desconhecido e exceção na chamada caem todos em `disparo: 'fila'`: na dúvida não se promete que a geração começou. Contrato do outro lado em <a href="/miggoai/api-referencia">Referência de API do MiggoAI</a>.
-</Warning>
-
-Os três desfechos saem no log sob a tag `[Admin Trigger]`, distinguíveis entre aceite, adiamento e falha de chamada. É a conclusão do **disparo** — o fim da geração não é informado a este backend.
-
-Repetir o POST não reinicia a espera: o primeiro pedido pendente é mantido. Erros: `404` cliente não encontrado.
-</Accordion>
-
-<Accordion title="GET/POST /brand-materials/ — BrandMaterialListCreateView">
-Listagem e envio de materiais institucionais da marca (PDF, DOCX, PPTX, TXT ou texto colado). `app/client/views.py:2297-2386`. O POST salva o material, extrai o texto, solicita à IA a proposta de briefing (`{proposed, current}`) e dispara a regeneração assíncrona de `ClientMeta brand_knowledge`. Throttle de 20 requisições/hora por cliente (`_PostThrottle`, `throttle_scope = 'brand_materials'`).
-
-#### GET `/api/v1/client/brand-materials/?client_id=<id>`
-Lista os materiais cadastrados do cliente. Usuário com papel `client` só pode listar materiais do seu próprio `Client` (outro cliente retorna `404`).
-
-<ParamField query="client_id" type="int" required>ID do cliente</ParamField>
-
-<ResponseField name="[]" type="array">
-  Lista de objetos:
-  - `id` (int): ID do material
-  - `kind` (string): `file` ou `text`
-  - `name` (string): nome do arquivo ou "Texto colado"
-  - `char_count` (int): total de caracteres do texto extraído
-  - `created_at` (string): timestamp ISO 8601
-</ResponseField>
-
-#### POST `/api/v1/client/brand-materials/`
-Multipart/form-data ou JSON. Aceita `file` **ou** `text` (mutuamente exclusivos).
-
-<ParamField body="client_id" type="int" required>ID do cliente</ParamField>
-<ParamField body="file" type="file">Arquivo `.pdf`, `.docx`, `.pptx` ou `.txt` (máx. 10 MB)</ParamField>
-<ParamField body="text" type="string">Texto colado (máx. 50.000 caracteres)</ParamField>
-
-<ResponseField name="material" type="object">Objeto `{id, kind, name, char_count, created_at}` do material salvo</ResponseField>
-<ResponseField name="proposed" type="object">Mapa `{chave: valor_proposto}` com sugestões de atualização para o briefing</ResponseField>
-<ResponseField name="current" type="object">Mapa `{chave: valor_atual}` com os valores vigentes do briefing</ResponseField>
-<ResponseField name="warning" type="string">Aviso opcional se o texto foi cortado nos 50.000 caracteres ou se a IA falhou ao gerar propostas</ResponseField>
-
-Erros: `400` sem arquivo e sem texto, arquivo e texto enviados juntos, formato não suportado, arquivo acima de 10 MB, texto acima de 50.000 caracteres, limite de 10 materiais atingido ou material ilegível/sem texto; `404` cliente não encontrado; `429` limite de 20 requisições/hora excedido. Falha da IA não impede o salvamento: retorna `201` com `proposed: {}` e mensagem em `warning`.
-</Accordion>
-
-<Accordion title="DELETE /brand-materials/<pk>/ — BrandMaterialDetailView">
-Remove um material da marca (`app/client/views.py:2390-2400`). Cliente só remove o próprio (material alheio retorna `404`); equipe e API key removem qualquer um.
-
-Após a exclusão, dispara a atualização assíncrona do resumo `ClientMeta brand_knowledge` (`refresh_brand_knowledge_async(after_delete=True)`). Se não restarem materiais — ou se a LLM falhar depois de uma remoção (o resumo antigo ainda descreveria o material removido) —, a chave `brand_knowledge` é apagada.
-
-Status: `204 No Content`.
-Erros: `404` material não encontrado ou pertencente a outro cliente.
-</Accordion>
-
-<Accordion title="POST /briefing/apply/ — BriefingApplyView">
-Aplica as alterações confirmadas pelo cliente no modal de revisão (`BriefingReviewModal`) diretamente em `ClientMeta` via upsert (`app/client/views.py:2404-2427`).
-
-Aceita apenas as 16 chaves permitidas em `BRIEFING_PROPOSAL_KEYS` (`company`, `business`, `sub_business`, `region`, `target`, `ticket`, `summary`, `audience_profile`, `audience_pain`, `audience_goals`, `tone_of_voice`, `services`, `differential`, `goals`, `ctas`, `extra`). Quaisquer chaves adicionais enviadas no corpo são descartadas.
-
-<ParamField body="client_id" type="int" required>ID do cliente</ParamField>
-<ParamField body="values" type="object" required>Mapa `{chave: valor}` contendo as alterações a gravar</ParamField>
-
-<ResponseField name="updated" type="array">Lista das chaves que foram efetivamente atualizadas</ResponseField>
-
-Erros: `400` `values` ausente/inválido ou valor de campo excedendo o limite de 5.000 caracteres; `404` cliente não encontrado ou não autorizado.
-</Accordion>
-
-</AccordionGroup>
-
-## Serializers
-
-### ClientSerializer (`app/client/serializers.py:4`)
-
-Campos expostos: `id`, `user`, `hash`, `name`, `email`, `phone`, `active`, `company`, `brand_name`, `subscription`, `billing_email`, `onboarding_step`, `onboarding`, `lifecycle`, `created_at`, `miggoai_workflow_enabled`, `generation_requested_at`, `allowed_social_network_ids`, `suspenso_por_trial`.
-
-Somente leitura: `id`, `created_at`, `hash`, `user`, `miggoai_workflow_enabled` (só muda pelo toggle `miggoai-workflow/<pk>/`), `generation_requested_at`, `allowed_social_network_ids`, `suspenso_por_trial`.
-
-Campos calculados (`SerializerMethodField`):
-- **`brand_name`** — itera `obj.meta.all()` (prefetch) procurando `key='brand_name'`; se não achar, cai em `obj.company`. Evita query extra por cliente.
-- **`subscription`** — usa `obj.subscription_set.all()` (prefetch `subscription_set__plan_price__plan`), escolhe a mais recente por `(start_date or date.min, id)` em Python; retorna `{id, status, plan_name, interval, price, expires_at}` ou `None`.
-- **`onboarding`** — delega a `lifecycle.stage_payload(obj)` (etapa real da esteira).
-- **`lifecycle`** — lê a anotação `obj.lifecycle` se presente (setada por `annotate_lifecycle` na view); sem ela, resolve na hora consultando `Subscription` diretamente (uso avulso do serializer, fora da listagem anotada).
-- **`billing_email`** — busca `key='billing_email'` em `obj.user.meta.all()` (prefetch `user__meta`).
-- **`suspenso_por_trial`** (MIG-399) — lê a anotação `obj.suspenso_por_trial` setada por `anotar_suspenso_por_trial` na listagem (sem N+1) ou resolve via `access.esta_suspenso_por_trial(obj)`. Exclusivo da equipe de gestão (`is_management_user`): em `to_representation`, o campo é removido se o usuário autenticado for cliente final.
-
-**`update(self, instance, validated_data)`** (`app/client/serializers.py:81-87`): se `email` mudar, também atualiza `instance.user.email` e salva (`update_fields=['email']`) antes de chamar `super().update()` — mantém `Client.email` e `CustomUser.email` sincronizados.
-
-### ClientMetaSerializer (`app/client/serializers.py:90`)
-
-`fields = '__all__'`. Sem validação customizada.
-
-### ClientSignaturePreferenceSerializer (`app/client/serializers.py:96`)
-
-Campos: `id`, `client`, `format`, `mode`, `text`, `updated_at`. Somente leitura: `id`, `updated_at`. Sem validação customizada — a validação de `format`/`mode` acontece manualmente em `ClientSignaturePreferenceView.put`, não neste serializer (que nem é usado pela view de PUT, que grava via `update_or_create` direto no model).
-
-## Regras de negócio e funções
-
-### `app/client/lifecycle.py`
-
-Resolve a divergência entre o contador legado `Client.onboarding_step` (marcos que nunca regridem, ordem desatualizada frente ao fluxo atual) e a etapa real da esteira (`OnboardingSession.current_step`, app `onboarding`).
-
-- **`annotate_lifecycle(queryset)`** (`app/client/lifecycle.py:63`) — anota, sem N+1, em um queryset de `Client`: `session_stage`, `stage` (etapa efetiva — sessão, ou o legado traduzido via `LEGACY_STEP_TO_STAGE`), `stage_estimated` (`True` quando veio do legado), `onboarding_done`, `has_trial`, `has_active`, `ever_subscribed`, e `lifecycle` (`lead` | `active` | `unconverted` | `churned` | `inactive`). Regra de `lifecycle`: `lead` = trial em vigor + onboarding incompleto; `active` = assinatura ativa OU trial em vigor; `unconverted` = onboarding concluído sem nunca ter assinado; `churned` = já assinou alguma vez e não está mais ativo/trial; `inactive` = abandonou o onboarding sem nunca assinar. Assinaturas em `PENDING`, `UNPAID`, `EXPIRED`, `PAUSED`, `CANCELLED` não sustentam `lead` nem `active`.
-- **`stage_payload(client)`** (`app/client/lifecycle.py:155`) — monta o bloco `onboarding` do `ClientSerializer`. Lê as anotações de `annotate_lifecycle` se existirem; senão resolve por consulta direta (`OnboardingSession.objects.filter(client=client).first()`). Retorna `{stage, stage_label, stage_estimated, stage_position, total_stages, is_complete}`.
-- **`stage_breakdown(queryset)`** (`app/client/lifecycle.py:194`) — contagem por etapa (incluindo zeradas) a partir de um queryset já anotado; separa exatos de estimados.
-
-### `app/client/signature.py`
-
-- **`auto_signature(client)`** (`app/client/signature.py:48`) — padrão automático: logo do brandkit (se houver `BrandLogo` não-placeholder) > `@` do Instagram (de `client.onboarding_session.instagram_handle`) > texto `"Nome da marca | Ramo"` (de `ClientMeta` `company`/`business`, com fallback em `client.company`/`client.name`).
-- **`resolve_signature(client, format_key)`** (`app/client/signature.py:60`) — predefinição efetiva para um formato: preferência manual (`ClientSignaturePreference`) se existir, senão `auto_signature`. Para `mode='instagram'` sem `text` salvo, usa o `@` atual do cliente; para `mode='text'` sem `text`, usa o texto de marca calculado.
-- **`resolve_all(client)`** (`app/client/signature.py:81`) — mapa `{format_key: resultado}` para os 4 formatos.
-
-### `app/client/trials.py` (MIG-246)
-
-Painel de gestão comercial dos trials, respondendo "já dá para começar a mandar conteúdo?" em vez de "em qual tela ele parou".
-
-- **`CHECKLIST_ITEMS`** (`app/client/trials.py:39-54`) — 10 itens, dos quais são **obrigatórios** para "onboarding completo": `briefing`, `colors`, `style`, `calendar`, `grid_generated`. Os demais (`account_verified`, `plan`, `logo`, `photos`, `social`) aparecem no painel mas não bloqueiam.
-- **`_bulk_context(clients)`** (`app/client/trials.py:100`) — coleta em lote (≈8 queries totais, não por cliente) tudo que o checklist precisa: sessões de onboarding, briefing preenchido, cores de marca reais (excluindo a paleta neutra de fallback), logos, fotos, integrações sociais/WhatsApp ativas, assinaturas.
-- **`build_checklist(client, ctx)`** (`app/client/trials.py:221`) — monta o checklist com o momento (`at`) de cada etapa cumprida.
-- **`stage_from_checklist(checklist, client=None)`** (`app/client/trials.py:271`) — `completo` se todos os `REQUIRED_KEYS` estão feitos; senão `novo` (cadastro há menos de `TRIAL_NEW_DAYS=7` dias) ou `incompleto` (mais de 7 dias sem fechar os obrigatórios).
-- **`build_timeline(client, checklist)`** (`app/client/trials.py:292`) — linha do tempo ordenada por data (eventos sem data vão para o fim).
-- **`build_trial_rows(clients, with_timeline=True)`** (`app/client/trials.py:317`) — monta as linhas do painel para uma lista de clientes, uma passada sem N+1.
-- **`funnel_counts(linhas)`** (`app/client/trials.py:354`) — contagem por estágio, sempre com as 3 faixas presentes.
-- **`purchased_client_ids()`** (`app/client/trials.py:370`) — IDs de quem já comprou alguma vez: assinatura `ACTIVE` agora, ou qualquer assinatura com `trial=False` que não seja `PENDING`/`TRIAL`.
-- **`has_purchased(client)`** (`app/client/trials.py:390`) — usado por `OnboardingStatusView` para zerar `pending_steps` e marcar `is_complete=True` para quem já pagou (a esteira não deve mais cobrar quem converteu).
-- **`prospect_queryset()`** (`app/client/trials.py:396`) — população do painel de trials: todo `Client` exceto quem já comprou.
-- **`trial_funnel_snapshot()`** (`app/client/trials.py:409`) — funil de trials em andamento, usado pelo dashboard (mesma conta do painel `/admin/trials`).
-- **`check_trial_ready(client)`** (`app/client/trials.py:428`) — dispara notificação (`notify_admins`) quando um lead fecha todos os obrigatórios, **uma única vez** por cliente (idempotente via `ClientMeta(key='trial_ready_notified_at')`). Nunca levanta exceção — é efeito colateral de telas do onboarding.
-
-### `app/client/instagram.py`
-
-Raspagem de perfil do Instagram via Apify (actor `aliverso~instagram-profile-scraper`), com **uma corrida por perfil**, cacheada por 1 hora (`PROFILE_CACHE_TTL = 3600`).
-
-- **`fetch_profile_items(handle, client=None, token='', force=False) -> list`** (`app/client/instagram.py:69`) — devolve os itens do dataset do cache, ou dispara nova corrida (timeout 180s). Lista vazia é resposta válida (perfil inexistente); falha de transporte levanta `ApifyUnavailable`. `force=True` ignora o cache. Registra a chamada em `Integration` quando `client` é passado.
-- **`profile_from_items(items) -> dict`** (`app/client/instagram.py:130`) — extrai o perfil do primeiro item, ou `{}` se o Apify sinalizou erro/perfil inexistente.
-- **`is_private(profile) -> bool`** (`app/client/instagram.py:145`) — lê `private`/`isPrivate` do item.
-- **`ApifyUnavailable`** (`app/client/instagram.py:42`) — exceção para falha de transporte/config, distinta de "dataset vazio" (que é resposta legítima do Apify).
-
-### `InstagramScrapeAndFillView` — fluxo completo (`app/client/views.py:664-1397`)
-
-1. Chama `instagram_lib.fetch_profile_items` (Apify) para o `instagram_username`.
-2. Salva o JSON bruto em `ClientMeta(key='scrapping_instagram')`.
-3. Monta um prompt (`_build_prompt`) com todo o contexto do perfil (`_build_ai_context`) e chama a OpenAI (`gpt-4o-mini`, `BRIEFING_MODEL`) pedindo o preenchimento de ~26 chaves de briefing (`BRIEFING_KEYS`). Sem `OPENAI_API_KEY` configurada, ou em caso de erro/exceção, usa `_build_fallback_data` (heurísticas locais: inferência de público B2B/B2C por palavras-chave, tom de voz por template, metas por sinais no perfil).
-4. Normaliza os dados (`_normalize_briefing_data`) — `target` vira exatamente `Pessoas`/`Empresas`/`Pessoas e Empresas` (heurística por palavras-chave em `_target_flags`), `goals`/`referer` viram listas JSON restritas às opções válidas, `region`/`ticket` caem em textos-padrão se vazios.
-5. Salva cada campo do briefing como `ClientMeta` via `update_or_create` (upsert).
-6. Atualiza `PlatformProfileConfig(config_type='bio')` do Instagram com `old_text` = bio atual do perfil raspado.
-7. **Foto de perfil → logo**: `_maybe_set_logo_from_profile` só age se o cliente ainda não tem nenhuma `BrandLogo`; baixa a foto de perfil, classifica via GPT-4o-mini (`_is_logo_image`, com a imagem enviada em base64 porque o CDN do Instagram recusa fetch direto da OpenAI) se é logotipo ou fotografia; se for logo, cria `Brandkit`/`BrandLogo` e roda a mesma análise de cores do upload manual (`_analyze_logo_with_gpt`/`_apply_analysis_to_logo`, de `app.brandkit.views`).
-8. Registra a chamada à OpenAI em `Integration(service='openai_briefing')`.
-
-Com o MIG-396, a view passa a aceitar `preview=True`: nesse modo os passos 1–3 e 8 rodam (o JSON bruto e o log `Integration` são gravados), mas briefing, bio e logo não são persistidos; o `ticket` padrão nunca substitui um ticket já preenchido, e fallback da IA devolve `warning`. Quem aplica é o cliente, via `briefing/apply/`. O onboarding (`_run_instagram_analysis`) chama `_scrape_and_fill` direto, sem request. O backend gera o mapa de propostas `{proposed, current}` comparando com os valores atuais via `brand_materials.build_proposal` e responde `200` com o preview para conferência do cliente.
-
-Toda a leitura de `OPENAI_API_KEY`/`OPENAI_API_URL`/`APIFY_TOKEN` é feita via `dotenv_values` lida a cada request (não usa cache do `decouple`), com fallback em `os.environ`.
-
-### `app/client/brand_materials.py` (MIG-396)
-
-Centraliza a ingestão de materiais da marca, extração de texto, geração de propostas de briefing via LLM e consolidação do resumo `ClientMeta brand_knowledge`.
-
-- **Validação e extração de documentos (`extract_text_from_upload`)**:
-  - Aceita `.pdf`, `.docx`, `.pptx` e `.txt` (extensões conferidas contra os cabeçalhos reais do arquivo).
-  - Proteção contra zip bomb em DOCX e PPTX: inspeciona o arquivo comprimido antes de descompactar, conferindo tamanho total descompactado (`MAX_ZIP_UNCOMPRESSED_BYTES = 50 MB`), quantidade de entradas (`MAX_ZIP_ENTRIES = 2000`) e razão de descompressão (`MAX_ZIP_RATIO = 100`).
-  - Limite de páginas/slides: até 50 páginas em PDFs (`MAX_PDF_PAGES`) e até 100 slides em apresentações (`MAX_SLIDES`).
-  - Texto extraído cortado em 50.000 caracteres (`MAX_TEXT_CHARS`).
-  - **Não persistência do arquivo bruto**: o arquivo enviado pelo cliente não é mantido no S3 nem no sistema de arquivos local — apenas o texto extraído é salvo no campo `BrandMaterial.extracted_text`.
-- **Proposta de briefing via IA (`propose_from_text`)**:
-  - Chama a OpenAI (`gpt-4o-mini`, timeout 45s) com o texto delimitado como dado (bloqueando injeção de instruções contidas no documento).
-  - Sugere valores apenas para as 16 chaves permitidas em `BRIEFING_PROPOSAL_KEYS` (`company`, `business`, `sub_business`, `region`, `target`, `ticket`, `summary`, `audience_profile`, `audience_pain`, `audience_goals`, `tone_of_voice`, `services`, `differential`, `goals`, `ctas`, `extra`).
-  - Retorna `{proposed, current}`, incluindo em `proposed` apenas valores não vazios e diferentes do que o cliente já possui gravado.
-- **Resumo assíncrono de conhecimento (`refresh_brand_knowledge_async`)**:
-  - Disparado em background (thread separada) após a criação ou exclusão de um material.
-  - Sintetiza todo o conjunto de materiais ativos do cliente em um resumo executivo de até 1.500 caracteres (`BRAND_KNOWLEDGE_MAX_CHARS`).
-  - Salva o resultado em `ClientMeta(key='brand_knowledge')`. Se não restarem materiais — ou se a LLM falhar depois de uma remoção —, a chave `brand_knowledge` é apagada.
-- **Aplicação de briefing (`apply_briefing`)**:
-  - Valida o tamanho máximo de cada valor (teto de 5.000 caracteres, `MAX_VALUE_CHARS`).
-  - Grava via upsert em `ClientMeta` apenas as chaves contidas em `BRIEFING_PROPOSAL_KEYS`.
-
-### `OnboardingStatusView` — lógica do step efetivo (`app/client/views.py:303-473`)
-
-Calcula `computed_step` a partir de condições reais: `account_verified` (`client.active`), `has_subscription` (Subscription `ACTIVE`/`TRIAL`), `social_connected` (após reconciliar via `app.post.zernio.sync_platform_connections` — self-heal para quando o webhook `account.connected` do Zernio não chega), `brandkit_uploaded` (Brandkit com ao menos 1 logo), `briefing_completed` (≥3 de `business`/`services`/`region` em `ClientMeta`). `effective_step = max(client.onboarding_step, computed_step)` — nunca regride; se mudou, persiste.
-
-A conclusão (`is_complete`) vem preferencialmente de `OnboardingSession` (app `onboarding`): sem pendências bloqueantes, ou `completed_at` setado, ou `effective_step >= 5`, ou assinatura ativa. Self-heal adicional: se não há pendências e `completed_at` ainda é `None`, grava `completed_at = now()`. Quem já comprou (`trials.has_purchased`) tem `pending_steps` zerado e `is_complete=True` sempre.
-
-### Management command `check_trials` (`app/client/management/commands/check_trials.py`)
-
-Roda como cron. Bloqueia (`client.active=False`) clientes `active=True` criados há mais de 7 dias **sem** assinatura ativa **e** sem `user.email_verified`. Quem verificou o e-mail mas não assinou permanece `active=True` (o front barra na tela, não o backend).
-
-<Warning>
-A checagem de assinatura usa `getattr(client, 'current_subscription', None)` (`app/client/management/commands/check_trials.py:21`), um atributo que não existe em nenhum lugar do model `Client` visto neste app — sempre retorna `None`, tornando `has_active_subscription` sempre `False`. Na prática, o comando ignora se o cliente tem assinatura ativa/trial e avalia só `email_verified`. Ver [Erros comuns](#erros-comuns--pontos-de-atenção).
-</Warning>
-
-### Management command `fix_active_onboarding` (`app/client/management/commands/fix_active_onboarding.py`)
-
-Correção manual (produção) para destravar clientes ativos presos no `OnboardingGuard` do frontend. Roda em **dry-run por padrão**; `--apply` grava de fato. Marca `onboarding_step = 5` e, se existir `OnboardingSession`, fecha (`completed_at = now()`, `current_step = 'done'`). Filtros: `--email`, `--client-id`, `--created-before YYYY-MM-DD`, `--with-subscription` (só `ACTIVE`/`TRIAL`), `--mark-skipped`, `--batch-size` (padrão 200, processado em transações). Um erro em um cliente não derruba o lote (captura exceção por cliente).
-
-### Suspensão por trial (`app.subscription.access`)
-
-MIG-399: a suspensão da geração ao expirar o teste grátis é um filtro de leitura (`com_direito_de_publicacao`) e não altera campos na tabela `Client`. O app `client` consome dois helpers de `app.subscription.access`:
-
-- **`anotar_suspenso_por_trial(queryset)`**: anota `suspenso_por_trial` (booleano) via subquery `Exists`, sem N+1, para uso na listagem `ListClientsView` (suportando o filtro `?suspenso_por_trial=1`) e no serializer `ClientSerializer`.
-- **`esta_suspenso_por_trial(client)`**: versão unitária para um único cliente, usada no detalhe e nos modais administrativos (`ClientSignaturePreferenceView` e `ClientMiggoAIWorkflowView`).
-
-## Erros comuns / pontos de atenção
-
-- **`check_trials` não verifica assinatura de verdade** — usa `getattr(client, 'current_subscription', None)`, atributo inexistente no model `Client` (`app/client/management/commands/check_trials.py:21`). O comentário no código ("O certo é verificar se ele possui uma assinatura") sugere que a intenção era outra; hoje o bloqueio depende só de `email_verified`.
-- **`app/client/utils.py` parece código morto** — `scrape_social_profile` e `analyze_profile_data` não são importados por nenhuma view/módulo do app `client` (a raspagem de fato usada é `app/client/instagram.py`, e o preenchimento de briefing é feito inline em `InstagramScrapeAndFillView`). Pode ser um remanescente de uma implementação anterior.
-- **`ClientMeta` sem `unique_together`** — múltiplas linhas para a mesma `(client, key)` podem existir; várias views dependem de `.last()` (mais recente) ou de deletar antes de criar para simular upsert.
-- **Divergência textual no admin** — `app/client/admin.py:21-24` descreve o `onboarding_step` até "4=Brandkit enviado (Completo)", mas o model tem uma etapa 5 ("Briefing preenchido") como a etapa de conclusão real.
-- **Senha temporária hardcoded** — `SendGenericPasswordView` usa a string literal `"Miggo@2026#!#"` (`app/client/views.py:1258`) como senha de reset, enviada por e-mail em texto plano.
-- **`OnboardingStatusView` e `InstagramScrapeAndFillView` engolem exceções amplamente** — vários blocos `try/except Exception` retornam fallback silencioso (ex.: `social_connected = False`, `is_complete` por fallback) sem propagar erro ao cliente da API; útil para resiliência, mas dificulta diagnosticar falhas de integração (Zernio, OpenAI) só pela resposta HTTP — é preciso olhar o log.
-- **Import não utilizado** — `views.py` importa `JWTAuthentication` de `app.account.views` (`app/client/views.py:13`) mas nenhuma view do arquivo define `authentication_classes` usando-o.
-
-## Relacionados
-
-<Columns cols={2}>
-  <Card title="Account" icon="user" href="/backend/apps/account">
-    `CustomUser`, autenticação e permissões (`IsManagementUser`, `IsAdminUser`) usadas neste app.
-  </Card>
-  <Card title="Onboarding" icon="list-checks" href="/backend/apps/onboarding">
-    `OnboardingSession`, etapas da esteira e serviços de pendência consumidos por `lifecycle.py` e `OnboardingStatusView`.
-  </Card>
-  <Card title="Subscription" icon="credit-card" href="/backend/apps/subscription">
-    `Subscription`/`plan_price` referenciados no cálculo de `lifecycle`, `trials` e no bloco `subscription` do `ClientSerializer`.
-  </Card>
-  <Card title="Brandkit" icon="palette" href="/backend/apps/brandkit">
-    `Brandkit`/`BrandLogo`/`BrandColor`, usados na predefinição de assinatura, no checklist de trials e no fluxo de logo a partir do Instagram.
-  </Card>
-</Columns>
+## Comandos
+
+| Comando | Para quê |
+|---|---|
+| `check_trials` | Cron que bloqueia clientes criados há mais de 7 dias sem e-mail verificado. |
+| `fix_active_onboarding` | Destrava clientes ativos presos no onboarding. Dry-run por padrão; `--apply` grava. |
+| `merge_client_accounts` | Consolida duas contas do mesmo cliente (`--origem`, `--destino`). Dry-run por padrão, com backup JSON antes de gravar. |
+
+Detalhes em [Comandos](/plataforma/comandos).
+
+## Onde fica no código
+
+| Caminho | Conteúdo |
+|---|---|
+| `app/client/models.py` | Models do app |
+| `app/client/views.py` | Endpoints de cliente, onboarding status, trials, predefinições, Instagram, materiais |
+| `app/client/lifecycle.py` | Etapa efetiva e `lifecycle` |
+| `app/client/trials.py` | Checklist e funil de trials |
+| `app/client/signature.py` | Assinatura automática e efetiva |
+| `app/client/instagram.py` | Cliente do Apify |
+| `app/client/brand_materials.py`, `tasks.py` | Materiais, propostas de briefing e `brand_knowledge` |
+
+Endpoints: veja a [Referência de API](/plataforma/api-referencia).

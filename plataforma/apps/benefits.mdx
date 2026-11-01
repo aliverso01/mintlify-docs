@@ -1,0 +1,61 @@
+---
+title: "Benefícios de parceiros"
+description: "Catálogo de vantagens de parceiros, submissão pelo cliente, moderação e paywall do app benefits."
+icon: "gift"
+---
+
+O app `benefits` mantém o catálogo de **benefícios de parceiros** oferecidos aos clientes Miggo. A mesma tabela tem duas origens:
+
+- **Oficial** — cadastrado pela equipe no `/admin`. Nasce aprovado.
+- **Submetido pelo cliente** — o cliente indica um parceiro (normalmente o próprio negócio). Nasce `PENDING` e só entra no catálogo depois da moderação. Um por cliente.
+
+Endpoints: veja a [Referência de API](/plataforma/api-referencia) (grupos *Benefícios* e *Benefícios - Admin*), sob `/api/v1/benefits/`.
+
+## Model
+
+| Model | Papel |
+|---|---|
+| `Benefit` | Parceiro (`partner_name`, `category`, `region`, `relationship`), oferta (`title`, `advantage`, `partner_description`), resgate (`redemption_instructions`, `link`, `coupon_code`), visual (`logo`, `highlight_color`), origem (`submitted_by`, vazio = oficial) e moderação (`status`, `rejection_reason`, `reviewed_at`, `active`). |
+
+Choices de `category`, `region` e `relationship` ficam em `models.py` e são expostas em `GET /api/v1/benefits/options/` para montar os filtros e o formulário.
+
+## Ciclo de vida
+
+| Status | Significado |
+|---|---|
+| `PENDING` | Submissão do cliente aguardando moderação. |
+| `APPROVED` | Visível no catálogo, se `active=True`. |
+| `REJECTED` | Recusado, com `rejection_reason` devolvido ao cliente. O cliente pode reenviar. |
+
+`active=False` tira um benefício aprovado do ar (parceria encerrada) sem transformá-lo em recusado. O catálogo lê sempre `APPROVED` + `active=True`.
+
+A moderação é `POST /api/v1/benefits/admin/<id>/moderate/` com `{"action": "approve"}` ou `{"action": "reject", "reason": "..."}`.
+
+## Paywall
+
+O resgate é exclusivo de pagante ativo, decidido por `e_pagante_ativo` do app [`subscription`](/plataforma/apps/subscription). Trial não é pagante.
+
+| Rota | Não pagante |
+|---|---|
+| `GET /api/v1/benefits/` (catálogo) | Recebe os cards **sem** as chaves `redemption_instructions`, `link` e `coupon_code` (`CAMPOS_DE_RESGATE`). |
+| `POST /api/v1/benefits/submit/` | `403`. |
+| `GET /api/v1/benefits/mine/` | Vê a própria submissão completa; `can_submit` é falso. |
+
+- As chaves são **omitidas**, não esvaziadas: o front mostra o cadeado pela ausência da chave, já que campo vazio é indistinguível de parceiro sem cupom.
+- O corte é no serializer, não na tela, para o cupom não aparecer na resposta da API.
+- `pagante_ativo` é resolvido uma vez por requisição e passado no contexto do serializer. Contexto sem a chave é tratado como não pagante.
+- `can_submit` = pagante **e** (nunca enviou **ou** foi recusado).
+
+## Permissões
+
+- Catálogo, opções, submissão e `mine`: usuário autenticado.
+- Rotas `admin/`: usuário de gestão com o módulo `beneficios` (`IsManagementUser` + `TemModulo('beneficios')`).
+
+## Onde fica no código
+
+| Caminho | Conteúdo |
+|---|---|
+| `app/benefits/models.py` | `Benefit` e choices. |
+| `app/benefits/views.py` | Catálogo, submissão, `mine`, cadastro e moderação. |
+| `app/benefits/serializers.py` | `BenefitSerializer` com o corte de `CAMPOS_DE_RESGATE`. |
+| `app/benefits/tests_paywall.py` | Testes do paywall. |

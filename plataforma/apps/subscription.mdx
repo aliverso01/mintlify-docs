@@ -1,659 +1,108 @@
 ---
-title: "Subscription"
-description: "Planos, assinaturas, faturas e integração com Stripe/Asaas no backend-miggo"
+title: "Assinaturas e cobrança"
+description: "Planos, assinaturas, faturas e a sincronização com Stripe e Asaas no app subscription."
 icon: "credit-card"
 ---
 
-## Responsabilidade
+O app `subscription` é o núcleo de cobrança: modela planos, assinaturas e faturas, decide quem pode publicar e quem é pagante, e mantém a base local espelhada com **Stripe** e **Asaas**. O processamento dos webhooks dos dois gateways vive no app `webhooks` (veja [Webhooks](/plataforma/guias/webhooks)), mas grava nos models daqui.
 
-O app `app/subscription` é o núcleo de cobrança da Miggo: modela planos (`Plan`/`PlanPrice`/`PlanFeature`/`PlanMeta`), assinaturas de cliente (`Subscription`/`SubscriptionMeta`) e faturas (`Invoice`), e concentra toda a lógica de negócio de ciclo de vida — checkout, trial, cancelamento com fidelidade, troca de plano, sincronização/reconciliação com **Stripe** e **Asaas**, dashboard financeiro e as rotinas cron de dunning/expiração. Os arquivos `stripe_gateway.py` e `asaas_gateway.py` são a camada única de acesso a cada gateway (`app/subscription/stripe_gateway.py:1-17`, `app/subscription/asaas_gateway.py:1-13`); `fidelity.py` isola as regras de permanência mínima; `cron.py` reúne as rotinas agendadas chamadas pelos management commands.
+Endpoints: veja a [Referência de API](/plataforma/api-referencia) (grupos *Assinaturas* e *Planos*).
 
-<Note>
-O processamento de webhooks da Stripe em tempo real **não vive neste app** — fica em `app.webhooks.views.webhook_stripe` (`app/webhooks/views.py:62`), montado em `core/urls.py:47`. Existe uma `WebhookView` dentro de `app/subscription/views.py:865-870`, mas é um stub morto (ver seção de pontos de atenção). Veja <a href="/backend/apps/webhooks">backend/apps/webhooks</a>.
-</Note>
+## Models principais
 
-## Arquivos
-
-| Arquivo | Responsabilidade |
+| Model | Papel |
 |---|---|
-| `app/subscription/models.py` | Modelos: `Plan`, `PlanFeature`, `PlanPrice`, `PlanMeta`, `Subscription`, `SubscriptionMeta`, `Invoice`, `SyncJob`, `StripeEvent`. |
-| `app/subscription/serializers.py` | Serializers DRF para os modelos acima, incluindo campos calculados (fidelidade, cancelamento agendado). |
-| `app/subscription/views.py` | ~3400 linhas: CRUDs genéricos de plano/preço/assinatura/fatura + endpoints de negócio (checkout, portal, trial, cancelamento, sincronização, board de planos, dashboard financeiro, deduplicação). |
-| `app/subscription/urls.py` | Roteamento do app, montado em `/api/v1/subscription/` (`core/urls.py:37`). |
-| `app/subscription/admin.py` | Registro simples no Django Admin de todos os modelos; `SyncJobAdmin` customizado com `list_display`/`list_filter`. |
-| `app/subscription/apps.py` | `AppConfig` padrão (`app.subscription`). |
-| `app/subscription/stripe_gateway.py` | Camada única de acesso à Stripe: configuração de API key, mapas de status, resolução de Customer/Client/PlanPrice, espelhamento de `Subscription`/`Invoice`, operações de checkout/portal/cancelamento. |
-| `app/subscription/asaas_gateway.py` | Equivalente ao `stripe_gateway` para o Asaas: chamada HTTP, mapas de status, espelhamento de pagamento em `Invoice`. |
-| `app/subscription/access.py` | **Ponto único** de duas perguntas sobre assinatura: `pode_publicar(client)` (direito de entrega, MIG-394), `com_direito_de_publicacao(queryset)` (a mesma pergunta para um conjunto, MIG-399) e `e_pagante_ativo(client)` (direito de pagante, MIG-387); mais `anotar_suspenso_por_trial` e `esta_suspenso_por_trial` (suspensão por fim de teste, MIG-399). Ver [Direito de entrega x direito de pagante](#direito-de-entrega-x-direito-de-pagante-access-py). |
-| `app/subscription/fidelity.py` | Regras de permanência mínima (fidelidade): cálculo do fim do compromisso, mensalidades restantes, data de encerramento de cancelamento. |
-| `app/subscription/cron.py` | Rotinas agendadas: aviso de trial acabando, expiração de trial, dunning de faturas, suspensão por inadimplência, reconciliação Stripe/Asaas. |
-| `app/subscription/management/commands/check_invoices.py` | Management command que roda `cron.check_invoices()`. |
-| `app/subscription/management/commands/check_subscriptions.py` | Roda `cron.check_subscriptions()`. |
-| `app/subscription/management/commands/expire_trials.py` | Roda `cron.expire_trials()`. |
-| `app/subscription/management/commands/notify_trial_ending.py` | Roda `cron.notify_trial_ending()`. |
-| `app/subscription/management/commands/restore_lost_trials.py` | Comando pontual de correção de incidente (recria 6 trials perdidos em ago/2026). |
-| `app/subscription/management/commands/sync_asaas_billing.py` | Roda `cron.sync_asaas_billing()`. |
-| `app/subscription/management/commands/sync_stripe_billing.py` | Roda `cron.sync_stripe_billing()`. |
+| `Plan`, `PlanPrice`, `PlanFeature` | Plano vendido, seus preços (intervalo, moeda, gateway, fidelidade) e a lista de features exibida. |
+| `PlanMeta` | Chave/valor por plano. Ex.: `max_<formato>_month`, o limite mensal de posts por formato lido pelo app [`agenda`](/plataforma/apps/agenda). |
+| `Subscription` | Assinatura de um `Client` a um `PlanPrice`, com `status`, `start_date`, `expires_at` e `trial`. |
+| `SubscriptionMeta` | Chave/valor por assinatura (`stripe_subscription_id`, `asaas_subscription_id`, `cancel_at`, `status_reason`…). Única por `(subscription, key)`. |
+| `Invoice` | Fatura local, espelho de uma fatura Stripe ou de um pagamento Asaas (id com prefixo `asaas_`). |
+| `BillingIdentity` | Como o gateway chama o cliente: `(gateway, kind, value)` com `customer_id`, `subscription_id`, `payment_id`, `email` ou `documento`. Um mesmo id nunca aponta para dois clientes. |
+| `OrphanCharge` | Cobrança ou assinatura que existe no gateway e não achou dono localmente. Fica `PENDING` na fila de conciliação até alguém resolver ou ignorar. |
+| `StripeEvent`, `AsaasEvent` | Eventos de webhook já processados. O `event_id` único torna o reenvio um no-op. |
+| `SyncJob` | Execução assíncrona da sincronização manual (`PENDING → RUNNING → DONE/FAILED`). |
 
-## Modelos
+## Status da assinatura
 
-### Plan — `app/subscription/models.py:6`
-
-| Campo | Tipo | Obrigatório | Default/choices | Descrição |
-|---|---|---|---|---|
-| `name` | `CharField(100)` | Sim | — | Nome do plano. |
-| `stripe_product_id` | `CharField(100)` | Não | `blank=True, null=True` | Id do Product na Stripe; usado para resolver `PlanPrice` quando o `price_id` não bate direto. |
-
-Sem `Meta` customizado. `__str__` retorna `name` (`app/subscription/models.py:10-11`).
-
-### PlanFeature — `app/subscription/models.py:13`
-
-| Campo | Tipo | Obrigatório | Descrição |
-|---|---|---|---|
-| `plan` | `ForeignKey(Plan, CASCADE)` | Sim | Plano ao qual a feature pertence. |
-| `feature` | `CharField(255)` | Sim | Texto da feature (ex.: item de lista no card de plano). |
-| `order` | `IntegerField` | Sim | Ordem de exibição. |
-
-`__str__`: `"{plan.name} - {order} - {feature}"` (`app/subscription/models.py:18-19`).
-
-### PlanPrice — `app/subscription/models.py:21`
-
-| Campo | Tipo | Obrigatório | Default/choices | Descrição |
-|---|---|---|---|---|
-| `plan` | `ForeignKey(Plan, CASCADE)` | Sim | — | Plano ao qual o preço pertence. |
-| `price` | `DecimalField(10,2)` | Sim | — | Valor cobrado. |
-| `currency` | `CharField(3)` | Sim | — | Moeda (ex. `BRL`). |
-| `interval` | `CharField(20)` | Sim | — | Texto livre (ex. `mensal`, `Trimestral`, `Semestral`) — **não** é fonte de regra de cobrança (ver `fidelity.py:15`). |
-| `fidelity` | `CharField(20, choices)` | Não | `none` / `3_months` / `6_months` / `12_months`, default `none` | Permanência mínima em mensalidades. |
-| `payment_gateway` | `CharField(20, choices)` | Não | `stripe` / `asaas`, default `stripe` | Gateway responsável pela cobrança deste preço. |
-| `stripe_price_id` | `CharField(100)` | Não | `blank=True, null=True` | Id do Price na Stripe (para Asaas, às vezes usado para guardar o id externo da assinatura). |
-| `visible` | `BooleanField` | Não | `True` | Se aparece nas listagens públicas (`PlanPriceListView`/`PlanPriceRetrieveView` filtram por `visible=True`). |
-
-`__str__`: `"{plan.name} {interval} {currency} {price}"` (`app/subscription/models.py:44-45`).
-
-### PlanMeta — `app/subscription/models.py:47`
-
-| Campo | Tipo | Obrigatório | Descrição |
-|---|---|---|---|
-| `plan` | `ForeignKey(Plan, CASCADE)` | Sim | Plano. |
-| `key` | `CharField(255)` | Sim | Chave livre (par chave/valor genérico). |
-| `value` | `CharField(255)` | Sim | Valor associado à chave. |
-
-`__str__`: `"{plan.name} {key} {value}"` (`app/subscription/models.py:52-53`). É um par chave-valor genérico por plano — usado, por exemplo, por `app/agenda/views.py:133-140` para limitar a quantidade de posts por formato/mês: chave no padrão `max_{format_slug}_month` (ex.: `max_reels_month`), lido com `PlanMeta.objects.filter(plan=plan, key=meta_key).first()` e comparado contra a contagem de posts/sugestões do mês corrente. Não foi encontrada, nos arquivos lidos, uma lista fechada/documentada de todas as chaves possíveis — trate como convenção livre por integração consumidora.
-
-### Subscription — `app/subscription/models.py:68`
-
-| Campo | Tipo | Obrigatório | Default/choices | Descrição |
-|---|---|---|---|---|
-| `client` | `ForeignKey(Client, CASCADE)` | Sim | — | Cliente dono da assinatura. |
-| `subscription_id` | `CharField(100)` | Não | `blank=True, null=True, unique=True` | Id externo: `sub_...` da Stripe, `TRIAL-...` para trial local, ou `stripe:<id>`/`asaas:<id>` quando criado por sincronização. |
-| `plan_price` | `ForeignKey(PlanPrice, CASCADE)` | Sim | — | Preço/plano contratado. |
-| `start_date` | `DateTimeField` | — | `auto_now_add=True` | Data de início (setada na criação; não pode ser sobrescrita no `create()`). |
-| `end_date` | `DateTimeField` | Sim | — | Fim do período pago atual. |
-| `expires_at` | `DateTimeField` | Sim | — | Data de expiração de acesso (normalmente igual a `end_date`). |
-| `trial` | `BooleanField` | Não | `False` | Se está/esteve em período de teste. |
-| `status` | `CharField(20, choices)` | Não | ver tabela de status abaixo, default `ACTIVE` | Estado atual do ciclo de vida. |
-
-`__str__`: `"{client.name} {plan_price.plan.name}"` (`app/subscription/models.py:79-80`). Sem `Meta` customizado (sem `ordering`/`constraints`).
-
-**Status possíveis** (`subscription_status`, `app/subscription/models.py:56-66`):
-
-| Status | Significado |
+| Status | Quem move |
 |---|---|
-| `ACTIVE` | Assinatura paga e vigente. |
-| `TRIAL` | Em período de teste (com ou sem cartão). |
-| `PENDING` | Checkout criado, pagamento ainda não confirmado pela Stripe. |
-| `UNPAID` | Cobrança falhou e está em retentativa (`past_due`/`unpaid` na Stripe). |
-| `PAUSED` | Assinatura pausada (mapeado do status `paused` da Stripe). |
-| `EXPIRED` | Trial vencido sem conversão, ou assinatura suspensa após esgotar a carência. |
-| `CANCELLED` | Cancelada (imediatamente ou pelo webhook `subscription.deleted`). |
+| `PENDING` | Checkout criado e ainda não pago; `incomplete` na Stripe. |
+| `TRIAL` | Trial local sem cartão, ou `trialing` na Stripe. |
+| `ACTIVE` | Só o espelhamento da Stripe/Asaas (webhook ou sync). As views de checkout nunca ativam direto. |
+| `UNPAID` | `past_due`/`unpaid` no gateway. Mantém acesso por `BILLING_GRACE_DAYS` (default 5). |
+| `PAUSED` | `paused` na Stripe. |
+| `EXPIRED` | `expire_trials` (trial vencido) ou `check_subscriptions` (fim da carência, ou `ACTIVE` vencida sem assinatura no gateway). |
+| `CANCELLED` | Cancelamento imediato, ou `canceled` lido do gateway. |
 
-### SubscriptionMeta — `app/subscription/models.py:83`
+Status de fatura: `PAID`, `UNPAID`, `PENDING`, `OVERDUE`, `CANCELLED`.
 
-| Campo | Tipo | Obrigatório | Descrição |
-|---|---|---|---|
-| `subscription` | `ForeignKey(Subscription, CASCADE)` | Sim | Assinatura associada. |
-| `key` | `CharField(255)` | Sim | Chave (ex.: `stripe_subscription_id`, `asaas_subscription_id`, `cancel_at`, `trial_consumed`, `trial_ending_notified_at`, `dunning_notified_at`). |
-| `value` | `CharField(255)` | Sim | Valor. |
+## Quem pode publicar e quem paga
 
-**Meta**: `UniqueConstraint(fields=['subscription', 'key'], name='unique_subscription_meta_key')` (`app/subscription/models.py:88-95`) — o comentário no código explica que o fluxo de cobrança grava tudo com `update_or_create(subscription, key)`; uma duplicata quebraria o webhook com `MultipleObjectsReturned`. `__str__`: `"{subscription.client.name} {key} {value}"`.
+`app/subscription/access.py` é o **único** lugar que responde às duas perguntas. Não escreva `status__in=[...]` numa view nova.
 
-### Invoice — `app/subscription/models.py:110`
-
-| Campo | Tipo | Obrigatório | Default/choices | Descrição |
-|---|---|---|---|---|
-| `subscription` | `ForeignKey(Subscription, CASCADE)` | Sim | — | Assinatura faturada. |
-| `amount` | `DecimalField(10,2)` | Sim | — | Valor da fatura (pode ser negativo — nota de crédito). |
-| `currency` | `CharField(3)` | Não | `BRL` | Moeda. |
-| `status` | `CharField(20, choices)` | Não | ver tabela abaixo, default `PENDING` | Estado da fatura. |
-| `payment_date` | `DateTimeField` | Não | `null=True, blank=True` | Quando foi paga. |
-| `due_date` | `DateTimeField` | Não | `null=True, blank=True` | Vencimento (só existe em boleto/`send_invoice`; cobrança automática não define). |
-| `next_due_date` | `DateTimeField` | Não | `null=True, blank=True` | Próxima tentativa de cobrança (Stripe: `next_payment_attempt`). |
-| `stripe_invoice_id` | `CharField(100)` | Não | `blank=True, null=True, unique=True` | Id externo: `in_...` da Stripe, ou `asaas_<payment_id>` para faturas do Asaas (campo reaproveitado — só existe um id único no modelo, herdado de quando só havia Stripe). |
-| `created_at` | `DateTimeField` | Não | `default=timezone.now` | Data em que a fatura nasceu **no gateway** (não a data do INSERT local — sincronização sobrescreve com o `created` remoto). |
-| `updated_at` | `DateTimeField` | — | `auto_now=True` | Última atualização local. |
-
-**Status possíveis** (`invoice_status`, `app/subscription/models.py:101-108`):
-
-| Status | Significado |
-|---|---|
-| `PAID` | Paga. |
-| `UNPAID` | Não paga (mapeado de `uncollectible` na Stripe, ou `OVERDUE` no Asaas). |
-| `PENDING` | Aguardando pagamento. |
-| `OVERDUE` | Vencida e ainda em janela de retentativa (dunning) — marcada pelo `check_invoices`, não existe como status nativo da Stripe. |
-| `CANCELLED` | Cancelada/estornada/void. |
-
-`__str__`: `"{subscription.client.name} {amount} {currency} {status}"` (`app/subscription/models.py:122-123`).
-
-### SyncJob — `app/subscription/models.py:134`
-
-Representa uma execução assíncrona de sincronização de assinaturas/faturas (usado por `StartSubscriptionSyncJobView`/`SubscriptionSyncJobStatusView`).
-
-| Campo | Tipo | Obrigatório | Default/choices | Descrição |
-|---|---|---|---|---|
-| `client` | `ForeignKey(Client, SET_NULL)` | Não | `null=True, blank=True` | Cliente-alvo, ou `None` para sync de todos. |
-| `status` | `CharField(20, choices)` | Não | `PENDING`/`RUNNING`/`DONE`/`FAILED`, default `PENDING` | Estado do job. |
-| `result` | `JSONField` | Não | `null=True, blank=True` | Resultado da sincronização (mesmo payload de `SyncSubscriptionStatusInvoicesView`). |
-| `error` | `TextField` | Não | `null=True, blank=True` | Traceback em caso de falha. |
-| `created_at` / `started_at` / `finished_at` | `DateTimeField` | — | `default=timezone.now` (created) / `null=True, blank=True` (demais) | Timestamps do ciclo do job. |
-| `updated_at` | `DateTimeField` | — | `auto_now=True` | — |
-
-**Meta**: `ordering = ['-created_at']` (`app/subscription/models.py:149-150`). `__str__`: `"SyncJob #{id} {status}"`.
-
-### StripeEvent — `app/subscription/models.py:155`
-
-Registro de eventos de webhook já processados, para idempotência — a Stripe reenvia o mesmo evento em timeout/erro, e sem controle isso duplicava faturas e reprocessava ativações (comentário em `app/subscription/models.py:156-161`).
-
-| Campo | Tipo | Obrigatório | Descrição |
-|---|---|---|---|
-| `event_id` | `CharField(100)` | Sim | `unique=True` — id do evento na Stripe (`evt_...`). |
-| `type` | `CharField(100)` | Sim | Tipo do evento (ex. `invoice.paid`). |
-| `payload` | `JSONField` | Não | `null=True, blank=True`. |
-| `processed_at` | `DateTimeField` | Não | `default=timezone.now`. |
-| `error` | `TextField` | Não | `null=True, blank=True` — erro do processamento, se houver. |
-
-**Meta**: `ordering = ['-processed_at']`. `__str__`: `"{type} {event_id}"`.
-
-<Note>
-`StripeEvent` está definido neste app, mas não é referenciado em nenhuma view de `app/subscription/views.py` — quem grava/lê esse modelo (idempotência de webhook) é o `app.webhooks`, fora do escopo desta página.
-</Note>
-
-## Endpoints
-
-Todas as rotas abaixo são montadas sob o prefixo `/api/v1/subscription/` (`core/urls.py:37`, incluindo `app.subscription.urls`). A permissão padrão do projeto é `HasAPIKeyOrIsAuthenticated` (`core/settings.py:139-141`) — toda view sem `permission_classes` explícito herda esse padrão (autenticação por JWT **ou** API key de serviço); views com `permission_classes = [IsAdminUser]`/`[IsManagementUser]` restringem além disso, mesmo aceitando a API key (`app/account/permissions.py:46-60`).
-
-### CRUD genérico (Plan, PlanFeature, PlanPrice, PlanMeta)
-
-| Método | Rota | View | Permissão |
-|---|---|---|---|
-| POST | `/plan/create/` | `PlanCreateView` | `IsAdminUser` |
-| PUT/PATCH | `/plan/update/<pk>/` | `PlanUpdateView` | `IsAdminUser` |
-| GET | `/plan/list/` | `PlanListView` | padrão (exclui `"Plano Recovered"`, faz `prefetch_related` de preços/features/meta) |
-| GET | `/plan/retrieve/<pk>/` | `PlanRetrieveView` | padrão |
-| DELETE | `/plan/destroy/<pk>/` | `PlanDestroyView` | `IsAdminUser` |
-| POST | `/plan-feature/create/` | `PlanFeatureCreateView` | `IsAdminUser` |
-| PUT/PATCH | `/plan-feature/update/<pk>/` | `PlanFeatureUpdateView` | `IsAdminUser` |
-| GET | `/plan-feature/list/` | `PlanFeatureListView` | padrão |
-| GET | `/plan-feature/retrieve/<pk>/` | `PlanFeatureRetrieveView` | padrão |
-| DELETE | `/plan-feature/destroy/<pk>/` | `PlanFeatureDestroyView` | `IsAdminUser` |
-| POST | `/plan-price/create/` | `PlanPriceCreateView` | `IsAdminUser` |
-| PUT/PATCH | `/plan-price/update/<pk>/` | `PlanPriceUpdateView` | `IsAdminUser` |
-| GET | `/plan-price/list/` | `PlanPriceListView` | padrão (só `visible=True`) |
-| GET | `/plan-price/retrieve/<pk>/` | `PlanPriceRetrieveView` | padrão (só `visible=True`) |
-| DELETE | `/plan-price/destroy/<pk>/` | `PlanPriceDestroyView` | `IsAdminUser` |
-| POST | `/plan-meta/create/` | `PlanMetaCreateView` | `IsAdminUser` |
-| PUT/PATCH | `/plan-meta/update/<pk>/` | `PlanMetaUpdateView` | `IsAdminUser` |
-| GET | `/plan-meta/list/` | `PlanMetaListView` (filtro opcional `?plan_id=`) | padrão |
-| GET | `/plan-meta/retrieve/<pk>/` | `PlanMetaRetrieveView` | padrão |
-| DELETE | `/plan-meta/destroy/<pk>/` | `PlanMetaDestroyView` | `IsAdminUser` |
-
-### CRUD genérico (Subscription, Invoice)
-
-| Método | Rota | View | Permissão |
-|---|---|---|---|
-| POST | `/create/` | `SubscriptionCreateView` | padrão |
-| PUT/PATCH | `/update/<pk>/` | `SubscriptionUpdateView` | padrão |
-| GET | `/list/` | `SubscriptionListView` | padrão — cliente (`role='client'`) só vê as próprias; demais podem filtrar por `?client_id=` |
-| GET | `/retrieve/<client>/` | `SubscriptionRetrieveView` (`name='subscription-retrieve'`) | padrão — busca a assinatura mais recente do `client` |
-| DELETE | `/destroy/<pk>/` | `SubscriptionDestroyView` | `IsAdminUser` |
-| GET | `/invoice/list/` | `InvoiceListView` (filtros: `client_id`, `paid_only`, `subscription_status`, `start_date`, `end_date`, `plan_id`) | padrão |
-| GET | `/invoice/retrieve/<pk>/` | `InvoiceRetrieveView` (`lookup_field='client'`) | padrão |
-| DELETE | `/invoice/destroy/<pk>/` | `InvoiceDestroyView` | padrão |
-| POST | `/invoice/create/` | `InvoiceCreateView` | padrão |
-| PUT/PATCH | `/invoice/update/<pk>/` | `InvoiceUpdateView` | padrão |
-
-### Endpoints de negócio (Stripe/Asaas/gestão)
-
-| Método | Rota | View | Permissão |
-|---|---|---|---|
-| POST | `/create-subscription/` | `CreateSubscriptionView` | padrão |
-| POST | `/create-checkout-session/` | `CreateCheckoutSessionView` | padrão |
-| POST | `/billing-portal/` | `CreateBillingPortalSessionView` | padrão |
-| POST | `/start-trial/` | `CreateTrialSubscriptionView` | padrão |
-| POST | `/cancel/` | `CancelSubscriptionView` | padrão (checa dono da assinatura ou gestão dentro da view) |
-| POST | `/sync-stripe/` | `SyncStripeInvoicesView` | padrão |
-| POST | `/sync-subscription-status-invoices/` | `SyncSubscriptionStatusInvoicesView` | padrão |
-| POST | `/sync-subscription-status-invoices/async/` | `StartSubscriptionSyncJobView` | padrão |
-| GET | `/sync-subscription-status-invoices/status/<job_id>/` | `SubscriptionSyncJobStatusView` | padrão |
-| POST | `/resolve-unmatched/` | `ResolveUnmatchedCustomerView` | `IsAdminUser` |
-| GET | `/financial-stats/` | `FinancialDashboardView` | `IsAdminUser` |
-| GET | `/plan-price/board/` | `PlanPriceBoardView` | padrão |
-| POST | `/change-plan/` | `ChangeClientPlanView` | `IsAdminUser` |
-| GET | `/unlinked-active-subscriptions/` | `UnlinkedActiveSubscriptionsView` | `IsAdminUser` |
-| GET | `/duplicate-subscriptions/` | `DuplicateSubscriptionsView` | `IsAdminUser` |
-| POST | `/deduplicate-subscriptions/` | `DeduplicateSubscriptionsView` | `IsAdminUser` |
-| POST | `/plan-price/sync-gateway/<pk>/` | `PlanPriceGatewaySyncView` | `IsAdminUser` |
-| POST | `/plan-price/deduplicate/<pk>/` | `PlanPriceDeduplicateView` | `IsAdminUser` |
-| POST | `/plan-price/bulk-destroy/` | `PlanPriceBulkDestroyView` | `IsAdminUser` |
-
-<Warning>
-Nenhuma view de negócio deste app declara `permission_classes` fora as marcadas `IsAdminUser` na tabela acima — ou seja, `create-checkout-session`, `billing-portal`, `start-trial`, `cancel`, `sync-stripe` e `sync-subscription-status-invoices` aceitam qualquer requisição autenticada por JWT **ou** pela API key de serviço (`HasAPIKeyOrIsAuthenticated`, padrão global). A proteção contra operar a cobrança de outro cliente é feita **dentro** das views, via `_resolve_request_user()` (`app/subscription/views.py:602-632`) e checagens ad-hoc em `CancelSubscriptionView` (`app/subscription/views.py:976-985`) — não há `IsAuthenticated` explícito nessas rotas.
-</Warning>
-
-<AccordionGroup>
-
-<Accordion title="POST /create-checkout-session/ — CreateCheckoutSessionView">
-Cria a sessão de Checkout da Stripe para assinatura recorrente (`app/subscription/views.py:653-825`). Nunca ativa a assinatura — quem ativa é o webhook Stripe, depois de confirmado o pagamento.
-
-<ParamField path="plan_price_id" type="string|integer" required>ID interno do `PlanPrice` ou o `stripe_price_id` direto.</ParamField>
-<ParamField path="success_url" type="string">URL de retorno em caso de sucesso; default `{FRONTEND_URL}/subscription/success` (recebe `?session_id={CHECKOUT_SESSION_ID}` anexado).</ParamField>
-<ParamField path="cancel_url" type="string">URL de retorno em caso de cancelamento do checkout; default `{FRONTEND_URL}/subscription/cancel`.</ParamField>
-<ParamField path="user_id" type="integer">Só aceito de usuário de gestão — permite operar o checkout de outro usuário.</ParamField>
-<ParamField path="trial_days" type="integer">Dias de trial. Cliente comum tem o valor sujeito a `_clamp_trial_days` (limitado ao `STRIPE_TRIAL_DAYS` do ambiente); gestão pode definir livremente. Forçado a `0` se o cliente já consumiu o trial (checado por `SubscriptionMeta.trial_consumed` ou histórico de `Subscription.trial=True` fora de `PENDING`).</ParamField>
-
-<ResponseField name="checkout_url" type="string">URL da sessão de Checkout da Stripe.</ResponseField>
-<ResponseField name="session_id" type="string">Id da sessão (`cs_...`).</ResponseField>
-<ResponseField name="trial_days" type="integer">Dias de trial efetivamente aplicados.</ResponseField>
-<ResponseField name="subscription_id" type="integer">Id local da `Subscription` (criada/reaproveitada como `PENDING`).</ResponseField>
-
-Bloqueia (`400`) se o cliente já tem assinatura `ACTIVE` — nesse caso orienta usar troca de plano ou portal de cobrança. Reaproveita a assinatura local corrente em vez de deletar (evita perder faturas/metadados por cascade). `end_date`/`expires_at` são estimados localmente a partir do texto de `interval` (30/90/180/365 dias) até o webhook substituir pelos períodos reais da Stripe.
-</Accordion>
-
-<Accordion title="POST /billing-portal/ — CreateBillingPortalSessionView">
-Abre o portal de cobrança da Stripe (`app/subscription/views.py:828-862`) — troca de cartão, faturas, cancelamento self-service.
-
-<ParamField path="user_id" type="integer">Só de usuário de gestão, para operar em nome de outro usuário.</ParamField>
-<ParamField path="return_url" type="string">URL de retorno; default `{FRONTEND_URL}/billing`.</ParamField>
-
-<ResponseField name="portal_url" type="string">URL do Billing Portal Session da Stripe.</ResponseField>
-
-Retorna `400` se o usuário ainda não tem `stripe_customer_id` salvo em `UserMeta`.
-</Accordion>
-
-<Accordion title="POST /start-trial/ — CreateTrialSubscriptionView">
-Cria trial **sem cartão** (`app/subscription/views.py:874-944`). Não existe assinatura na Stripe; a conversão em pagamento é responsabilidade do cron `expire_trials`.
-
-<ParamField path="plan_price_id" type="string|integer" required>ID interno do `PlanPrice` ou `stripe_price_id`.</ParamField>
-<ParamField path="user_id" type="integer">Só de gestão.</ParamField>
-<ParamField path="trial_days" type="integer">Sujeito ao mesmo clamp de `CreateCheckoutSessionView`.</ParamField>
-
-<ResponseField name="subscription_id" type="integer" />
-<ResponseField name="trial_end" type="string">ISO 8601.</ResponseField>
-<ResponseField name="plan" type="string" />
-<ResponseField name="interval" type="string" />
-
-Bloqueia com `400` se o cliente já tem assinatura `ACTIVE`/`TRIAL` em vigor, ou se já usou trial alguma vez (`Subscription.objects.filter(client=client, trial=True).exists()`).
-</Accordion>
-
-<Accordion title="POST /cancel/ — CancelSubscriptionView">
-Cancela respeitando a fidelidade (`app/subscription/views.py:948-1088`). Detalhes completos na seção [Fidelidade](#fidelidade-e-cancelamento).
-
-<ParamField path="subscription_id" type="integer" required />
-<ParamField path="immediate" type="boolean">Encerra na hora, ignorando a fidelidade — só é honrado (`immediate=True` efetivo) se o requisitante for `is_management_user`; senão o cancelamento é sempre agendado e a resposta traz `warning`.</ParamField>
-
-<ResponseField name="message" type="string" />
-<ResponseField name="subscription_id" type="integer" />
-<ResponseField name="stripe_cancelled" type="boolean" />
-<ResponseField name="access_until" type="string">ISO 8601 — data em que o acesso realmente termina.</ResponseField>
-<ResponseField name="fidelity" type="object">`{months, active, ends_at, remaining_installments}`.</ResponseField>
-<ResponseField name="warning" type="string">Presente só se `immediate=true` foi pedido mas não aplicado (requisitante não é gestão).</ResponseField>
-<ResponseField name="stripe_warning" type="string">Presente se o cancelamento local funcionou mas a chamada à Stripe falhou.</ResponseField>
-
-Exige requisitante autenticado; só cancela se for o dono da assinatura ou usuário de gestão (`403` caso contrário). Retorna `400` se já `CANCELLED`.
-</Accordion>
-
-<Accordion title="POST /sync-stripe/ — SyncStripeInvoicesView">
-Sincronização legada (`app/subscription/views.py:350-599`): varre clientes locais, busca `Customer`s na Stripe por e-mail (incluindo `billing_email`), sincroniza assinaturas e faturas encontradas, e ao final lista assinaturas Stripe `active` sem cliente correspondente local (`unmatched_customers`) — usadas depois por `/resolve-unmatched/`.
-
-<ParamField path="client_id" type="integer">Restringe a sincronização a um único cliente; omitido, varre todos.</ParamField>
-
-<ResponseField name="clients_processed" type="integer" />
-<ResponseField name="new_subscriptions" type="integer" />
-<ResponseField name="new_invoices" type="integer" />
-<ResponseField name="updated_invoices" type="integer" />
-<ResponseField name="unmatched_customers" type="array">Cada item: `stripe_customer_id`, `email`, `name`, `subscription_id`, `subscription_status`, `created`.</ResponseField>
-
-Tem seus próprios mapas de status (`STRIPE_SUB_STATUS_MAP`/`STRIPE_INVOICE_STATUS_MAP`) **duplicados** e ligeiramente diferentes dos de `stripe_gateway.py` (ver Pontos de atenção).
-</Accordion>
-
-<Accordion title="POST /sync-subscription-status-invoices/ — SyncSubscriptionStatusInvoicesView (e variantes async)">
-Sincronização mais completa e atual (`app/subscription/views.py:1091-1959`), usada pela reconciliação manual da tela de gestão. Para cada cliente ativo: descobre `Customer`s Stripe por e-mail/`billing_email`, sincroniza cada assinatura remota encontrada (criando localmente quando necessário — resolve `PlanPrice` por `stripe_price_id`, depois por `product_id`+intervalo+moeda+valor, com múltiplos fallbacks registrados em `_last_plan_price_resolution_debug`), reconcilia todas as faturas (sempre, inclusive antigas — não só as mais novas que a última local) e, por fim, varre também as assinaturas locais que têm vínculo de gateway (`SubscriptionMeta`) mas não foram batidas no laço remoto (cobre Asaas, que não tem busca por e-mail aqui).
-
-<ParamField path="client_id" type="integer">Restringe a um cliente.</ParamField>
-
-<ResponseField name="message" type="string" />
-<ResponseField name="subscriptions_processed" type="integer" />
-<ResponseField name="subscriptions_changed" type="integer" />
-<ResponseField name="new_invoices_created_or_updated" type="integer" />
-<ResponseField name="errors_count" type="integer" />
-<ResponseField name="clients_with_activity" type="integer" />
-<ResponseField name="has_changes" type="boolean" />
-<ResponseField name="results" type="array">Detalhe por cliente, com `results` aninhado por assinatura (`status`: `synced`/`created_and_synced`/`not_created`/`not_found`/`skipped`/`error`).</ResponseField>
-
-**Variantes assíncronas** (mesma lógica, via `SyncJob`):
-- `POST /sync-subscription-status-invoices/async/` (`StartSubscriptionSyncJobView`) — cria um `SyncJob` (`PENDING`) e dispara `_run_subscription_sync_job` numa `threading.Thread` daemon; responde `202` imediatamente com `{job_id, status, message}`. A thread reabre e fecha sua própria conexão de banco (`connection.close()` no `finally`).
-- `GET /sync-subscription-status-invoices/status/<job_id>/` (`SubscriptionSyncJobStatusView`) — polling do resultado: `{job_id, status, finished, result, error, created_at, started_at, finished_at}`.
-</Accordion>
-
-<Accordion title="POST /change-plan/ — ChangeClientPlanView">
-Move uma assinatura para outro `PlanPrice` — **apenas local**, não altera a cobrança na Stripe/Asaas (`app/subscription/views.py:2124-2187`).
-
-<ParamField path="subscription_id" type="integer" required />
-<ParamField path="target_plan_price_id" type="integer" required />
-
-<ResponseField name="message" type="string" />
-<ResponseField name="subscription_id" type="integer" />
-<ResponseField name="from_plan_price_id" type="integer" />
-<ResponseField name="to_plan_price_id" type="integer" />
-
-Grava uma `Integration` de auditoria da troca. Sem efeito (200, mensagem "já está neste plano") se o destino for igual ao atual.
-</Accordion>
-
-<Accordion title="GET /plan-price/board/ — PlanPriceBoardView">
-Board de gestão de planos (drag-and-drop) — cada `PlanPrice` visível vira uma coluna com a lista de clientes/assinaturas vinculados (`app/subscription/views.py:2054-2121`). Status considerados: `ACTIVE`, `TRIAL`, `UNPAID`, `EXPIRED` (`BOARD_SUBSCRIPTION_STATUSES`, exclui `CANCELLED`). Cliente com assinatura vigente não aparece também pela `EXPIRED` (evita duplicar histórico).
-
-<ParamField path="include_hidden" type="string" default="false">`1`/`true` inclui também `PlanPrice` com `visible=False` como colunas.</ParamField>
-
-<ResponseField name="columns" type="array">Cada coluna: `plan_price_id`, `plan_id`, `plan_name`, `interval`, `price`, `currency`, `payment_gateway`, `clients_count`, `clients` (lista com `subscription_id`, `client_id`, `client_name`, `client_email`, `status`, `trial`).</ResponseField>
-</Accordion>
-
-<Accordion title="POST /plan-price/sync-gateway/<pk>/ — PlanPriceGatewaySyncView">
-Sincroniza um `PlanPrice` específico com o gateway dele (`app/subscription/views.py:2190-2742`). Stripe: casa por `stripe_price_id`; Asaas: casa por id externo se cadastrado, senão por valor+ciclo equivalentes.
-
-<ParamField path="force_move" type="boolean" default="false">Confirma mover assinaturas já vinculadas a outro `PlanPrice` (sem isso, viram `conflicts` só informativos).</ParamField>
-<ParamField path="include_inactive" type="boolean" default="true">Inclui assinaturas canceladas/expiradas do gateway (histórico); elas atualizam a assinatura local que já é delas mas nunca assumem cliente com assinatura vigente.</ParamField>
-<ParamField path="create_missing" type="boolean" default="true">Cria assinatura local quando o cliente existe no Miggo mas não tem assinatura para aquela cobrança.</ParamField>
-
-<ResponseField name="checked" type="integer" />
-<ResponseField name="created" type="integer" />
-<ResponseField name="created_details" type="array" />
-<ResponseField name="linked" type="integer" />
-<ResponseField name="moved" type="integer" />
-<ResponseField name="updated" type="integer" />
-<ResponseField name="skipped" type="array">Motivos: `cliente_nao_encontrado_no_miggo`, `multiplas_assinaturas_sem_vinculo`, `sem_assinatura_local_sem_vinculo`.</ResponseField>
-<ResponseField name="conflicts" type="array">Assinaturas vinculadas a outro `PlanPrice`; cada item tem `moved` (bool), `inactive_superseded` (bool — nunca move mesmo com `force_move`), `same_stripe_price_id`.</ResponseField>
-<ResponseField name="duplicate_plan_prices" type="array">Outros `PlanPrice` equivalentes que puxariam as mesmas assinaturas.</ResponseField>
-
-Erros de gateway retornam `502`; erro interno inesperado, `500`.
-</Accordion>
-
-<Accordion title="POST /plan-price/deduplicate/<pk>/ — PlanPriceDeduplicateView">
-Resolve duplicidade de vínculo entre `PlanPrice`s do mesmo gateway (`app/subscription/views.py:2836-2928`). O `pk` é mantido como canônico; para cada `PlanPrice` equivalente (mesmo `stripe_price_id`, ou no Asaas sem id externo, mesmo valor+intervalo entre os visíveis): move as assinaturas dele para o canônico, limpa o `stripe_price_id` do duplicado e marca `visible=False`. Nunca exclui um `PlanPrice` (evita cascade nas assinaturas).
-
-<ResponseField name="kept_plan_price_id" type="integer" />
-<ResponseField name="moved_subscriptions" type="integer" />
-<ResponseField name="cleared_plan_prices" type="array" />
-</Accordion>
-
-<Accordion title="POST /plan-price/bulk-destroy/ — PlanPriceBulkDestroyView">
-Exclusão em massa de `PlanPrice`s (`app/subscription/views.py:2743-2833`). Por padrão bloqueia (`409`) preços com assinaturas vinculadas, listando em `blocked`; `force=true` exclui mesmo assim, levando as assinaturas junto via cascade (grava `Integration` de auditoria antes de cada delete).
-
-<ParamField path="ids" type="array" required>Lista de ids de `PlanPrice`.</ParamField>
-<ParamField path="force" type="boolean" default="false" />
-
-<ResponseField name="deleted" type="array" />
-<ResponseField name="deleted_count" type="integer" />
-<ResponseField name="deleted_subscriptions" type="integer" />
-<ResponseField name="missing" type="array">Ids não encontrados.</ResponseField>
-<ResponseField name="blocked" type="array">Presente só quando bloqueado sem `force`.</ResponseField>
-</Accordion>
-
-<Accordion title="GET /duplicate-subscriptions/ e POST /deduplicate-subscriptions/">
-`DuplicateSubscriptionsView` (`app/subscription/views.py:3050-3142`) detecta grupos com mesmo `client`+`plan_price` e mais de uma `Subscription`, sugerindo qual manter (prioridade: vínculo de gateway > mais faturas > mais antiga).
-
-`DeduplicateSubscriptionsView` (`app/subscription/views.py:3145-3246`) resolve um grupo: mantém `keep_subscription_id`, migra/deduplica faturas das demais (`_invoice_dedupe_key` — por `stripe_invoice_id` quando existe, senão por valor+dia+status), preserva metadados de gateway ausentes na mantida, e exclui as assinaturas removidas.
-
-<ParamField path="keep_subscription_id" type="integer" required />
-<ParamField path="remove_subscription_ids" type="array" required />
-
-<ResponseField name="removed_subscriptions" type="integer" />
-<ResponseField name="invoices_migrated" type="integer" />
-<ResponseField name="invoices_deduped" type="integer" />
-<ResponseField name="metas_migrated" type="integer" />
-
-Retorna `400` se alguma assinatura a remover pertencer a outro cliente que não o da mantida.
-</Accordion>
-
-<Accordion title="GET /unlinked-active-subscriptions/ — UnlinkedActiveSubscriptionsView">
-Lista assinaturas (por padrão `ACTIVE`) sem nenhum vínculo de gateway — nem `SubscriptionMeta` (`stripe_subscription_id`/`asaas_subscription_id`) nem `subscription_id` com prefixo `stripe:`/`asaas:` (`app/subscription/views.py:2931-3026`). São exatamente as que `get_subscription_gateway` ignora — o cliente tem acesso mas não aparece no faturamento sincronizado.
-
-<ParamField path="status" type="string" default="ACTIVE">Lista separada por vírgula, ex. `ACTIVE,TRIAL`.</ParamField>
-
-<ResponseField name="count" type="integer" />
-<ResponseField name="subscriptions" type="array">Cada item traz `reasons` (`sem_metadado_de_gateway`, `planprice_sem_stripe_price_id`, `subscription_id_sem_prefixo_de_gateway`) e `has_local_invoices`.</ResponseField>
-</Accordion>
-
-<Accordion title="POST /resolve-unmatched/ — ResolveUnmatchedCustomerView">
-Resolve um `Customer` da Stripe não correspondido a nenhum cliente local, vindo de `SyncStripeInvoicesView` (`app/subscription/views.py:3332-3388`).
-
-<ParamField path="stripe_email" type="string" required />
-<ParamField path="action" type="string" required>`link` ou `ignore`.</ParamField>
-<ParamField path="client_id" type="integer">Obrigatório se `action=link`.</ParamField>
-
-`link`: grava/atualiza `billing_email` em `UserMeta` do cliente. `ignore`: grava `UserMeta` no primeiro superusuário com chave `ignore_stripe_email_{email}` — lista consultada por `SyncStripeInvoicesView` para não repetir o e-mail nos próximos `unmatched_customers`.
-</Accordion>
-
-<Accordion title="GET /financial-stats/ — FinancialDashboardView">
-Dashboard financeiro (`app/subscription/views.py:3249-3329`).
-
-<ResponseField name="current_month_revenue" type="number">Soma de `Invoice.status=PAID` do mês corrente, apurada por `payment_date` (fatura antiga sem `payment_date` cai por `created_at`).</ResponseField>
-<ResponseField name="total_active" type="integer">Contagem de `Subscription.status=ACTIVE`.</ResponseField>
-<ResponseField name="estimated_mrr" type="number">MRR estimado: soma dos preços das assinaturas ativas, normalizado para mensal por texto de `interval` (`/3` trimestral, `/6` semestral, `/12` anual).</ResponseField>
-<ResponseField name="mrr_history" type="array">Faturamento mensal pago dos últimos 12 meses, agrupado por `Coalesce(payment_date, created_at)` truncado por mês.</ResponseField>
-<ResponseField name="peak_mrr" type="object">Mês de maior faturamento no histórico acima.</ResponseField>
-<ResponseField name="recent_payments" type="array">Últimos 5 pagamentos: `client`, `amount`, `date`, `plan`.</ResponseField>
-</Accordion>
-
-</AccordionGroup>
-
-## Serializers
-
-Definidos em `app/subscription/serializers.py`.
-
-**`PlanPriceSerializer`** (`serializers.py:5-11`) — `ModelSerializer` de `PlanPrice`. Campos extras read-only: `plan_name` (`source='plan.name'`), `payment_gateway_display` (`source='get_payment_gateway_display'`).
-
-**`PlanFeatureSerializer`** (`serializers.py:13-16`) — `ModelSerializer` direto de `PlanFeature`, `fields=['id','feature','order','plan']`.
-
-**`PlanSerializer`** (`serializers.py:18-35`) — `ModelSerializer` de `Plan` com três `SerializerMethodField`:
-- `get_price` — serializa `obj.planprice_set.all()` (aproveita `prefetch_related` da view, 0 queries extra por plano).
-- `get_features` — serializa `obj.planfeature_set.all()`.
-- `get_plan_meta` — serializa `obj.planmeta_set.all()` via `PlanMetaSerializer`.
-
-**`PlanMetaSerializer`** (`serializers.py:37-40`) — `ModelSerializer`, `fields='__all__'`.
-
-**`SubscriptionMetaSerializer`** (`serializers.py:42-45`) — `ModelSerializer`, `fields='__all__'`.
-
-**`SubscriptionSerializer`** (`serializers.py:47-116`):
-- `plan_price` — `PlanPriceSerializer(read_only=True)` (nested, leitura).
-- `plan_price_id` — `PrimaryKeyRelatedField(source='plan_price', write_only=True, required=False)` para escrita.
-- `billing_email` — `SerializerMethodField`: lê `UserMeta` (`key='billing_email'`) do usuário do cliente.
-- `fidelity` — `SerializerMethodField`: chama `fidelity.resumo(obj)` e devolve `{months, active, ends_at, remaining_installments}`.
-- `cancel_at` — `SerializerMethodField`: lê `SubscriptionMeta` com `key=fidelity.META_CANCEL_AT`; usa o cache de `prefetch_related` (`subscriptionmeta_set`) quando disponível, para não gerar N+1 na listagem.
-- `read_only_fields = ['subscription_id']` — o campo é só exibido, nunca editável via payload.
-
-**`InvoiceSerializer`** (`serializers.py:118-139`) — `ModelSerializer` de `Invoice` com campos derivados read-only: `client` (`source='subscription.client_id'`), `client_name`, `plan_name`, `plan_interval` (todos via `source=` atravessando `subscription`).
-
-## Regras de negócio e funções
-
-### Planos e limites (PlanMeta)
-
-`PlanMeta` é um par chave/valor genérico por `Plan`. O único uso confirmado nos arquivos lidos é em `app/agenda/views.py:133-140`: para cada formato de post, monta a chave `max_{format_slug}_month` (ex. `max_reels_month`) e, se existir um `PlanMeta` com essa chave para o plano da assinatura ativa do cliente, usa `int(plan_meta.value)` como teto de posts/sugestões aprovadas naquele mês. Sem assinatura ativa, a checagem libera (`return True, None`). Não há, nos arquivos deste app, uma enumeração fechada de todas as chaves de `PlanMeta` em uso — trate como convenção livre entre apps consumidores.
-
-### Direito de entrega x direito de pagante (`access.py`)
-
-Duas perguntas diferentes sobre a mesma assinatura, respondidas **no mesmo módulo de propósito** — um segundo conceito de "ativo" espalhado por outro app divergiria com o tempo, e aí ou o paywall vaza ou corta quem paga.
-
-| Pergunta | Função | Nasceu em |
+| Status | `pode_publicar(client)` | `e_pagante_ativo(client)` |
 |---|---|---|
-| "esta conta pode **entregar conteúdo**?" | `pode_publicar(client) -> (bool, motivo)` | MIG-394 |
-| "**quais** destas contas podem entregar conteúdo?" | `com_direito_de_publicacao(queryset) -> queryset` | MIG-399 |
-| "esta conta **paga**?" | `e_pagante_ativo(client) -> bool` | MIG-387 |
+| `ACTIVE` | sim, sem olhar `expires_at` | sim |
+| `TRIAL` | sim, enquanto `expires_at >= agora` | **nunca** |
+| `UNPAID` | sim, dentro de `BILLING_GRACE_DAYS` | sim, dentro da carência |
+| demais, ou sem assinatura | não | não |
 
-**A diferença está no TRIAL, e é o ponto todo:** o teste grátis entrega conteúdo, mas não paga.
+- Basta **uma** assinatura do cliente dar direito: quem reassinou carrega a antiga cancelada ao lado.
+- `ACTIVE` ignora `expires_at` porque a data é a próxima cobrança, não validade; quem expira é o cron.
+- Cliente de agência (`client.agencia_id`) herda o direito da assinatura da agência.
+- `pode_publicar` devolve `(bool, motivo)`, com o motivo em texto de produto pronto para a tela.
 
-| Status | `pode_publicar` | `e_pagante_ativo` |
-|---|---|---|
-| `ACTIVE` | sim, **sem olhar `expires_at`** | sim, **sem olhar `expires_at`** |
-| `TRIAL` | sim, enquanto `expires_at >= agora` | **nunca**, mesmo em vigor |
-| `UNPAID` | sim, dentro de `BILLING_GRACE_DAYS` | sim, dentro de `BILLING_GRACE_DAYS` |
-| `PENDING`, `PAUSED`, `EXPIRED`, `CANCELLED` | não | não |
-| cliente sem assinatura, ou usuário sem `client` | não | não |
+Versões para queryset, sem N+1: `com_direito_de_publicacao(qs)` (usada pela esteira diária do MiggoAI), `filtrar_por_tipo_de_conta(qs, 'all'|'trial'|'paid')`, `anotar_tipo_de_conta(qs)` e `anotar_suspenso_por_trial(qs)`. O teste de paridade em `app/subscription/tests_access.py` garante que a versão unitária e a de queryset leem a regra igual.
 
-Detalhes que valem para as duas:
+## Fidelidade e cancelamento
 
-- **Basta UMA assinatura dar direito** (`Subscription.objects.filter(client=client)`, sem `order_by`): quem reassinou costuma carregar a antiga cancelada do lado, e olhar só a mais recente bloquearia quem pagou.
-- `ACTIVE` ignora `expires_at` porque a data de uma assinatura paga é a **próxima cobrança**, não um prazo de validade — quem move para `EXPIRED` é o `cron.check_subscriptions()`. Exigir data futura aqui cortaria cliente adimplente a cada atraso do cron ou do webhook de renovação.
-- A carência de `UNPAID` é a mesma que o `check_subscriptions` respeita (`BILLING_GRACE_DAYS`, default 5).
+`PlanPrice.fidelity` (`none`, `3_months`, `6_months`, `12_months`) define a permanência mínima. Cancelamento pedido dentro dela **não encerra na hora**: `fidelity.data_de_encerramento` calcula o fim do compromisso, a Stripe recebe `cancel_at` e a assinatura local guarda `SubscriptionMeta.cancel_at`. O status vira `CANCELLED` quando a Stripe encerra e o webhook ou o sync leem `canceled`. Cancelamento imediato muda o status na hora.
 
-`com_direito_de_publicacao(queryset)` é a versão-de-conjunto de `pode_publicar`: filtra um queryset de `Client` com um `Exists` sobre `Subscription`, traduzindo a **mesma** tabela de status acima para SQL (`STATUS_LIVRE`; `TRIAL` com `expires_at__gte=agora`; `UNPAID` com `expires_at__gt=agora - BILLING_GRACE_DAYS`). Existe para a esteira diária do MiggoAI perguntar o mesmo que a publicação pergunta sem trazer a carteira inteira para a memória — e, principalmente, sem uma segunda redação da regra. O `expires_at__gte` já descarta data nula (comparar com `NULL` é falso no SQL), que é o mesmo efeito do `assinatura.expires_at and ...` da versão unitária, e basta **uma** assinatura dar direito, como no laço de lá. Mudou a regra, muda nas duas: o teste de paridade em `app/subscription/tests_access.py` é o que segura as duas lendo igual. Primeiro consumidor: `GET /api/v1/client/list/` nos dois filtros da esteira (ver [client](/backend/apps/client)).
+## Sincronização com os gateways
 
-**Suspensão por trial (MIG-399).** `anotar_suspenso_por_trial(queryset)` anota `suspenso_por_trial` com `Exists` (sem N+1): a assinatura **mais recente do cliente (maior `id`)** é `EXPIRED` com `SubscriptionMeta(key='status_reason')` começando por `status_reason.MOTIVO_TRIAL_VENCIDO`, **e** o cliente está fora de `_assinaturas_com_direito()`. Quem converteu e depois caiu não conta como suspenso por trial. `esta_suspenso_por_trial(client)` é a versão unitária, com a mesma regra. A suspensão é filtro de leitura: nada é gravado em `Client`.
+- **Stripe** — `stripe_gateway.py` é a camada única: customer, checkout session (`payment_method_collection='always'`), billing portal, cancelamento e o espelhamento idempotente `sync_subscription_from_stripe` / `sync_invoice_from_stripe`. O mapa de status Stripe→local é `stripe_gateway.SUB_STATUS_MAP`.
+- **Asaas** — `asaas_gateway.py` lê pagamentos e assinaturas (`ASAAS_API_KEY`, `ASAAS_BASE_URL`) e espelha em `Invoice` com `sync_payment`. Recebe também webhook, deduplicado por `AsaasEvent`.
+- **Vínculo** — `billing_identity.resolver_cliente` acha o dono de um objeto do gateway por id, e-mail ou documento; cada caminho que vê um id novo o registra com `observar`.
+- **Estornos** — `refunds.aplicar` é a regra única para os dois gateways: nenhum deles muda o status da cobrança quando o dinheiro volta.
+- **Sync manual** — o botão de sincronizar enfileira um `SyncJob` na fila Celery `integracoes` (`tasks.py`), sem retry automático. Limites por `SYNCJOB_TASK_TIME_LIMIT` / `SYNCJOB_TASK_SOFT_TIME_LIMIT`.
 
-`pode_publicar` devolve `(bool, motivo)`; o `motivo` é **texto de produto** (`MOTIVO_SEM_ASSINATURA`, `MOTIVO_TRIAL_VENCIDO`, `MOTIVO_INADIMPLENTE`, `MOTIVO_EXPIRADA`), escolhido pela assinatura mais recente e exibido direto na tela. `e_pagante_ativo` devolve só o booleano — a mensagem do caso dele vive no app consumidor.
+Regras de reconciliação de fatura: o valor é o `total` da fatura Stripe; `due_date` fica nulo em cobrança automática; `OVERDUE` é preservado enquanto a Stripe reportar `open`; `created_at` recebe a data de criação no gateway.
 
-#### Primeiro consumidor: o paywall de benefícios (MIG-387)
+## Rotinas agendadas
 
-`app.benefits` chama `e_pagante_ativo` em três pontos (vitrine, submit e mine), e é o exemplo de como usar a função:
+Todas em `app/subscription/cron.py`, expostas como management commands e idempotentes. Agendamento: veja [Tarefas agendadas](/plataforma/tarefas-agendadas).
 
-- **`GET /api/v1/benefits/` (vitrine)** — para quem **não** é pagante ativo, o `BenefitSerializer` **omite** três chaves do JSON: `redemption_instructions`, `link` e `coupon_code` (`CAMPOS_DE_RESGATE`). Omitidas, **não vazias**: o front decide o cadeado pela **ausência** da chave, e campo vazio é indistinguível de parceiro que não tem cupom. O corte é no serializer e não na tela porque o critério fala em "retornado via API" — esconder no front deixaria o cupom visível na aba Network. O "é pagante?" é resolvido **uma vez por requisição**, no contexto da view (`pagante_ativo`), não por card. **Contexto ausente = não pagante** (falha fechada): serializer usado em caminho novo sem passar o contexto não vaza cupom por esquecimento.
-- **`POST /api/v1/benefits/submit/`** — não-pagante recebe `403` com `{"error": "Apenas clientes com plano ativo podem divulgar ofertas e serviços na nossa rede de membros. ..."}`. A checagem vem **antes** da de duplicidade; as recusas que já existiam (não é cliente, já enviou uma) seguem iguais.
-- **`GET /api/v1/benefits/mine/`** não corta campos — é a submissão do próprio cliente, conteúdo dele —, mas `can_submit` passou a ser `pagante E (nunca enviou OU foi recusado)`: a tela não promete o que o POST vai recusar.
-
-`/api/v1/benefits/options/` e as rotas `/api/v1/benefits/admin/*` ficaram inalteradas.
-
-### Ciclo de vida da assinatura
-
-Status e quem os move:
-
-| Status | Quem seta / quando |
+| Comando | O que faz |
 |---|---|
-| `PENDING` | `CreateCheckoutSessionView` ao criar/reaproveitar a assinatura local antes do checkout (`app/subscription/views.py:775`); mapeado de `incomplete` da Stripe em `stripe_gateway.SUB_STATUS_MAP`. |
-| `TRIAL` | `CreateTrialSubscriptionView` (trial local sem cartão); `stripe_gateway.sync_subscription_from_stripe` quando o status remoto é `trialing`. |
-| `ACTIVE` | Espelhado de `active` na Stripe via `sync_subscription_from_stripe`/reconciliação; nunca setado diretamente pelas views de checkout (quem ativa é sempre o espelhamento vindo da Stripe — webhook ou sync). |
-| `UNPAID` | Mapeado de `past_due`/`unpaid` da Stripe. |
-| `PAUSED` | Mapeado de `paused` da Stripe. |
-| `EXPIRED` | `cron.expire_trials()` (trial local vencido sem confirmação de conversão na Stripe); `cron.check_subscriptions()` (após esgotar `BILLING_GRACE_DAYS` em `UNPAID`, ou `ACTIVE` com `expires_at` no passado e sem assinatura Stripe vinculada); mapeado de `incomplete_expired` da Stripe. |
-| `CANCELLED` | `CancelSubscriptionView` com `immediate=true` (efetivo) ou sem `stripe_sub_id`; mapeado de `canceled` da Stripe (via sync/webhook). Cancelamento agendado (fidelidade) **não** muda o status na hora — só grava `SubscriptionMeta.cancel_at`; o status muda quando a Stripe efetivamente encerra e a reconciliação/webhook lê `canceled`. |
+| `notify_trial_ending` | Avisa trial local em D-3 e D-1 (in-app + flow ManyChat). |
+| `expire_trials` | Expira trial vencido depois de reconferir na Stripe. Notifica os admins e dispara o flow de fim de teste (`TRIAL_ENDED_FLOW_ID`; vazio = não envia). |
+| `check_invoices` | Marca `OVERDUE` a fatura vencida depois de reler o gateway, e avisa o cliente no máximo a cada 48h. |
+| `check_subscriptions` | Expira `UNPAID` após a carência e `ACTIVE` vencida sem assinatura no gateway. |
+| `sync_stripe_billing`, `sync_asaas_billing` | Reespelham status e faturas de toda assinatura vinculada. |
+| `scan_gateway_orphans` | Varredura reversa: lê o gateway, casa o que dá e grava o resto em `OrphanCharge`. |
+| `disconnect_inactive_zernio_accounts` | Desconecta do Zernio contas de trial expirado (≥15 dias) e inadimplentes (≥40 dias). Sem `--apply`, dry-run. |
+| `sync_stripe_refunds`, `reconcile_invoice_amounts` | Reaplicam estornos e o valor recebido das faturas (`--dry-run` disponível). |
+| `backfill_billing_identities`, `end_stripe_trials` | Manutenção pontual; só gravam com `--apply`. |
 
-`stripe_gateway.SUB_STATUS_MAP` (`app/subscription/stripe_gateway.py:41-50`) é a fonte única desse mapeamento para o fluxo "oficial" (`sync_subscription_from_stripe`, usado pelo cron de reconciliação e por `expire_trials`/`check_subscriptions`). Note que **três mapas de status Stripe→local coexistem no código**: o de `stripe_gateway.py`, o de `SyncStripeInvoicesView` e o de `SyncSubscriptionStatusInvoicesView`/`PlanPriceGatewaySyncView` — com divergências pontuais (ver Pontos de atenção).
+## Integrações
 
-### Integração Stripe (`stripe_gateway.py`)
+| Com | Como |
+|---|---|
+| [`webhooks`](/plataforma/guias/webhooks) | Recebe eventos Stripe e Asaas e chama o espelhamento daqui. |
+| [`notification`](/plataforma/apps/notification) | Avisos de cobrança e de trial. |
+| [`conversation`](/plataforma/apps/conversation) | Flows ManyChat de trial e o rastro na thread do cliente. |
+| [`benefits`](/plataforma/apps/benefits) | Paywall por `e_pagante_ativo`. |
+| [`agencia`](/plataforma/apps/agencia) | Direito dos clientes de agência. |
 
-- **`configure()`** (`app/subscription/stripe_gateway.py:94-97`) — define `stripe.api_key` a partir de `api_key()`, que resolve `STRIPE_PROD_API_KEY` (com fallback para `settings.STRIPE_API_KEY`) — loga um warning se as duas chaves estiverem definidas e forem diferentes, cenário em que checkout e sync podiam apontar para contas distintas.
-- **Customer**: `get_or_create_customer(user, client=None)` (`stripe_gateway.py:138-173`) — reaproveita `UserMeta.stripe_customer_id`; senão busca por e-mail na Stripe (`stripe.Customer.list`); senão cria (`stripe.Customer.create`) e persiste o id em `UserMeta`.
-- **Checkout Session**: `create_checkout_session(...)` (`stripe_gateway.py:463-502`) — `mode='subscription'`, `allow_promotion_codes=True`, `payment_method_collection='always'` (garante cartão salvo mesmo em trial de valor zero); com `trial_days` define `subscription_data.trial_period_days` e `trial_settings.end_behavior.missing_payment_method='cancel'`.
-- **Billing Portal**: `create_billing_portal_session(customer_id, return_url)` (`stripe_gateway.py:505-510`).
-- **Subscription**: `cancel_subscription(stripe_subscription_id, at_period_end=True, cancel_at=None)` (`stripe_gateway.py:513-529`) — três modos: `cancel_at` (epoch futuro, usado pela fidelidade), `at_period_end=True` (fim do período pago) ou cancelamento imediato.
-- **Espelhamento**: `sync_subscription_from_stripe(stripe_subscription, client=None)` (`stripe_gateway.py:258-363`) e `sync_invoice_from_stripe(stripe_invoice, subscription=None)` (`stripe_gateway.py:366-458`) — ambos idempotentes (`update_or_create`), chamados pelo webhook, pelo cron de reconciliação e pela sync manual, sempre convergindo ao mesmo estado.
-- **Resolução de vínculo**: `resolve_client(stripe_object)` (`stripe_gateway.py:176-216`) — `metadata.client_id` → `stripe_customer_id` em `UserMeta` → e-mail do cliente. `resolve_plan_price(stripe_subscription)` (`stripe_gateway.py:219-236`) — `metadata.plan_price_id` → `stripe_price_id` do primeiro item.
-- **Objetos Stripe envolvidos**: `Customer`, `checkout.Session`, `billing_portal.Session`, `Subscription`, `Invoice`, `Price`, `Product` (via `plan.stripe_product_id`).
+## Onde fica no código
 
-### Integração Asaas (`asaas_gateway.py`)
-
-Não existe webhook do Asaas configurado no projeto — o comentário no topo de `asaas_gateway.py:1-13` e de `cron.py:14-18` é explícito: o **único** caminho automático que atualiza uma cobrança do Asaas é o cron `sync_asaas_billing`.
-
-- **`get(path, params=None)`** (`asaas_gateway.py:56-69`) — GET genérico em `{ASAAS_BASE_URL}{path}` com header `access_token` (env `ASAAS_API_KEY`); nunca levanta exceção, devolve `(json, erro)`.
-- **`sync_payment(payment, subscription)`** (`asaas_gateway.py:83-114`) — espelha um pagamento do Asaas em `Invoice` (`stripe_invoice_id` prefixado `asaas_`, `ID_PREFIX`); devolve `(invoice, mudou)`.
-- **Endpoints REST chamados**: `GET /payments/{id}`, `GET /subscriptions/{id}`, `GET /payments?subscription=...`, `GET /subscriptions?status=...` (paginado por `offset`/`limit`), `GET /customers/{id}`.
-- **Mapas de status**: `PAYMENT_STATUS_MAP` (pagamento → `Invoice.status`) e `SUB_STATUS_MAP` (assinatura → `Subscription.status`), `asaas_gateway.py:27-44`.
-
-### Faturas: nascimento e reconciliação
-
-Uma `Invoice` nasce por um destes caminhos: (1) webhook Stripe (fora deste app); (2) `stripe_gateway.sync_invoice_from_stripe` durante `sync_stripe_billing`/`expire_trials`/`check_subscriptions`; (3) `SyncSubscriptionStatusInvoicesView`/`SyncStripeInvoicesView` na sincronização manual; (4) `asaas_gateway.sync_payment` durante `sync_asaas_billing`. Todos usam `update_or_create(stripe_invoice_id=..., defaults=...)`, então o mesmo evento externo nunca duplica fatura local.
-
-Regras importantes de reconciliação (documentadas em comentários no código):
-- `total` da fatura Stripe é usado como valor, não `amount_due` (que zera em nota de crédito por item removido no meio do ciclo) — `stripe_gateway.py:415-421`.
-- `due_date` fica `None` em cobrança automática (a Stripe não define) — preencher com `period_end` fazia toda fatura nascer "vencida hoje" e o dunning cobrar cliente em dia (`stripe_gateway.py:424-430`).
-- Uma vez marcada `OVERDUE` pelo webhook/cron, o status é preservado enquanto a Stripe continuar reportando `open` (evita oscilar `OVERDUE`↔`PENDING` a cada reconciliação) — `stripe_gateway.py:408-414`.
-- `created_at` é sobrescrito com a data real de criação **no gateway** (`created` da Stripe / `dateCreated` do Asaas), não a data do `INSERT` local — para o financeiro não somar receita no dia errado.
-
-**Dunning** — `cron.check_invoices()` (`app/subscription/cron.py:259-321`, agendado 1x/dia via `manage.py check_invoices`): pega faturas `PENDING` com `due_date` no passado, exceto de assinaturas `CANCELLED`/`EXPIRED`; **antes** de marcar `OVERDUE`, relê o status no gateway (`_status_no_gateway`, `cron.py:230-256` — Stripe via `stripe.Invoice.retrieve`, Asaas via `GET /payments/{id}`) para não cobrar quem já pagou; se a releitura falhar, não marca nada (fica para o próximo ciclo). Notifica o cliente (`payment_failed`) no máximo 1x a cada 48h (`_already_notified`).
-
-### Fidelidade e cancelamento
-
-`fidelity.py` implementa a permanência mínima: cobrança mensal, mas o plano vendido com compromisso de N mensalidades (`PlanPrice.fidelity`: `none`/`3_months`/`6_months`/`12_months`, via `MESES_POR_FIDELIDADE`). O comentário do módulo (`fidelity.py:1-16`) explica a base contratual: cancelar antes do fim não exonera as parcelas restantes (cláusula penal compensatória) — por isso o cancelamento pedido dentro da fidelidade **não encerra na hora**: fica agendado para o fim do compromisso.
-
-Funções principais:
-- `meses_de_fidelidade(plan_price)` — meses do compromisso (0 = sem fidelidade).
-- `fim_da_fidelidade(subscription)` — data em que o compromisso termina, contada a partir de `start_date` (ou de `expires_at` se veio de trial, já que trial não conta como mensalidade paga).
-- `dentro_da_fidelidade(subscription, referencia=None)` — bool.
-- `mensalidades_restantes(subscription, referencia=None)` — arredonda para cima (40 dias faltando = 2 cobranças).
-- `data_de_encerramento(subscription, referencia=None)` — dentro da fidelidade: fim do compromisso; fora: `end_date` normal.
-- `resumo(subscription, referencia=None)` — bloco usado pelo serializer e pela view de cancelamento: `{meses, fim, ativa, mensalidades_restantes}`.
-- `timestamp_stripe(data)` / `uma_hora_depois(data)` — utilitários para o `cancel_at` (epoch) enviado à Stripe, com 1h de folga após a última mensalidade prevista.
-- `prorrogar_fim_por_atraso(subscription)` (`fidelity.py:130-137`) — **função incompleta, assumida no próprio docstring**: fidelidade deveria contar mensalidades *pagas*, não tempo corrido, mas a correção "ainda não foi aplicada" — hoje só devolve `fim_da_fidelidade(subscription)` sem ajuste algum.
-
-Fluxo em `CancelSubscriptionView` (`app/subscription/views.py:948-1088`): calcula `fidelity.resumo()`; se não é `immediate`, calcula `encerra_em = fidelity.data_de_encerramento(...)` e, se dentro da fidelidade, `cancel_at = fidelity.timestamp_stripe(fidelity.uma_hora_depois(fim))`, passado a `stripe_gateway.cancel_subscription(..., cancel_at=cancel_at)`. Local: grava `SubscriptionMeta.cancel_at` (chave `fidelity.META_CANCEL_AT`) com a data agendada — o status da `Subscription` só muda para `CANCELLED` quando é imediato ou quando não há `stripe_sub_id`; no cancelamento agendado o status muda depois, pelo webhook/sync quando a Stripe reportar `canceled`.
-
-### Management commands (cron)
-
-Todos chamam funções de `app/subscription/cron.py`, são idempotentes e devolvem um resumo em dict logado. Agendados no Dokploy (comentários nos próprios arquivos):
-
-```bash
-./venv/Scripts/python.exe manage.py notify_trial_ending      # 1x/dia
-./venv/Scripts/python.exe manage.py expire_trials            # 1x/dia
-./venv/Scripts/python.exe manage.py check_invoices           # 1x/dia
-./venv/Scripts/python.exe manage.py check_subscriptions      # 1x/dia
-./venv/Scripts/python.exe manage.py sync_stripe_billing      # a cada 6h
-./venv/Scripts/python.exe manage.py sync_asaas_billing       # a cada 6h
-```
-
-- **`notify_trial_ending`** (`cron.py:132-198`) — avisa clientes em `TRIAL` local com `expires_at` batendo D-3 ou D-1 (`TRIAL_WARNING_DAYS = (3, 1)`); dispara notificação in-app + flow do ManyChat (`flow_ns='content20260818212324_989229'`); marca `SubscriptionMeta.trial_ending_notified_at` para não repetir em 20h. Só cobre trial local — trial com cartão já recebe aviso do evento Stripe `customer.subscription.trial_will_end`.
-- **`expire_trials`** (`cron.py:292-376`) — trials `TRIAL`/`trial=True` com `expires_at` vencido; antes de expirar, se houver `stripe_subscription_id` vinculado, relê na Stripe (a assinatura pode ter virado `active` sem o webhook chegar); só marca `EXPIRED` se não confirmar `ACTIVE`/`TRIAL` remotamente; falha de rede não expira ninguém (fica para o próximo ciclo). Na transição `TRIAL → EXPIRED` dispara também o **aviso de fim de teste no WhatsApp** (`_avisar_fim_do_teste`, abaixo). Ao expirar, registra o motivo em `SubscriptionMeta` (`MOTIVO_TRIAL_VENCIDO`) e **notifica os admins** via `_avisar_equipe_trial_expirado` (`cron.py:272`, `notify_admins` tipo `trial_expired`, só `role='admin'`) com nome do cliente, data de término e link para `/admin/clients?suspenso_por_trial=1`. Sem dedupe: sai uma vez porque a transição `TRIAL → EXPIRED` acontece uma vez. Falha nos disparos é logada e não reverte a expiração.
-- **`_avisar_fim_do_teste(subscription)`** (`cron.py:217-269`, MIG-453) — manda o flow do ManyChat de "seu teste terminou". Antes o disparo era um *delay* dentro do próprio flow, contando dias corridos desde o cadastro: trial postergado pelo Admin avisava na data errada. Agora o aviso nasce colado na transição `TRIAL → EXPIRED`, obedecendo o mesmo `expires_at` que corta o acesso — e, por ser transição de status, sai uma vez só.
-
-  O `flow_ns` vem da env **`TRIAL_ENDED_FLOW_ID`** (default `''`, ou seja, sem flow; lida na hora do disparo). Todo desfecho fica em `Integration` (`service='sendFlow Trial Ended'`, `method='CRON'`, `path='/cron/billing/expire_trials'`, helper `_log_trial_ended`):
-
-  - env vazia → `flow_nao_configurado` (`200`), mais um `warning` no log: o aviso **não sai**;
-  - cliente sem subscriber ManyChat → `sem_subscriber` (`200`) — não é erro, o aviso in-app já saiu;
-  - ManyChat aceitou → `flow_enviado` (`200`); recusou → `flow_falhou` (`502`).
-
-  O disparo também vira rastro na thread do cliente (`conversation_services.log_automation`, `automation='trial_ended'`) — sem isso a mensagem sai e não aparece em Conversas. **Falha de envio não desfaz a expiração**: o acesso já foi cortado, e a retentativa é a do próprio `_manychat_post`.
-
-- **`check_invoices`** — ver seção de faturas acima.
-- **`check_subscriptions`** (`cron.py:326-393`) — expira `UNPAID` que passou de `BILLING_GRACE_DAYS` (env, default 5, `core/settings.py:325`) e `ACTIVE`/`PENDING` com `expires_at` vencido; mesma lógica de reconfirmar na Stripe antes de cortar acesso.
-- **`sync_stripe_billing(limit=None)`** (`cron.py:398-439`) — rede de segurança: relê todas as `SubscriptionMeta.stripe_subscription_id` (sem teto por padrão — um `limit` fixo visitava sempre as mesmas assinaturas antigas) e reespelha status + últimas 12 faturas de cada.
-- **`sync_asaas_billing(limit=None)`** (`cron.py:442-497`) — único caminho automático do Asaas: relê `SubscriptionMeta.key='asaas_subscription_id'`, atualiza status/`nextDueDate` e sincroniza até 100 pagamentos por assinatura.
-- **`restore_lost_trials`** (`management/commands/restore_lost_trials.py`) — comando de correção pontual (não agendado), recria 6 trials perdidos no incidente de 26→27/08/2026 quando `PlanPrice`s recriados cascatearam a exclusão de `Subscription`/`Invoice`. Idempotente (pula cliente que já tem assinatura). `--dry-run` só mostra o que faria.
-  ```bash
-  ./venv/Scripts/python.exe manage.py restore_lost_trials --dry-run
-  ./venv/Scripts/python.exe manage.py restore_lost_trials
-  ```
-
-Classes de compatibilidade `SubscriptionCron`/`InvoiceCron` (`cron.py:504-512`) só delegam para as funções de módulo — mantidas por causa de referências antigas em `CRONJOBS`/scripts soltos.
-
-## Erros comuns / pontos de atenção
-
-- **`WebhookView` é código morto.** `app/subscription/views.py:865-870` define uma `APIView` com `authentication_classes = []` que apenas faz `print(data)` e responde `200` — não está em `app/subscription/urls.py` nem em `core/urls.py`, então nunca é chamada por nenhuma rota registrada. O webhook Stripe real é `app.webhooks.views.webhook_stripe` (`app/webhooks/views.py:62`, montado em `core/urls.py:47`), fora deste app.
-- **Três mapas de status Stripe→local divergentes e mantidos separadamente**: `stripe_gateway.SUB_STATUS_MAP`/`INVOICE_STATUS_MAP` (`stripe_gateway.py:41-59`), os atributos de classe `STRIPE_SUB_STATUS_MAP`/`STRIPE_INVOICE_STATUS_MAP` dentro de `SyncStripeInvoicesView` (`views.py:353-370`) e os mesmos nomes dentro de `SyncSubscriptionStatusInvoicesView`/`PlanPriceGatewaySyncView` (`views.py:1092-1108`, `2220-2228`). Todos mapeiam `incomplete`→algo, mas com valores diferentes: `stripe_gateway` mapeia `incomplete`→`PENDING`, enquanto os dois mapas dentro de `views.py` mapeiam `incomplete`→`EXPIRED`. Uma mesma assinatura Stripe pode terminar com status local diferente dependendo de qual caminho de sincronização foi executado por último.
-- **`SyncStripeInvoicesView` é uma implementação legada e paralela** a `SyncSubscriptionStatusInvoicesView`, com sua própria lógica de resolução de `PlanPrice`/reconciliação de fatura (mais simples, sem os fallbacks e sem a proteção "reconcilia sempre" que `SyncSubscriptionStatusInvoicesView` tem — comentário em `views.py:1154-1170` descreve exatamente o bug que essa versão mais nova corrigiu). As duas rotas continuam expostas (`/sync-stripe/` e `/sync-subscription-status-invoices/`) e nada nas urls indica qual é a preferida.
-- **Nenhuma rota de negócio deste app tem `IsAuthenticated` explícito** — `create-checkout-session`, `billing-portal`, `start-trial`, `cancel`, `sync-stripe`, `sync-subscription-status-invoices` (síncrono e assíncrono) herdam só `HasAPIKeyOrIsAuthenticated`. A defesa contra operar em nome de outro cliente é feita manualmente dentro de cada view (`_resolve_request_user`, checagens em `CancelSubscriptionView`) — qualquer nova view de negócio adicionada sem essa checagem herda a mesma superfície de risco.
-- **`CreateSubscriptionView`** (`views.py:248-348`, endpoint `/create-subscription/`) apaga (`subscription.delete()`) a assinatura corrente do cliente antes de criar a nova — diferente do padrão "reaproveitar" adotado em `CreateCheckoutSessionView`, então usar esta rota descarta o histórico/metadados da assinatura anterior por cascade.
-- **`stripe_gateway.get_or_create_customer`** cria o `Customer` na Stripe sem `metadata.miggo_client_id` quando `client` não é passado (`client.id if client else ''`) — chamadores que não passam `client` (nenhum encontrado nos arquivos lidos, mas a assinatura permite) deixariam o Customer sem esse vínculo, dificultando `resolve_client` depois.
-- **`Invoice.stripe_invoice_id`** é o único campo de id externo do modelo, reaproveitado com prefixo `asaas_` para pagamentos do Asaas (`asaas_gateway.ID_PREFIX`). Qualquer nova integração de gateway precisaria seguir a mesma convenção de prefixo — não há campo dedicado por gateway.
-- **Não crie um terceiro conceito de "ativo".** `status__in=['ACTIVE', 'TRIAL']` chegou a aparecer em pelo menos seis lugares, com variações (um incluía `UNPAID`, os outros não) — foi o que motivou o `access.py`. Precisa saber se a conta entrega conteúdo? `pode_publicar`. Se a conta paga? `e_pagante_ativo`. Um filtro de status escrito à mão numa view nova volta a divergir.
-- **`restore_lost_trials`** contém dados de um incidente específico (ids de cliente, datas, mapa de `PlanPrice`) hardcoded no próprio comando — é uma correção pontual, não um comando reutilizável; rodá-lo novamente é seguro (idempotente), mas não serve de modelo para futuras restaurações sem edição manual do arquivo.
-
-## Relacionados
-
-<Columns cols={2}>
-  <Card title="Webhooks" icon="webhook" href="/backend/apps/webhooks">
-    Processamento em tempo real dos eventos Stripe (`webhook_stripe`) que ativam/atualizam as assinaturas e faturas deste app.
-  </Card>
-  <Card title="Client" icon="user" href="/backend/apps/client">
-    Modelo `Client`, referenciado por `Subscription.client` e usado em toda a resolução de cliente ↔ gateway.
-  </Card>
-  <Card title="Account" icon="key" href="/backend/apps/account">
-    `UserMeta` (armazena `stripe_customer_id`, `billing_email`) e as permissões `IsAdminUser`/`IsManagementUser` usadas neste app.
-  </Card>
-</Columns>
+| Caminho | Conteúdo |
+|---|---|
+| `app/subscription/models.py` | Todos os models acima. |
+| `app/subscription/access.py` | `pode_publicar`, `e_pagante_ativo` e versões de queryset. |
+| `app/subscription/stripe_gateway.py`, `asaas_gateway.py` | Acesso aos gateways e espelhamento. |
+| `app/subscription/billing_identity.py`, `gateway_search.py` | Vínculo cliente ↔ gateway e busca por e-mail ou nome. |
+| `app/subscription/fidelity.py` | Permanência mínima. |
+| `app/subscription/cron.py`, `management/commands/` | Rotinas agendadas. |
+| `app/subscription/sync_jobs.py`, `tasks.py` | Sync manual em fila. |
+| `app/subscription/anomalies.py` | Classificação de cliente com mais de uma assinatura (cobrança dupla, dois gateways). |
