@@ -1,6 +1,6 @@
 ---
 title: "Convenções de código"
-description: "Regras que valem para os três repositórios: estilo, migrations, lint, encoding, segredos e fluxo de trabalho."
+description: "Regras que valem para os três repositórios: estilo, migrations, lint, encoding, segredos e contratos entre serviços."
 icon: "ruler"
 ---
 
@@ -31,8 +31,8 @@ Os repositórios têm histórico de **mojibake** (`Ã§`, `Ã£` no lugar de `ç
 | --- | --- |
 | Migrations | Toda alteração de model exige `makemigrations` + `migrate`. Não edite migrations já aplicadas em produção. |
 | Verificação antes de concluir | `./venv/Scripts/python.exe manage.py check` precisa passar. |
-| Testes | O banco de teste pode falhar por permissão no Postgres local. Quando `manage.py test` não conseguir criar o banco, valide com `manage.py check` mais um import isolado do módulo alterado. Veja [Testes](/backend/testes). |
-| Organização do app | Siga a anatomia já usada pelos apps existentes (models, serializers, views, urls, services). Veja [Estrutura](/backend/estrutura). |
+| Testes | Comportamento novo ou bug corrigido vem com teste. Veja [Testes da Plataforma](/plataforma/testes) e [Testes do MiggoAI](/miggoai/testes). |
+| Organização do app | Siga a anatomia já usada pelos apps existentes (models, serializers, views, urls, services). Veja [Estrutura](/plataforma/estrutura). |
 | Auditoria de chamadas externas | Toda chamada a terceiro deve registrar em `Integration`, de forma *best-effort* — falhar a auditoria nunca pode derrubar o fluxo real. |
 
 ## Frontend (React 19 + TypeScript)
@@ -43,7 +43,7 @@ Os repositórios têm histórico de **mojibake** (`Ã§`, `Ã£` no lugar de `ç
 | Lint obrigatório | `npm run lint` sem erros antes de concluir. |
 | Build verifica tipos | `npm run build` roda `tsc -b` antes do Vite — um build verde é a garantia de tipagem. |
 | Componentes | Funcionais com hooks. Reaproveite os componentes existentes antes de criar novos. |
-| Rotas por papel | Respeite a separação `/app` (cliente) e `/admin` (equipe). Veja [Roteamento](/frontend/roteamento). |
+| Rotas por papel | Respeite a separação `/app` (cliente) e `/admin` (equipe). Veja [Roteamento](/web/roteamento). |
 
 ## Checklist antes de considerar pronto
 
@@ -60,8 +60,8 @@ Os repositórios têm histórico de **mojibake** (`Ã§`, `Ã£` no lugar de `ç
   <Step title="Revisar">
     Para mudanças não triviais, passe uma revisão de código antes de fechar: correção primeiro, depois segurança, regressão, simplicidade e testes.
   </Step>
-  <Step title="Atualizar o board">
-    Mova o card no Jira e registre um comentário técnico do que foi feito.
+  <Step title="Abrir o PR">
+    Branch a partir da `develop`, um PR por repositório, contra a `develop`. Veja [Ambientes](/arquitetura/ambientes) para o caminho até a produção.
   </Step>
 </Steps>
 
@@ -75,20 +75,19 @@ Correção antes de estilo. Na ordem:
 4. **Simplicidade e reuso** — dá para usar o que já existe? Há duplicação?
 5. **Testes** — o caminho crítico está coberto?
 
-Reporte achados no formato `arquivo:linha` — problema — correção sugerida.
 
 ## Contratos entre repositórios
 
 Mudar o formato de uma resposta da API do backend quebra o frontend e possivelmente o MiggoAI. Antes de alterar um serializer ou uma rota:
 
-- Procure os consumidores no `frontend-miggo` (`src/services/`, `src/hooks/`).
-- Verifique se o MiggoAI depende do campo (`modules/miggo.py` no repositório do MiggoAI).
+- Procure os consumidores no Web app (`src/services/`, `src/hooks/`).
+- Verifique se o MiggoAI depende do campo (cliente da Plataforma em `apps/common/miggo_client.py` e serviços de `apps/clients` e `apps/posts` no MiggoAI).
 - Prefira adicionar campos a renomear ou remover; quando remover for inevitável, faça em duas etapas.
 
 ## Relacionados
 
 <Columns cols={2}>
-  <Card title="Ambientes" icon="layers" href="/arquitetura/ambientes">
+  <Card title="Ambientes" icon="globe" href="/arquitetura/ambientes">
     Como a mudança chega a homologação e produção.
   </Card>
   <Card title="Glossário" icon="book-a" href="/arquitetura/glossario">

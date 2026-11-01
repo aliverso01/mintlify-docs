@@ -8,11 +8,11 @@ Cinco fluxos explicam a maior parte do sistema. Cada etapa aponta para a página
 
 ## 1. Onboarding do cliente
 
-É o fluxo mais pesado do backend (`app/onboarding`, o maior app do projeto). Ele transforma um cadastro em um cliente com marca definida e calendário editorial pronto.
+É o fluxo mais pesado da Plataforma (`app/onboarding`, o maior app do projeto). Ele transforma um cadastro em um cliente com marca definida e calendário editorial pronto.
 
 ```mermaid
 flowchart LR
-    A["Cadastro / login"] --> B["Coleta de dados<br/>frontend: src/pages/Onboarding"]
+    A["Cadastro / login"] --> B["Coleta de dados<br/>Web app: src/pages/Onboarding"]
     B --> C["Raspagem do Instagram<br/>Apify"]
     C --> D["Análise da marca<br/>IA"]
     D --> E["Brandkit gerado<br/>cores, tom, identidade"]
@@ -20,61 +20,38 @@ flowchart LR
     F --> G["Aprovação via WhatsApp<br/>ManyChat"]
 ```
 
-- **Frontend**: passos em `src/pages/Onboarding/Steps/`, orquestrados pelo hook `useOnboarding` e pelo service `onboardingApi.ts`. Veja [Onboarding no frontend](/frontend/onboarding).
-- **Backend**: `app/onboarding/` (services, cron, clientes de API). Veja [Onboarding no backend](/backend/apps/onboarding).
+- **Web app**: passos em `src/pages/Onboarding/Steps/`, orquestrados pelo hook `useOnboarding` e pelo service `onboardingApi.ts`. Veja [Onboarding no Web app](/web/onboarding).
+- **Plataforma**: `app/onboarding/` (services, cron, clientes de API). Veja [Onboarding na Plataforma](/plataforma/apps/onboarding).
 - **Limites configuráveis**: `ONBOARDING_IG_MIN_POSTS` (mínimo de posts para analisar o perfil), `ONBOARDING_WEBSITE_BUDGET` (orçamento de leitura do site), `ONBOARDING_ANALYSIS_STALL` (detecção de análise travada).
 
 ## 2. Geração de conteúdo pelo MiggoAI
 
-```mermaid
-sequenceDiagram
-    participant BE as backend-miggo
-    participant AI as miggoai
-    participant OAI as OpenAI
+A Plataforma dispara a geração; o MiggoAI gera e entrega o resultado de volta na API da Plataforma. Há três gatilhos, todos atendidos pela mesma rodada de geração do MiggoAI (`apps/generations/services/rodada.py`):
 
-    BE->>AI: POST /api/token/ (usuário e senha)
-    AI-->>BE: access token JWT
-    BE->>AI: POST /api/generate/clients/sync/
-    BE->>AI: POST /api/generate/clients/workflow/ (enable_workflow)
-    BE->>AI: POST /api/generate/image/ { post_id }
-    AI-->>BE: job criado
-    AI->>BE: lê o card (Post) e os dados do cliente
-    AI->>OAI: título, imagem, legenda, hashtags
-    OAI-->>AI: conteúdo gerado
-    AI->>BE: devolve o post atualizado (status scheduled)
-    loop até success ou failed
-        BE->>AI: GET /api/generate/jobs/{id}/
-    end
-```
-
-O card nasce com status `pending` e volta como `scheduled`. Cliente da integração: `app/onboarding/miggoai.py`; workflows do lado da IA: [Workflows](/miggoai/workflows).
-
-<Warning>
-  O worker do MiggoAI **ignora clientes sem `enable_workflow=True`**. Se a geração "não acontece" para um cliente específico, essa flag é o primeiro lugar a checar.
-</Warning>
-
-### Geração diária no MiggoAI 2.0
-
-No `miggoai-2.0` a geração automática roda por um management command diário, sem worker nem `enable_workflow`. Quem decide se o cliente entra é a flag `Client.miggoai_workflow_enabled` do `backend-miggo`, ligada pelo admin em **Predefinições de Criação de Conteúdo** — somada, desde a MIG-399, ao direito de publicar: a listagem que alimenta a esteira devolve só quem pode entregar conteúdo agora (trial vencido sai e volta sozinho ao assinar). Ver [client](/backend/apps/client).
+| Gatilho | Quem chama | Endpoint no MiggoAI |
+| --- | --- | --- |
+| Grid do onboarding | Plataforma, ao concluir o onboarding | `POST /api/generations/grid/` (com `idempotency_key`) |
+| Rodada diária | tarefa agendada do MiggoAI | `manage.py generate_daily_contents` |
+| "Criar agora" e card avulso | Plataforma, a pedido do admin | `POST /api/generations/gerar-agora/`, `POST /api/generations/gerar-card/` |
 
 ```mermaid
 sequenceDiagram
-    participant CRON as Tarefa diária (Dokploy)
-    participant AI as miggoai-2.0
-    participant BE as backend-miggo
+    participant BE as Plataforma
+    participant AI as MiggoAI
     participant OAI as OpenAI
 
-    CRON->>AI: manage.py generate_daily_contents
-    AI->>BE: GET client/list/?miggoai_workflow_enabled=true (só elegíveis)
-    AI->>BE: GET editorial-calendar/list/ (dias de postagem do cliente)
-    AI->>BE: GET post/list/ (pending do 1º dia programado no trial, do 2º fora dele)
-    AI->>BE: PATCH post/update/{id} (processing)
+    BE->>AI: POST /api/generations/gerar-agora/ (Api-Key)
+    AI->>BE: GET client/list (só clientes elegíveis)
+    AI->>BE: GET editorial-calendar + post/list (cards pending na janela)
+    AI->>BE: PATCH post (processing)
     AI->>OAI: título, imagem, legenda, hashtags
-    AI->>BE: POST media/create + media-post/create
-    AI->>BE: PATCH post/update/{id} (scheduled + conteúdo)
+    AI->>BE: cria mídia e vincula ao post
+    AI->>BE: PATCH post (scheduled + conteúdo)
 ```
 
-Falha em qualquer passo devolve o card para `pending`. Detalhes em [Workflows](/miggoai/workflows).
+O card nasce `pending`, passa a `processing` enquanto é gerado e volta como `scheduled`. Falha em qualquer passo devolve o card para `pending`.
+
+Quem entra na rodada é decidido pela Plataforma: a flag `Client.miggoai_workflow_enabled`, ligada pelo admin, somada ao direito de publicar (trial vencido sai e volta sozinho ao assinar). Detalhes em [Gerar conteúdo no MiggoAI](/miggoai/guias/gerar-conteudo) e [Workflows](/miggoai/workflows).
 
 ## 3. Aprovação de conteúdo pelo WhatsApp
 
@@ -82,7 +59,7 @@ O cliente aprova ou pede ajuste no conteúdo por WhatsApp, através do ManyChat.
 
 | Peça | Onde fica |
 | --- | --- |
-| Engine do fluxo | `app/conversation/` — veja [Conversation](/backend/apps/conversation) |
+| Engine do fluxo | `app/conversation/` — veja [Conversation](/plataforma/apps/conversation) |
 | Webhook de entrada | `POST /webhooks/manychat/` |
 | Continuação do Dynamic Block | `POST /webhooks/manychat/dynamic-block/continue/` |
 | Flows configurados | `CONTENT_APPROVATION_FLOW_ID` (rede não conectada), `CONTENT_APPROVATION_CONNECTED_FLOW_ID` (rede conectada), `GRID_APPROVAL_FLOW_ID`, `DYNAMIC_FLOW_STARTER_FLOW_ID`, `TRIAL_ENDED_FLOW_ID` (fim do período de teste, disparado pelo cron `expire_trials`) |
@@ -104,7 +81,7 @@ flowchart LR
     S --> D["Dashboard e Histórico"]
 ```
 
-O Zernio também notifica a conexão de contas em `POST /webhooks/zernio/account/`. Detalhes em [Post](/backend/apps/post) e [Webhooks](/backend/apps/webhooks).
+O Zernio também notifica a conexão de contas em `POST /webhooks/zernio/account/`. Detalhes em [Posts](/plataforma/apps/post) e [Webhooks](/plataforma/guias/webhooks).
 
 ## 5. Assinatura e cobrança
 
@@ -122,7 +99,7 @@ flowchart TD
 - Limites durante o teste: `TRIAL_MEDIA_MAX_FILES`, além dos limites por plano.
 - Verificação periódica: `app.subscription.cron.SubscriptionCron.check_subscriptions` e `app.subscription.cron.InvoiceCron.check_invoices`, ambos a cada 30 segundos no runner local.
 
-Detalhes em [Subscription](/backend/apps/subscription) e [Tarefas agendadas](/backend/tarefas-agendadas).
+Detalhes em [Subscription](/plataforma/apps/subscription) e [Tarefas agendadas](/plataforma/tarefas-agendadas).
 
 ## Relacionados
 
@@ -130,7 +107,7 @@ Detalhes em [Subscription](/backend/apps/subscription) e [Tarefas agendadas](/ba
   <Card title="Visão geral" icon="network" href="/arquitetura/visao-geral">
     Quem é quem na arquitetura.
   </Card>
-  <Card title="Integrações externas" icon="share-2" href="/arquitetura/integracoes-externas">
+  <Card title="Integrações externas" icon="plug" href="/arquitetura/integracoes-externas">
     O papel de cada provedor citado aqui.
   </Card>
 </Columns>
