@@ -143,7 +143,7 @@ Revisão completa do briefing (dados básicos, público-alvo, tom de voz, produt
 
 Ao montar, se a fonte **não** foi `manual` (`session.brand_source !== 'manual'`), chama `onboardingApi.autofillReview(false)` → preenche com IA os campos em branco **sem avançar** (persiste, mas quem decide seguir é o usuário); em falha, cai para `getReview()` puro. Fonte manual nunca chama autofill — a pessoa escolheu preencher sozinha.
 
-- **Autosave:** salva sozinho conforme edita (`advance=false`), sem exigir rolar até o fim e clicar em salvar — evita perder o que já foi digitado.
+- **Autosave:** salva sozinho conforme edita (`advance=false`), sem exigir rolar até o fim e clicar em salvar.
 - **Continuar:** `onboardingApi.updateReview(data, true, 'review')`.
 
 </Accordion>
@@ -255,7 +255,7 @@ Dois caminhos distintos, ambos em `onboardingApi.resumeOnboarding(step?)` → `P
 1. **Chip do dashboard** (`/onboarding?step=<id>`): reabre exatamente aquela etapa; ao concluí-la, `resumeMode` faz o shell chamar `completeOnboarding()` e voltar para `/` — não empurra pelo resto da esteira.
 2. **Entrada crua em `/onboarding`** (sem `step`, sem `?continuar=1`, só no primeiro load): segue `resume_step` do servidor quando ele difere de `current_step` e está em `pending_steps` — cobre etapa que ficou para trás (ex.: confirmação de briefing adiada) sem reiniciar o fluxo a cada avanço subsequente.
 
-Tentar retomar uma etapa **já concluída** (via chip) devolve 400 do backend — não é uma porta para reescrever o que já foi aprovado.
+Tentar retomar uma etapa **já concluída** (via chip) devolve `400` do backend.
 
 ## Condição de conclusão
 

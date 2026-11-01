@@ -162,13 +162,6 @@ As rotas de conta respondem com `{"message": "..."}`; as demais seguem o padrão
   Recebeu `401` com um access que acabou de funcionar? Ele expirou: renove pelo refresh e repita a chamada uma vez. Se o refresh também der `401`, faça login de novo.
 </Tip>
 
-## Outras rotas de conta
+## Redefinição de senha
 
-| Rota | Para quê |
-|---|---|
-| `POST /api/v1/account/create/` | Cadastro de usuário |
-| `POST /api/v1/account/password-reset/request/` | Envia um código de 6 dígitos por e-mail; responde `200` mesmo para e-mail inexistente |
-| `POST /api/v1/account/password-reset/confirm/` | Troca a senha com o código: vale 15 minutos e cai após 5 tentativas erradas |
-| `POST /api/v1/account/verify-email/send/` e `/confirm/` | Verificação de e-mail |
-
-Schemas completos na [Referência de API](/plataforma/api-referencia).
+O pedido envia um código de 6 dígitos por e-mail e responde `200` mesmo para e-mail inexistente. O código vale 15 minutos e cai após 5 tentativas erradas. As rotas (redefinição, verificação de e-mail, cadastro) estão no grupo **Autenticação** dos endpoints da Plataforma; veja a [Introdução à API da Plataforma](/plataforma/api-referencia).

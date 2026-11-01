@@ -14,7 +14,7 @@ O app `apps.custos` registra cada chamada paga à OpenAI com os tokens consumido
 
 O registro nunca derruba a geração: se falhar, é logado e a peça segue.
 
-Modelo sem `PrecoModelo` não bloqueia nada. A chamada é gravada com os tokens reais, custo zero e `sem_preco=True`, para não ser somada como se fosse de graça. O preço fica em cache por 5 minutos; salvar ou apagar um `PrecoModelo` limpa o cache na hora (`signals.py`).
+Modelo sem `PrecoModelo` não bloqueia nada. A chamada é gravada com os tokens reais, custo zero e `sem_preco=True`; o painel a mostra como alerta, não como chamada gratuita. O preço fica em cache por 5 minutos; salvar ou apagar um `PrecoModelo` limpa o cache na hora (`signals.py`).
 
 ## Models
 

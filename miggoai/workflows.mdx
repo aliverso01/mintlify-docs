@@ -66,7 +66,7 @@ Devolve sempre a lista de `Generation`s já criadas (1 a 4 itens), mesmo em falh
 
 Passos internos:
 1. `clients_services.get_client_detail` + `get_briefing`.
-2. `_listar_historico` — histórico de posts `published`/`approved`/`sent` na janela `hoje-60d` até `hoje+365d` (`HISTORICO_MAX_DIAS = 60`). Cacheado por dia em `ClientPostHistory` — só consulta o backend-miggo uma vez por cliente por dia; se a consulta falhar e já existir um retrato de dia anterior, usa-o como fallback com log de warning; sem nenhum retrato salvo, propaga o erro (gerar com histórico vazio silenciosamente é considerado pior que falhar).
+2. `_listar_historico` — histórico de posts `published`/`approved`/`sent` na janela `hoje-60d` até `hoje+365d` (`HISTORICO_MAX_DIAS = 60`). Cacheado por dia em `ClientPostHistory` — só consulta o backend-miggo uma vez por cliente por dia; se a consulta falhar e já existir um retrato de dia anterior, usa-o como fallback com log de warning; sem nenhum retrato salvo, propaga o erro e a geração falha.
 3. `posts_services.get_post_detail(post_id)`.
 4. `clients_services.get_client_grid` — grid 3x3 do brandkit.
 5. `_escolher_formato(post_detail)` — resolve `format_key` (`story`/`feed`/`carrossel`/`reel`): usa o `post_format` explícito do card se houver; senão sorteia entre `suggested_formats`; sem nenhum dos dois, cai em `story`.
@@ -164,7 +164,7 @@ Roda **depois** da geração, no título, no texto da arte, na direção visual 
 
 ### `grid_workflow.py` — identidade do cliente no mosaico
 
-A referência de estilo do grid é o mosaico de outra marca (ou um template com placeholder), e o prompt manda recriá-la célula a célula. Sem regra de identidade o modelo copiava nome, @ e assinatura do molde para o grid do cliente, que vira o `grid_url` de todo post. `_bloco_identidade(marca_nome, marca_arroba)` entra nos dois modos (re-skin e correção): passa o nome e o @ reais do cliente e proíbe reproduzir nome de marca, @perfil, logo, site, telefone, assinatura ou placeholder ("@suamarcaaqui") da referência. Sem nome informado, a instrução é não escrever marca nenhuma.
+A referência de estilo do grid é o mosaico de outra marca (ou um template com placeholder), e o prompt manda recriá-la célula a célula. `_bloco_identidade(marca_nome, marca_arroba)` entra nos dois modos (re-skin e correção): passa o nome e o @ reais do cliente e proíbe reproduzir nome de marca, @perfil, logo, site, telefone, assinatura ou placeholder ("@suamarcaaqui") da referência. Sem nome informado, a instrução é não escrever marca nenhuma.
 
 ### Peças de perfil: bio, banner e destaques
 
@@ -179,7 +179,7 @@ A foto do banco entra no **mesmo ponto** do pipeline que a foto de galeria — �
 - **Quando entra**: `_deve_consultar_banco(usar_midia_cliente, client_id, use_stock, media_id_forcado)` — exige que a geração já fosse usar foto real, que o cliente tenha `use_stock=True` e que não haja `media_id` forçado.
 - **De onde vem**: `clients_services.get_acervo_elegiveis(client_id)` chama `GET media/acervo/elegiveis/?client_id=&fadiga=1` no backend-miggo com o header `Acervo-Service-Token` — **nunca** a `MIGGO_API_KEY`, que aquelas rotas recusam. A anti-fadiga do banco é server-side (a janela é o `reuse_days` do cliente); a da galeria continua sendo a local (`_media_usadas_recentemente`).
 - **Como se mistura**: `_adaptar_foto_do_banco` traduz a foto do acervo para o **formato da galeria**, em vez de cada etapa ganhar um ramo "se for do banco"; a origem fica em `_fonte` (`galeria`/`banco`) e o id no pool unido é o id real **negativo**, porque as duas sequências começam em 1. O `rankear` → `selecionar` segue igual.
-- **Registro de uso**: quando a peça sai com foto do banco, o `runner` chama `registrar_usos_do_banco`, que faz `POST media/acervo/uso/`. Fica no `runner`, e não no workflow, porque "concluída" só é verdade depois das imagens salvas — registrar antes marcaria fadiga por uma geração que ainda podia falhar. A falha desse POST é logada e **não derruba** a geração.
+- **Registro de uso**: quando a peça sai com foto do banco, o `runner` chama `registrar_usos_do_banco`, que faz `POST media/acervo/uso/`. Fica no `runner`: só registra depois das imagens salvas. A falha desse POST é logada e **não derruba** a geração.
 - **Sem `ACERVO_SERVICE_TOKEN` o banco é simplesmente ignorado**, com `WARNING` no log: a ausência da credencial não pode virar "o banco está vazio" em silêncio, que é indistinguível de cliente sem foto elegível.
 
 A trilha fica em `midia_cliente` no resultado (inclui `banco_habilitado` e a fonte usada), que é o que o admin lê para auditar a escolha.
