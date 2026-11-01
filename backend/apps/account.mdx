@@ -27,7 +27,12 @@ O app é consumido pelo `frontend-miggo` (login, cadastro, perfil, chat de supor
 | `app/account/authentication.py` | `JWTAuthentication` (nome enganoso — é `SessionAuthentication` sem CSRF) |
 | `app/account/forms.py` | `CustomUserCreationForm` / `CustomUserChangeForm` para o Django Admin |
 | `app/account/jira_service.py` | Integração unidirecional Miggo → Jira (criar issue, atualizar prioridade, consultar status) |
-| `app/account/permissions.py` | `HasAPIKeyOrIsAuthenticated`, `IsManagementUser`, `IsAdminUser` + helpers `is_management_user`/`is_admin_user` |
+| `app/account/permissions.py` | `HasAPIKeyOrIsAuthenticated`, `IsManagementUser`, `IsAdminUser`, `IsManagementUserOnly`, `IsAdminUserOnly`, `IsGestorDeCarteira`, `IsGestorSemApiKey`, `IsAgenciaAtiva`, `IsAgenciaAdminAtiva` + helpers `is_management_user`/`is_admin_user`/`is_agencia_user`/`is_agencia_admin`/`is_agencia_ativa` |
+| `app/account/escopo.py` | Escopo central de clientes visíveis (`clientes_visiveis`, `exigir_cliente_visivel`, `escopar_por_cliente`, `EscopoClienteMixin`) — MIG-512 |
+| `app/account/modulos.py` | Catálogos de módulos, `modulos_do_usuario`, permissões `TemModulo`/`ModuloDeCarteira` — MIG-518 |
+| `app/account/tokens.py` | `MiggoRefreshToken` e `MiggoTokenObtainPairSerializer` (claims `email`, `is_management`, `is_superuser`) — MIG-506 |
+| `app/account/meta_access.py` | `MetaAccessMixin`, `validar_escrita_de_meta`, `CHAVES_META_PROIBIDAS` — MIG-498 |
+| `app/account/testing.py` | Helpers de teste do app |
 | `app/account/signals.py` | `manage_client` — sincroniza `Client` a partir de `CustomUser` |
 | `app/account/tests.py` | Não lido em detalhe (fora do escopo desta página; ver regra de não invenção) |
 
@@ -43,7 +48,8 @@ Usuário único da plataforma (equipe Miggo e clientes), autenticado por e-mail.
 | `email` | `EmailField` | sim | — | Único; é o `USERNAME_FIELD` |
 | `name` | `CharField(255)` | sim | — | `REQUIRED_FIELDS` inclui `name` (usado por `createsuperuser`) |
 | `phone` | `CharField(20)` | não | `null=True, blank=True` | Telefone |
-| `role` | `CharField(50)` | não | `'client'` | Papel do usuário: valores usados no código incluem `'client'`, `'manager'`, `'admin'` |
+| `role` | `CharField(50)` | não | `'client'` | Papel do usuário: valores usados no código são `'client'`, `'manager'`, `'admin'`, `'agencia_admin'` e `'agencia_membro'` |
+| `agencia` | `ForeignKey(agencia.Agencia)` | não | `null=True`, `on_delete=PROTECT`, `related_name='usuarios'` | Só nos papéis de agência (MIG-513, migration `0017`) |
 | `created_at` | `DateTimeField` | — | `auto_now_add=True` | — |
 | `is_staff` | `BooleanField` | — | `False` | Exigido pelo Django Admin |
 | `is_active` | `BooleanField` | — | `True` | — |
@@ -68,8 +74,20 @@ Par chave/valor livre associado a um usuário — usado, por exemplo, para armaz
 | `user` | `ForeignKey(CustomUser)` | sim | — | `on_delete=CASCADE`, `related_name='meta'` |
 | `key` | `CharField(255)` | sim | — | Nome da chave (ex.: `password_reset_code`) |
 | `value` | `TextField` | sim | — | Valor armazenado como texto |
+| `created_at` | `DateTimeField` | — | `auto_now_add=True`, `null=True` | Migration `0016`; nulo nas linhas antigas (o reset de senha trata como expirado) |
 
-**Métodos:** `__str__` retorna `"{key}: {value}"` (`app/account/models.py:58`).
+**Métodos:** `__str__` retorna `"{key}: {value}"`.
+
+### UsuarioModulo
+
+Módulo liberado para um `manager` (equipe) ou `agencia_membro` (MIG-518, migrations `0018_usuariomodulo` e `0019_modulos_dos_existentes`). Admin e `agencia_admin` têm todos sem linha aqui. Regras em [Autenticação → Módulos de permissão](/backend/autenticacao#módulos-de-permissão).
+
+| Campo | Tipo | Descrição |
+|---|---|---|
+| `user` | `ForeignKey(CustomUser)` | `CASCADE`, `related_name='modulos_concedidos'` |
+| `modulo` | `CharField(30)` | `choices=CHOICES_MODULOS` (catálogos Miggo + agência) |
+
+`unique_together = ('user', 'modulo')`.
 
 ### SupportConversation
 
@@ -132,20 +150,22 @@ Todas as rotas abaixo estão sob o prefixo `/api/v1/account/` (definido em `core
 
 | Método | Rota completa | View | Permissão |
 |---|---|---|---|
-| POST | `/api/v1/account/token/` | `TokenObtainPairView` (simplejwt) | padrão do projeto |
+| POST | `/api/v1/account/token/` | `SafeTokenObtainPairView` (simplejwt + `MiggoTokenObtainPairSerializer`, travas de agência) | padrão do projeto |
 | POST | `/api/v1/account/token/refresh/` | `SafeTokenRefreshView` | padrão do projeto |
 | POST | `/api/v1/account/create/` | `CreateUserView` | `AllowAny` |
 | POST | `/api/v1/account/register/` | `CreateUserView` (mesma view, rota alternativa) | `AllowAny` |
 | POST | `/api/v1/account/team/create/` | `CreateTeamMemberView` | `IsAdminUser` |
-| GET | `/api/v1/account/team/list/` | `ListTeamView` | `IsManagementUser` |
+| GET | `/api/v1/account/team/list/` | `ListTeamView` | `IsManagementUser` + `TemModulo('time')` |
+| PUT | `/api/v1/account/team/<int:pk>/modules/` | `ModulosDoTimeView` | `IsAdminUserOnly` (só `role='manager'`) |
+| GET | `/api/v1/account/modules/` | `CatalogoDeModulosView` | `IsAuthenticated` |
 | PUT/PATCH | `/api/v1/account/team/update/<int:pk>/` | `UpdateTeamMemberView` | `IsAdminUser` |
-| PUT/PATCH | `/api/v1/account/update/<int:pk>/` | `UpdateUserView` | padrão do projeto (não declara `permission_classes` própria) |
+| PUT/PATCH | `/api/v1/account/update/<int:pk>/` | `UpdateUserView` | `IsAuthenticated` + queryset por papel: o dono edita só a si; gestor edita clientes só com o módulo `clientes`, nunca outro gestor, admin ou agência |
 | DELETE | `/api/v1/account/delete/<int:pk>/` | `DeleteUserView` | `IsAdminUser` |
-| GET | `/api/v1/account/list/` | `ListUsersView` | `IsManagementUser` |
-| POST | `/api/v1/account/user-meta/create/` | `UserMetaCreateView` | padrão do projeto |
-| PUT/PATCH | `/api/v1/account/user-meta/update/<int:pk>/` | `UpdateUserMetaView` | padrão do projeto |
-| DELETE | `/api/v1/account/user-meta/delete/<int:pk>/` | `DeleteUserMetaView` | padrão do projeto |
-| GET | `/api/v1/account/user-meta/list/` | `ListUserMetaView` | `IsManagementUser` |
+| GET | `/api/v1/account/list/` | `ListUsersView` | `IsManagementUser` (filtros `role`, `role__in`, `agencia`) |
+| POST | `/api/v1/account/user-meta/create/` | `UserMetaCreateView` | `MetaAccessMixin` |
+| PUT/PATCH | `/api/v1/account/user-meta/update/<int:pk>/` | `UpdateUserMetaView` | `MetaAccessMixin` |
+| DELETE | `/api/v1/account/user-meta/delete/<int:pk>/` | `DeleteUserMetaView` | `MetaAccessMixin` |
+| GET | `/api/v1/account/user-meta/list/` | `ListUserMetaView` | `MetaAccessMixin` |
 | POST | `/api/v1/account/login/` | `LoginView` | `AllowAny` |
 | POST | `/api/v1/account/logout/` | `LogoutView` | `AllowAny` |
 | POST | `/api/v1/account/google/` | `GoogleAuthView` | `AllowAny` |
@@ -180,7 +200,7 @@ Efeito colateral: dispara o signal `manage_client` (cria `Client` associado) e, 
 <Accordion title="POST /api/v1/account/team/create/ — CreateTeamMemberView">
 Cria um membro de equipe (admin/manager) ou um cliente já com onboarding completo (`app/account/views.py:98`). Restrito a `IsAdminUser`, com checagem adicional dentro do `create()`: só segue se `request.user.is_superuser` ou `request.user.role == 'admin'` (caso contrário `403`).
 
-<ParamField path="role" type="string" default="manager">`admin`, `manager` ou `client`. Se `admin`/`manager`, o usuário é marcado `is_staff=True`</ParamField>
+<ParamField path="role" type="string" default="manager">`admin`, `manager` ou `client`. Só `admin` é marcado `is_staff=True` (MIG-518: o `manager` acessa pelos módulos)</ParamField>
 <ParamField path="email" type="string" required />
 <ParamField path="name" type="string" required />
 <ParamField path="password" type="string" />
@@ -215,7 +235,7 @@ Login/cadastro via Google ID token (`app/account/views.py:281`). `AllowAny`.
 <ResponseField name="refresh" type="string">JWT refresh token</ResponseField>
 <ResponseField name="created" type="boolean">`true` se um novo usuário foi criado</ResponseField>
 
-Fluxo: valida o token com `google_id_token.verify_oauth2_token` contra `settings.GOOGLE_CLIENT_ID` (tolerância de relógio configurável via `GOOGLE_AUTH_CLOCK_SKEW`, default 10s). Confere `iss` (`accounts.google.com`) e `email_verified`. Se o usuário não existe, cria (`email_verified=True`, sem senha). Se existe, atualiza `google_id`/`avatar_url`/`email_verified` quando necessário e reaplica a checagem de `Client.active` para não-staff. Gera JWT via `RefreshToken.for_user(user)` além do login de sessão.
+Fluxo: valida o token com `google_id_token.verify_oauth2_token` contra `settings.GOOGLE_CLIENT_ID` (tolerância de relógio configurável via `GOOGLE_AUTH_CLOCK_SKEW`, default 10s). Confere `iss` (`accounts.google.com`) e `email_verified`. Se o usuário não existe, cria (`email_verified=True`, sem senha). Se existe, atualiza `google_id`/`avatar_url`/`email_verified` quando necessário e reaplica a checagem de `Client.active` para não-staff. Gera JWT via `MiggoRefreshToken.for_user(user)` (com os claims `email`/`is_management`/`is_superuser`) além do login de sessão. Agência suspensa ou host que não é o da conta respondem `403`; cadastro novo pelo domínio de uma agência vincula o `Client` a ela.
 
 Códigos: `400` sem token; `503` Google Client ID não configurado ou falha de rede ao validar; `401` token inválido, issuer inesperado, e-mail não verificado; `403` conta/cliente inativo ou perfil cliente ausente.
 </Accordion>
@@ -223,7 +243,7 @@ Códigos: `400` sem token; `503` Google Client ID não configurado ou falha de r
 <Accordion title="POST /api/v1/account/password-reset/request/ e /confirm/ — Recuperação de senha">
 `PasswordResetRequestView` (`app/account/views.py:392`) gera um código de 6 dígitos (`utils.toolkit.generate_code`), remove códigos anteriores do mesmo usuário em `UserMeta` (`key='password_reset_code'`) e envia por e-mail (template `emails/password_reset.html`). Sempre responde `200` com mensagem genérica, mesmo se o e-mail não existir (evita enumeração de contas).
 
-`PasswordResetConfirmView` (`app/account/views.py:445`) valida `email` + `code` contra o último `UserMeta` salvo, exige nova senha com mínimo 8 caracteres, 1 maiúscula e 1 número, troca a senha e apaga o `UserMeta` do código.
+`PasswordResetConfirmView` valida `email` + `code` contra o último `UserMeta` salvo (comparação em tempo constante), exige nova senha com mínimo 8 caracteres, 1 maiúscula e 1 número, troca a senha e apaga o `UserMeta` do código. Desde o MIG-498 o código expira em 15 min (`UserMeta.created_at`) e 5 tentativas erradas (`password_reset_attempts`) o apagam.
 
 <ParamField path="email" type="string" required />
 <ParamField path="code" type="string" required>Apenas no confirm</ParamField>
@@ -312,7 +332,8 @@ Códigos: `400` sem `reply_message`; `403` não-admin; `404` ticket não encontr
 
 ### CustomUserSerializer (`app/account/serializers.py:36`)
 `ModelSerializer` de `CustomUser`, `fields = '__all__'`.
-- **Somente-leitura:** `is_active`, `is_staff`, `is_superuser`, `groups`, `user_permissions`, `last_login`, `google_id`, `avatar_url`.
+- **Somente-leitura:** `is_active`, `is_staff`, `is_superuser`, `groups`, `user_permissions`, `last_login`, `google_id`, `avatar_url`, `role` e `agencia` (os dois últimos desde o MIG-498/MIG-513).
+- **Campos extras:** `agencia_nome` (read-only) e `modulos` (`modulos_do_usuario`).
 - **`password`:** `write_only=True`, `required=False`, `allow_blank=True`; o `__init__` torna `password` opcional sempre que `self.instance` existir (ou seja, em updates).
 - **`validate_email`** (`serializers.py:51`) — rejeita e-mail já cadastrado (case-insensitive, excluindo a própria instância em update); normaliza para minúsculas.
 - **`validate_password`** (`serializers.py:60`) — só aplica `validate_password_strength` na criação (não em update parcial).
@@ -323,8 +344,8 @@ Códigos: `400` sem `reply_message`; `403` não-admin; `404` ticket não encontr
 ### TeamMemberSerializer (`app/account/serializers.py:126`)
 Estende `CustomUserSerializer`; mesma lógica, mas com `read_only_fields` mais permissivo: apenas `is_superuser`, `groups`, `user_permissions`, `last_login` são somente-leitura (ou seja, `is_active`/`is_staff` ficam graváveis diretamente pelo serializer — a view `CreateTeamMemberView` os define manualmente antes de validar).
 
-### UserMetaSerializer (`app/account/serializers.py:130`)
-`ModelSerializer` simples de `UserMeta`, `fields = '__all__'`, sem validações customizadas.
+### UserMetaSerializer (`app/account/serializers.py`)
+`ModelSerializer` de `UserMeta`, `fields = '__all__'`. O `validate` chama `validar_escrita_de_meta` (MIG-498): chave reservada dá `400`; quem não é da equipe só grava as chaves liberadas da própria conta (na `UserMeta`, nenhuma).
 
 ## Regras de negócio e funções
 
@@ -340,8 +361,10 @@ Em `app/account/views.py`, a classe `JWTAuthentication` do próprio app (`.authe
 </Warning>
 
 ### Permissões (`app/account/permissions.py`)
-- `is_management_user(user)` (linha 15) — `True` para superuser, staff, ou `role in ('admin', 'manager')`.
-- `is_admin_user(user)` (linha 26) — `True` para superuser, staff, ou `role == 'admin'` (gestor **não** conta como admin pleno).
+- `is_management_user(user)` — `True` para superuser, `role in ('admin', 'manager')` ou staff que não seja de agência.
+- `is_admin_user(user)` — `True` para superuser ou `role == 'admin'` (`is_staff` não conta; gestor **não** é admin pleno).
+- `is_agencia_user` / `is_agencia_admin` / `is_agencia_ativa` — papéis `agencia_admin`/`agencia_membro` e agência ativa.
+- Classes novas: `IsManagementUserOnly`, `IsAdminUserOnly` (sem API key), `IsGestorDeCarteira`, `IsGestorSemApiKey`, `IsAgenciaAtiva`, `IsAgenciaAdminAtiva`. Tabela completa, escopo de clientes e módulos em [Autenticação e autorização](/backend/autenticacao).
 - `HasAPIKeyOrIsAuthenticated` (linha 5) — permite acesso via API key de serviço OU usuário autenticado.
 - `IsManagementUser` (linha 37) — aceita API key OU `is_management_user`; mensagem `"Acesso restrito à equipe Miggo."`.
 - `IsAdminUser` (linha 52) — aceita API key OU `is_admin_user`; mensagem `"Acesso restrito a administradores."`.
@@ -380,7 +403,7 @@ Utilitário para ser chamado por `app/post/views.py` quando um post muda para st
 - **`SupportConversation.session_key` e `summary`** estão definidos no modelo mas não são preenchidos por nenhuma view lida (`support_views.py`) — possivelmente campos legados ou reservados para uso futuro.
 - **Signal `manage_client`, ramo de exclusão** depende de `kwargs.get('deleted', False)` vindo de fora do `post_save` padrão do Django — não foi possível confirmar no código lido quem emite esse kwarg; pode nunca ser exercitado na prática.
 - **Emails com falha silenciosa:** praticamente todos os envios de e-mail no app (`credentials`, `support_ticket_confirmation`, `post_published`, criação de Jira issue) usam `try/except` amplo com `print`/`logger`, nunca interrompendo o fluxo principal — bom para robustez, mas significa que falhas de e-mail não ficam visíveis para o usuário nem para monitoramento automático além dos logs.
-- **`UpdateUserView`** e **`UserMetaCreateView`/`UpdateUserMetaView`/`DeleteUserMetaView`** não declaram `permission_classes` próprias, então caem no `DEFAULT_PERMISSION_CLASSES` do projeto (`HasAPIKeyOrIsAuthenticated`) — qualquer usuário autenticado (não só admin/gestor) pode, em tese, atualizar qualquer `CustomUser` por `pk` ou criar/editar/apagar `UserMeta` de qualquer usuário, já que essas views não filtram por dono do recurso.
+- **`UpdateUserView` e views de `UserMeta` (corrigido no MIG-498):** antes caíam no `HasAPIKeyOrIsAuthenticated` sem filtrar por dono. Hoje `UpdateUserView` escopa o queryset por papel e as views de meta usam `MetaAccessMixin` (dono só vê as chaves liberadas; `password_reset_code` e `activation_code` nunca passam pela API).
 
 ## Relacionados
 

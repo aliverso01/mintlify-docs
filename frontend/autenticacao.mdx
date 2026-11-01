@@ -31,6 +31,10 @@ Chamado uma única vez em `src/main.tsx:12`, antes do primeiro render. Para cada
 3. Descarta qualquer `Authorization` não-Bearer em requests da própria API (ex.: `Api-Key`, exclusivo de serviços de terceiros) e injeta `Bearer <access token>` quando há token (`jwtAuth.ts:213-227`).
 4. **Fallback reativo**: se a resposta vier `401` (e não for endpoint de auth, e ainda não houve retry), tenta um refresh e repete a mesma requisição uma única vez (`jwtAuth.ts:233-244`).
 
+<Note>
+**API do MiggoAI (MIG-507).** `isApiRequest` também é verdadeiro para a API do MiggoAI: `isMiggoaiApiUrl` (`src/services/miggoai/config.ts`) compara a origem com a de `VITE_MIGGOAI_API_URL` (padrão `http://localhost:8010`) e exige o caminho `/api/`. Essas chamadas recebem o mesmo Bearer, o refresh proativo e o retry no `401` — é assim que o painel de IA no `/admin` usa o token da plataforma. Nenhuma outra origem recebe o token. O MiggoAI só aceita token com o claim `is_management` (ver [Autenticação do backend](/backend/autenticacao#token-jwt-rs256)).
+</Note>
+
 ### Refresh do token
 
 `refreshAccessToken` (`jwtAuth.ts:119-168`) é **deduplicado** via uma Promise compartilhada (`refreshInFlight`): se várias requisições expiram ao mesmo tempo, todas aguardam o mesmo POST para `VITE_JWT_REFRESH_URL` (default `/api/v1/account/token/refresh/`) em vez de disparar um refresh cada — evita invalidar um refresh token rotativo no backend por corrida.
@@ -57,15 +61,15 @@ interface AuthContextType {
 }
 ```
 
-O tipo `User` (`AuthContext.tsx:55-69`) inclui `id`, `email`, `name`, `phone`, `role`, `is_staff`, `is_superuser`, `is_active`, `groups`, `user_permissions`, `created_at`, `last_login`, `hash`.
+O tipo `User` (`AuthContext.tsx`) inclui `id`, `email`, `name`, `phone`, `role`, `is_staff`, `is_superuser`, `is_active`, `groups`, `user_permissions`, `created_at`, `last_login`, `hash` e, desde a agência e os módulos, `agencia`, `agencia_nome` e `modulos` (códigos liberados para gestor e membro de agência; admin e `agencia_admin` têm tudo implicitamente).
 
 ### Funções (endpoint + comportamento)
 
 | Função | Endpoint | Comportamento |
 |---|---|---|
-| `login` | `POST /api/v1/account/login/` | Tenta extrair tokens da própria resposta (`saveTokensFromResponse`); se não vierem, faz um segundo `POST` para `VITE_JWT_OBTAIN_URL` (default `/api/v1/account/token/`). Salva `user` em estado e `localStorage`. Trata `403` (conta inativa) e `401` (credenciais inválidas) com mensagens específicas (`AuthContext.tsx:138-201`) |
+| `login` | `POST /api/v1/account/login/` | Tenta extrair tokens da própria resposta (`saveTokensFromResponse`); se não vierem, faz um segundo `POST` para `VITE_JWT_OBTAIN_URL` (default `/api/v1/account/token/`). Salva `user` em estado e `localStorage`. Trata `403` (conta inativa, agência suspensa, domínio errado — exibe o `message`/`detail` do back) e `401` (credenciais inválidas) |
 | `loginWithGoogle` | `POST /api/v1/account/google/` com `{ credential }` | Mesmo fluxo de salvar tokens/usuário (`AuthContext.tsx:203-240`) |
-| `logout` | `POST /api/v1/account/logout/` | Chama o backend (best-effort — erro é só logado) e sempre limpa `user`, tokens e `miggo_preview_mode` do `localStorage` (`AuthContext.tsx:242-260`) |
+| `logout` | `POST /api/v1/account/logout/` | Chama o backend (best-effort — erro é só logado) e sempre limpa `user` e tokens do `localStorage` |
 | `updateProfile` | `PATCH /api/v1/account/update/<user.id>/` | Aceita `verificationCode` opcional, que é anexado ao body como `verification_code` (`AuthContext.tsx:262-298`) |
 | `register` | `POST /api/v1/account/register/` | Usa `parseDRFError` para traduzir erros de validação do DRF para pt-BR (`AuthContext.tsx:300-337`) |
 | `requestPasswordReset` | `POST /api/v1/account/password-reset/request/` | Retorna a mensagem do backend (`AuthContext.tsx:339-350`) |
@@ -81,9 +85,9 @@ O tipo `User` (`AuthContext.tsx:55-69`) inclui `id`, `email`, `name`, `phone`, `
 - Ao montar, lê `user` do `localStorage`; se houver `user` salvo mas nenhum access token, considera a sessão inválida (resquício de uma sessão legada por API key) e limpa tudo (`AuthContext.tsx:95-114`).
 - Não há mais validação periódica ativa — o comentário no código explica que essa checagem foi desabilitada porque o JWT já é validado a cada request pelo backend; o logout efetivo acontece quando o interceptor recebe um `401` e o refresh falha (`AuthContext.tsx:117-136`).
 
-### Preview mode e `effectiveUser`
+### Sem preview mode
 
-Quando `PreviewContext.isPreviewMode` está ativo, `AuthContext` devolve um `effectiveUser` com `role: 'client'` e `id` substituído pelo `previewClientId` — toda a lógica de `role === 'client'` do resto do app passa a tratar o admin como o cliente sob preview, automaticamente (`AuthContext.tsx:399-408`).
+O preview mode (`PreviewContext`, `effectiveUser` com `role: 'client'`) foi removido nesta release: `AuthContext` devolve sempre o `user` real, e `PreviewContext.tsx`/`PreviewModeBanner.tsx` não existem mais.
 
 ## `useAuth` (`src/hooks/authHook.ts`)
 
@@ -128,4 +132,20 @@ export function useRoleArea() {
 }
 ```
 
-Ver a lógica completa de `isManagementUser`/`isFullAdminUser`/`isClientUser`/`areaPrefixFor`/`pathFor` em `roteamento.mdx`.
+Ver a lógica completa de `isManagementUser`/`isFullAdminUser`/`isClientUser`/`areaPrefixFor`/`pathFor` em `roteamento.mdx`. Mudanças desta release em `rolePaths.ts`:
+
+| Helper | Regra |
+|---|---|
+| `isManagementUser` | papéis de agência nunca são gestão, mesmo com `is_staff` |
+| `isFullAdminUser` | `is_superuser` ou `role === 'admin'` — `is_staff` não conta mais (MIG-518, igual ao back) |
+| `isAgencyUser` | `role` em `agencia_admin`/`agencia_membro`; área própria em `/agency/*` (`AGENCY_PREFIX`) |
+| `canManageClients` | gestão **ou** agência: libera as telas de carteira (escolher cliente, marca, mídia, calendário). O que é só da Miggo segue em `isManagementUser` |
+
+## Guardas por papel e por módulo
+
+| Componente | Regra |
+|---|---|
+| `AgencyRoute` | só usuário de agência entra em `/agency/*`; os demais voltam para `homePathFor(user)` |
+| `ModuloRoute` (`modulo`) | só quem tem o módulo; senão volta para a home da própria área |
+
+`temModulo` (`src/routes/modulos.ts`) espelha `tem_modulo` do back: admin/superusuário têm tudo, `agencia_admin` tem `MODULOS_AGENCIA_ADMIN` (`clientes`, `conteudo`, `membros`, `plano`, `marca`), e gestor/membro dependem de `user.modulos`. É só navegação: quem recusa de fato é o backend (`TemModulo`, ver [Autenticação do backend](/backend/autenticacao#módulos-de-permissão)).

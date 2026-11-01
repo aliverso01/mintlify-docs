@@ -19,25 +19,38 @@ icon: "shield-check"
 | `google_id` | `CharField(255)`, único, opcional | Preenchido no login social |
 | `avatar_url` | `URLField`, opcional | Foto de perfil do Google |
 | `email_verified` | `BooleanField`, default `False` | |
+| `agencia` | `FK agencia.Agencia`, opcional, `PROTECT` | Só nos papéis de agência (MIG-513, migration `0017_customuser_agencia`). Read-only nos serializers de usuário |
 | `created_at` | `DateTimeField(auto_now_add=True)` | |
 
 Não há campo `username` — login é sempre por `email`. `CustomUserManager.create_superuser` (`app/account/models.py:18-24`) força `is_staff=True`, `is_superuser=True`, `role='admin'`.
 
-`UserMeta` (`app/account/models.py:53-58`) é um key/value genérico por usuário (`FK CustomUser`), usado por exemplo para guardar o código de reset de senha (`key='password_reset_code'`).
+`UserMeta` é um key/value genérico por usuário (`FK CustomUser`), usado por exemplo para guardar o código de reset de senha (`key='password_reset_code'`). Desde a migration `0016_usermeta_created_at` tem `created_at` (nulo nas linhas antigas), que dá a validade do código de reset.
+
+`UsuarioModulo` (`user`, `modulo`, `unique_together`) guarda os módulos liberados para `manager` e `agencia_membro` (MIG-518, migrations `0018_usuariomodulo` e `0019_modulos_dos_existentes`). Ver [Módulos de permissão](#módulos-de-permissão).
 
 ## Papéis (roles)
 
-Não existe um app de RBAC dedicado — a autorização é feita checando `role`, `is_staff` e `is_superuser` diretamente. As funções centrais estão em `app/account/permissions.py:15-34`:
+Não existe um app de RBAC dedicado — a autorização combina o papel (`role`, `is_staff`, `is_superuser`), o [escopo de clientes](#escopo-de-clientes) e os [módulos](#módulos-de-permissão). As funções centrais estão em `app/account/permissions.py`:
 
-```python
-def is_management_user(user) -> bool:
-    # superuser OU staff OU role in ('admin', 'manager')
+| Função | Regra |
+|---|---|
+| `is_management_user` | `is_superuser` **ou** `role in ('admin', 'manager')` **ou** `is_staff` — `is_staff` não vale para papel de agência |
+| `is_admin_user` | `is_superuser` **ou** `role == 'admin'` (`is_staff` deixou de contar) |
+| `is_agencia_user` | `role in ('agencia_admin', 'agencia_membro')` (`PAPEIS_AGENCIA`) |
+| `is_agencia_admin` | `role == 'agencia_admin'` |
+| `is_agencia_ativa` | usuário de agência com `agencia` preenchida e `agencia.esta_ativa` |
 
-def is_admin_user(user) -> bool:
-    # superuser OU staff OU role == 'admin'
-```
+Níveis efetivos:
 
-Ou seja, há três níveis efetivos: **cliente** (`role='client'`, o padrão), **gestor/management** (`role in ('admin','manager')` ou `is_staff`) e **admin pleno** (`role='admin'` ou `is_staff`/`is_superuser`). `manager` tem acesso de gestão mas não ao nível administrativo pleno (financeiro, planos, time) — só `admin` passa em `IsAdminUser`.
+| Papel | Quem é | Acesso |
+|---|---|---|
+| `client` (padrão) | cliente final | só o próprio `Client` |
+| `manager` | equipe Miggo | gestão, limitada aos módulos marcados em `UsuarioModulo`; não é admin pleno |
+| `admin` / superusuário | equipe Miggo | tudo, inclusive financeiro, planos e time |
+| `agencia_admin` | dono da agência parceira (app [`agencia`](/backend/apps/agencia)) | a carteira da própria agência, todos os módulos da agência |
+| `agencia_membro` | membro da agência | a carteira da própria agência, só os módulos marcados |
+
+Agência **nunca** é equipe Miggo: `is_staff` no banco não abre a gestão para ela. Papel de agência só nasce pelo cadastro da agência — o serializer de atualização de usuário recusa `role` de agência e `is_staff` em usuário de agência, e força `is_staff = (role == 'admin')` sempre que `role` ou `is_staff` vêm no body (MIG-518: o `manager` deixou de ser staff; o acesso dele vem dos módulos).
 
 ## Classes de permissão
 
@@ -48,8 +61,70 @@ Definidas em `app/account/permissions.py`:
 | `HasAPIKeyOrIsAuthenticated` | API key válida **ou** usuário autenticado | `DEFAULT_PERMISSION_CLASSES` global (`core/settings.py:139-141`) — toda view herda isso por padrão |
 | `IsManagementUser` | API key válida **ou** `is_management_user(request.user)` | Rotas de gestão (bloqueiam clientes finais) |
 | `IsAdminUser` | API key válida **ou** `is_admin_user(request.user)` | Rotas administrativas plenas (ex.: deletar usuário, planos, financeiro) |
+| `IsManagementUserOnly` / `IsAdminUserOnly` | como as anteriores, mas **sem** API key | Rotas que só pessoa logada da equipe (ou admin pleno) usa — ex.: `team/<id>/modules/` |
+| `IsGestorDeCarteira` | API key **ou** equipe **ou** agência ativa | Telas de carteira compartilhadas por Miggo e agência; a view **precisa** estar escopada por `clientes_visiveis` |
+| `IsGestorSemApiKey` | equipe **ou** agência ativa, sem API key | Idem, só pessoa logada |
+| `IsAgenciaAtiva` / `IsAgenciaAdminAtiva` | usuário (ou só o `agencia_admin`) de agência ativa | Área "minha agência" do app [`agencia`](/backend/apps/agencia) |
+| `TemModulo(modulo)` / `ModuloDeCarteira(modulo)` | fábricas em `app/account/modulos.py`, somadas à permissão de papel | Ver [Módulos de permissão](#módulos-de-permissão) |
 
 Exemplos de uso real: `ListUsersView`/`CreateTeamMemberView` usam `IsManagementUser`/`IsAdminUser` (`app/account/views.py:77,85,99`); praticamente todas as views de `app/subscription/views.py` (planos, preços, financeiro) usam `permission_classes = [IsAdminUser]`.
+
+## Escopo de clientes
+
+`app/account/escopo.py` (MIG-512) é o ponto único que diz **quais `Client` uma requisição enxerga**. É lista positiva: papel que nenhuma regra prevê cai em "nenhum cliente", e um papel novo nunca herda o acesso amplo da equipe por esquecimento.
+
+| Função | O que faz |
+|---|---|
+| `ve_todos_os_clientes(request)` | API key de serviço (MiggoAI) ou equipe Miggo que não seja de agência |
+| `clientes_visiveis(request)` | queryset de `Client`: todos (caso acima); os da agência (`Client.agencia`), só com agência ativa — suspensa dá nenhum, o que fecha também token já emitido; o próprio `Client` do cliente; ou `none()` |
+| `cliente_visivel(request, client_id)` | o `Client` pedido se visível, senão `None` (id inválido incluso) |
+| `exigir_cliente_visivel(request, client_id)` | igual, mas levanta `NotFound`: recurso de outro cliente responde `404`, não `403` |
+| `escopar_por_cliente(queryset, request, campo='client')` | filtra qualquer queryset pelo caminho ORM até o `Client` |
+| `EscopoClienteMixin` | mixin de view genérica: escopa `get_queryset` (`escopo_campo`) e confere o dono na gravação (`escopo_escrita`, ex.: `('brandkit', 'client')`) em `perform_create`/`perform_update` |
+
+Views que recebem `client_id` (URL, query ou body) passam por essas funções: foi assim que o MIG-512 fechou os IDORs entre clientes.
+
+## Módulos de permissão
+
+`app/account/modulos.py` (MIG-518): o papel diz **quem** é; o módulo diz **o que** pode usar.
+
+| Catálogo | Códigos |
+|---|---|
+| `MODULOS_MIGGO` (equipe) | `clientes`, `conteudo`, `trials`, `financeiro`, `conversas`, `email_marketing`, `miggoai`, `acervo`, `beneficios`, `suporte`, `logs`, `time` |
+| `MODULOS_AGENCIA` | `clientes`, `conteudo`, `membros`, `plano`, `marca` |
+
+- `modulos_do_usuario(user)`: `admin`/superusuário têm todo o catálogo Miggo e `agencia_admin` todo o da agência, sem linha em `UsuarioModulo`; `manager` e `agencia_membro` têm só o que está marcado; cliente e anônimo, nenhum. O `CustomUserSerializer` expõe a lista no campo `modulos` (e o nome da agência em `agencia_nome`).
+- `TemModulo(modulo)`: permissão DRF que passa quem tem o módulo (a API key passa onde já passava). `ModuloDeCarteira(modulo)`: idem, mas o `client` final também passa — para rotas que o cliente usa e a equipe/agência opera. As duas se **somam** à permissão de papel e ao escopo, não os substituem.
+- `GET /api/v1/account/modules/`: catálogo da área de quem está logado (Miggo para equipe, agência para agência; `[]` para cliente), em `[{codigo, rotulo}]`.
+- `PUT /api/v1/account/team/<id>/modules/` com `{"modulos": [...]}`: `IsAdminUserOnly`, só para `role='manager'`; substitui as marcações; código fora do catálogo dá `400`. Os módulos do membro de agência são gravados pelo app [`agencia`](/backend/apps/agencia).
+- `team/list/` exige o módulo `time`. A edição de usuário deixa o gestor alterar só a própria conta e, com o módulo `clientes`, clientes — nunca outro gestor, admin ou usuário de agência; `role` é read-only ali (papel muda só pelo `team/update/`, restrito a admin).
+
+## Token JWT (RS256)
+
+Desde o MIG-506 o token da plataforma é assinado em **RS256** e é aceito também pelo MiggoAI (painel de IA no `/admin` do front).
+
+| Config (`SIMPLE_JWT`, `core/settings.py`) | Valor |
+|---|---|
+| `ALGORITHM` | `RS256` |
+| `SIGNING_KEY` | env `JWT_PRIVATE_KEY` (PEM; `\n` literal na env vira quebra de linha). **Obrigatória**: sem ela as settings não carregam |
+| `VERIFYING_KEY` | derivada da privada por `core/jwt_keys.py` (`chave_publica_pem`) — não há env da pública no backend |
+| `AUDIENCE` | `['miggo', 'miggoai']` (claim `aud`) |
+| `ACCESS_TOKEN_LIFETIME` / `REFRESH_TOKEN_LIFETIME` | 30 min / 7 dias, com `ROTATE_REFRESH_TOKENS` |
+| `TOKEN_OBTAIN_SERIALIZER` | `app.account.tokens.MiggoTokenObtainPairSerializer` |
+
+`app/account/tokens.py` define `MiggoRefreshToken`, usado por `/token/`, pelo refresh e pelos logins que emitem par (`app/account/auth_cookies.py`). Claims extras no refresh e no access:
+
+| Claim | Valor |
+|---|---|
+| `email` | `user.email` |
+| `is_management` | `is_management_user(user)` (mesma regra da `ManagementRoute` do front) |
+| `is_superuser` | `user.is_superuser` (no MiggoAI só superusuário altera modelo e preço) |
+
+Os claims são **recalculados a cada refresh**: quem sai da gestão perde o MiggoAI no próximo access (até 30 min), não quando o refresh expira. O MiggoAI valida o access com a chave pública (`MIGGO_JWT_PUBLIC_KEY`, ver [Referência de API do MiggoAI](/miggoai/api-referencia#autenticação)).
+
+<Warning>
+`JWT_PRIVATE_KEY` (backend) e `MIGGO_JWT_PUBLIC_KEY` (MiggoAI) são **um par**: trocar a privada sem atualizar a pública faz o painel de IA responder `401`. Trocar a chave invalida todos os tokens já emitidos.
+</Warning>
 
 ## Autenticação: dois mecanismos coexistindo
 
@@ -69,7 +144,7 @@ Todos sob o prefixo `/api/v1/account/` (`core/urls.py:30`, `app/account/urls.py`
 
 <AccordionGroup>
   <Accordion title="POST /api/v1/account/token/ — obter par de tokens JWT">
-    `TokenObtainPairView` padrão do `rest_framework_simplejwt` (`app/account/urls.py:15`).
+    `SafeTokenObtainPairView` (`app/account/views.py`): o `TokenObtainPairView` do `rest_framework_simplejwt` com o `MiggoTokenObtainPairSerializer` e as mesmas travas de agência do login — `403` com `message` se a agência do usuário (ou do cliente) está suspensa ou se o host da requisição não é o da conta (ver `/login/`).
     <ParamField path="email" type="string" required>Autenticação por email (USERNAME_FIELD)</ParamField>
     <ParamField path="password" type="string" required />
     <ResponseField name="access" type="string">Token de acesso (30 min)</ResponseField>
@@ -77,7 +152,7 @@ Todos sob o prefixo `/api/v1/account/` (`core/urls.py:30`, `app/account/urls.py`
   </Accordion>
 
   <Accordion title="POST /api/v1/account/token/refresh/ — renovar access token">
-    `SafeTokenRefreshView` (`app/account/views.py:224-226`) — variação do `TokenRefreshView` padrão que devolve 401 em vez de 500 quando o usuário do refresh token antigo já foi apagado.
+    `SafeTokenRefreshView` (`app/account/views.py`) — variação do `TokenRefreshView` padrão que devolve 401 em vez de 500 quando o usuário do refresh token antigo já foi apagado. Emite `MiggoRefreshToken` (claims recalculados) e responde `403` se a agência foi suspensa depois da emissão ou se o host não é o da conta.
     <ParamField path="refresh" type="string" required />
     <ResponseField name="access" type="string" />
   </Accordion>
@@ -100,7 +175,9 @@ Todos sob o prefixo `/api/v1/account/` (`core/urls.py:30`, `app/account/urls.py`
     <ResponseField name="message" type="string" />
     <ResponseField name="user" type="object">`CustomUserSerializer` (`__all__`, com `is_active`/`is_staff`/`is_superuser`/`groups`/`user_permissions`/`last_login`/`google_id`/`avatar_url` como read-only)</ResponseField>
 
-    Respostas: `200` sucesso · `401` credenciais inválidas · `403` conta/cliente inativo.
+    Respostas: `200` sucesso · `401` credenciais inválidas · `403` conta/cliente inativo, agência suspensa ou host errado (mensagem em `message`).
+
+    **Host da conta (MIG-516):** `host_nao_pertence_ao_usuario` (`app/agencia/host.py`) compara a agência do usuário com a agência do host da requisição — usuário de agência não entra pelo host da Miggo, e usuário da Miggo não entra pelo domínio de uma agência. Exceção: agência sem domínio próprio ativo também entra pelo host da Miggo. A mesma checagem vale em `/token/`, `/token/refresh/` e `/google/`.
   </Accordion>
 
   <Accordion title="POST /api/v1/account/logout/">
@@ -111,7 +188,7 @@ Todos sob o prefixo `/api/v1/account/` (`core/urls.py:30`, `app/account/urls.py`
     `GoogleAuthView` (`app/account/views.py:281-390`), `AllowAny`.
     <ParamField path="credential" type="string" required>ID token do Google (aceita também a chave alternativa `token`)</ParamField>
 
-    Valida o token com `google.oauth2.id_token.verify_oauth2_token` contra `GOOGLE_CLIENT_ID`, com tolerância de relógio `GOOGLE_AUTH_CLOCK_SKEW` (default 10s). Confere `iss` (`accounts.google.com`) e `email_verified`. Cria o `CustomUser` se não existir (email como chave), ou atualiza `google_id`/`avatar_url`/`email_verified` se já existir. Aplica a mesma checagem de `client.active` da `LoginView` para usuários não-management.
+    Valida o token com `google.oauth2.id_token.verify_oauth2_token` contra `GOOGLE_CLIENT_ID`, com tolerância de relógio `GOOGLE_AUTH_CLOCK_SKEW` (default 10s). Confere `iss` (`accounts.google.com`) e `email_verified`. Cria o `CustomUser` se não existir (email como chave), ou atualiza `google_id`/`avatar_url`/`email_verified` se já existir. Aplica a mesma checagem de `client.active` da `LoginView` para usuários não-management, além das travas de agência suspensa e de host. Cadastro novo feito pelo domínio de uma agência vincula o `Client` a ela (`agencia_do_cadastro`, que também confere a vaga do plano da agência); o mesmo vale para `create/`/`register/`.
 
     <ResponseField name="user" type="object" />
     <ResponseField name="access" type="string">Emitido mesmo sendo um fluxo baseado em sessão</ResponseField>
@@ -132,7 +209,7 @@ Todos sob o prefixo `/api/v1/account/` (`core/urls.py:30`, `app/account/urls.py`
     <ParamField path="email" type="string" required />
     <ParamField path="code" type="string" required />
     <ParamField path="new_password" type="string" required>Mínimo 8 caracteres, ao menos 1 maiúscula e 1 número (validado manualmente na view, não via `AUTH_PASSWORD_VALIDATORS`)</ParamField>
-    Retorna `400` se o código não bater com o último gravado em `UserMeta`.
+    Retorna `400` se o código não bater com o último gravado em `UserMeta`. Desde o MIG-498: comparação em tempo constante (`hmac.compare_digest`), o código vale **15 min** (`VALIDADE_CODIGO_RESET`, pelo `UserMeta.created_at`; linha sem data conta como expirada) e **5 tentativas erradas** (`MAX_TENTATIVAS_RESET`, contadas em `password_reset_attempts`) apagam o código. Usado com sucesso, o código é apagado.
   </Accordion>
 
   <Accordion title="POST /api/v1/account/verify-email/send/ e /verify-email/confirm/">
@@ -143,6 +220,17 @@ Todos sob o prefixo `/api/v1/account/` (`core/urls.py:30`, `app/account/urls.py`
     `SupportChatView` é um proxy autenticado para IA de suporte (a chave OpenAI fica só no servidor, conforme comentário em `app/account/urls.py:46`). `SupportTicketCreateView`/`ListView`/`ReplyView` gerenciam `SupportTicket` (ver [modelo de dados](/backend/modelo-de-dados)), com sincronização opcional para o Jira (`SupportTicketJiraStatusView`, `SupportTicketJiraSyncView`) via `app/account/jira_service.py`.
   </Accordion>
 </AccordionGroup>
+
+## Meta de usuário e de cliente pela API (MIG-498)
+
+`UserMeta` e `ClientMeta` guardam de preferência de tela a código de ativação e de reset; gravar nelas por API permitia tomar uma conta. `app/account/meta_access.py` fecha isso por lista de permissão:
+
+- `CHAVES_META_PROIBIDAS` (`password_reset_code`, `activation_code`): nunca aparecem na listagem nem são gravadas por API, por ninguém.
+- `MetaAccessMixin` (views de `UserMeta` e `ClientMeta`): a equipe vê e grava tudo; o dono só as próprias linhas e só as chaves liberadas (na `UserMeta`, nenhuma: ali moram id de cobrança e fluxo de reivindicação); os demais, nada.
+- `validar_escrita_de_meta` roda no `validate` dos serializers de meta.
+- A API key de serviço segue lendo `client-meta/list` (só leitura, `client_id` obrigatório).
+
+Também do MIG-498: `role` e `agencia` são read-only no `CustomUserSerializer` (o usuário não promove a si mesmo), e o e-mail de credenciais só sai depois do commit (`transaction.on_commit`).
 
 ## Como o frontend consome
 
