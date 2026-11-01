@@ -15,7 +15,7 @@ MiggoAI (`miggoai_v2/backend`). Regras de escrita e de navegação: [`AGENTS.md`
 | `miggoai/` | MiggoAI (backend do serviço de IA) |
 | `releases/` | Changelog |
 | `api-reference/<software>/openapi.json` | specs OpenAPI usados pela Referência de API |
-| `scripts/openapi_tags.py` | pós-processamento dos specs (tags, `info`, `servers`) |
+| `scripts/openapi_tags.py` | pós-processamento dos specs (tags, `summary`, limpeza das descrições, segurança, `info`, `servers`) |
 | `docs.json` | navegação, redirects e tema |
 
 ## Preview local
@@ -28,9 +28,16 @@ npx -y mint broken-links   # antes de commitar
 ## Regenerar a Referência de API
 
 Os specs são gerados do código da `main` de cada repo com o `drf-spectacular`
-e pós-processados pelo `scripts/openapi_tags.py`, que troca tags genéricas
-(`api`, `generations`) por tags por recurso e as traduz para pt-BR. Cada tag
-vira um grupo na navegação.
+e pós-processados pelo `scripts/openapi_tags.py`, que:
+
+- troca tags genéricas (`api`, `generations`) por tags por recurso em pt-BR e
+  reagrupa as grandes demais ou de uma operação só (cada tag vira um grupo na
+  navegação);
+- gera o `summary` de cada operação (título da página do endpoint);
+- tira das descrições o número de card, a linha que repete verbo e caminho,
+  citação de arquivo `.py` e docstring de classe base;
+- declara os esquemas `jwtAuth` (Bearer) e `apiKeyAuth` (`Authorization: Api-Key`);
+- fixa `info` e `servers` (produção e homologação) de cada perfil.
 
 O `settings.py` dos dois repos exige variáveis na importação. Valores fictícios
 bastam: o comando só importa URLs e views, não conecta no banco nem chama
@@ -68,9 +75,11 @@ python scripts/openapi_tags.py api-reference/backend-miggo/openapi.json --perfil
 python scripts/openapi_tags.py api-reference/miggoai/openapi.json --perfil miggoai --versao 2.3.0
 ```
 
-O script sai com código `1` e lista os caminhos que ficaram sem tag quando
-surge um prefixo novo: acrescente a regra em `REGRAS_POR_CAMINHO` e rode de novo.
-Tag nova em inglês declarada no código entra em `TRADUCOES`.
+Se sobrar problema, o script sai com código `1`, lista o que falta e **não grava**
+o arquivo: caminho sem regra (`REGRAS_POR_CAMINHO`), `summary` repetido na mesma
+tag (`RESUMOS_FIXOS` ou `NOMES`), tag sem descrição (`DESCRICOES_TAGS`) ou número
+de card que a limpeza não tirou. Tag nova em inglês declarada no código entra em
+`TRADUCOES`. Rodar de novo sobre o arquivo já processado não muda nada.
 
 ## Publicação
 
