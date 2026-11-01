@@ -1,13 +1,13 @@
 ---
-title: "Fluxo de Onboarding"
-description: "Passos, máquina de navegação, persistência e retomada do onboarding de nova marca em src/pages/Onboarding/"
+title: "Onboarding no web app"
+description: "Como funciona a esteira de onboarding em /onboarding: etapas, chamadas à API, navegação e retomada."
 icon: "footprints"
 ---
 
-O onboarding é a rota pública `/onboarding` (`src/App.tsx:68`), servida por `src/pages/Onboarding/OnboardingShell.tsx`. É a etapa 1 de criação da própria conta (MIG-109): quem chega sem sessão vê o cadastro (`SignupStep`) direto, sem precisar já ter usuário.
+O onboarding é a rota pública `/onboarding`, servida por `src/pages/Onboarding/OnboardingShell.tsx`. A etapa 1 cria a própria conta: quem chega sem sessão vê o cadastro (`SignupStep`) direto. O lado do servidor está em [Onboarding na Plataforma](/plataforma/apps/onboarding). Todas as chamadas abaixo passam por `onboardingApi` (`src/services/onboardingApi.ts`) e têm o prefixo `/api/v1`.
 
 <Note>
-`src/pages/Onboarding/Steps/ContentStep.tsx` e `src/pages/Onboarding/Steps/CreatingStep.tsx` existem no diretório mas **não são importados** pelo `OnboardingShell.tsx` — não fazem parte do fluxo ativo (comentário no shell explica: "as telas de 'criando o primeiro conteúdo' e de aprovação do post saíram do fluxo"). Tratados aqui como órfãos, não documentados passo a passo.
+`Steps/ContentStep.tsx` e `Steps/CreatingStep.tsx` não são usados pelo shell: as etapas `creating` e `content` saíram da esteira, e sessões antigas paradas nelas são tratadas como `done`.
 </Note>
 
 ## O shell — `OnboardingShell.tsx`
@@ -16,8 +16,8 @@ Container único de todas as etapas. Responsabilidades:
 
 1. **Busca o estado da sessão** (`fetchState`) via `onboardingApi.getState()` (`GET /onboarding/state/`). Sem token de acesso (`getAccessToken()` nulo), nem chama a API — define `current_step: 'signup'` direto, porque uma chamada autenticada devolveria 401 e o interceptor global redirecionaria para `/signin`.
 2. **Decide a etapa a exibir** a partir de `session.current_step`, com duas exceções controladas por query string:
-   - `?step=<id>` (entrada pelo dashboard, MIG-168): se `<id>` está em `pending_steps`, chama `onboardingApi.resumeOnboarding(step)` e entra em `resumeMode` — ao concluir essa etapa, chama `completeOnboarding()` e volta para `/` em vez de seguir a esteira.
-   - `?continuar=1` (retorno de OAuth de rede social, MIG-196): pula a lógica de retomada automática — voltar de um OAuth é "continuar de onde se estava", não reentrar no fluxo.
+   - `?step=<id>` (entrada pelo dashboard): se `<id>` está em `pending_steps`, chama `onboardingApi.resumeOnboarding(step)` e entra em `resumeMode` — ao concluir essa etapa, chama `completeOnboarding()` e volta para `/` em vez de seguir a esteira.
+   - `?continuar=1` (retorno de OAuth de rede social): pula a lógica de retomada automática — voltar de um OAuth é "continuar de onde se estava", não reentrar no fluxo.
    - Sem nenhum dos dois, no **primeiro load**, se `resume_step !== current_step` e `resume_step` está pendente, chama `resumeOnboarding(resume_step)` — cobre o caso de uma etapa anterior ter ficado pendente (ex.: identidade visual adiada) enquanto `current_step` já avançou.
 3. **Renderiza a etapa** via `switch(step)` — ver tabela abaixo.
 4. **Navegação para trás** (`viewStep`): permite revisitar uma etapa concluída sem alterar o estado no servidor — só as etapas em `NAVIGABLE` (`brand`, `identity`, `review`, `plan`, `source`, `strategy`, `calendar`, `media`, `grid`); as telas de espera (polling) e cadastro/verificação/conclusão não entram.
@@ -96,7 +96,7 @@ Verificação do WhatsApp por código de 4 dígitos (inputs individuais com auto
 
 <Accordion title="plan — PlanStep.tsx">
 
-MIG-265: a pergunta é sobre **presença digital** (em quais redes o cliente quer estar), não sobre pagamento — os cards não mostram preço nem "7 dias grátis". Dois cards fixos (Instagram / LinkedIn), o cliente marca um ou os dois; a combinação resolve o `Plan`/`PlanPrice` correspondente entre os planos carregados (`onboardingApi.getPlans()` → `GET /subscription/plan/list/`, filtrados aos que têm algum preço `visible`).
+A pergunta é sobre **presença digital** (em quais redes o cliente quer estar), não sobre pagamento — os cards não mostram preço nem "7 dias grátis". Dois cards fixos (Instagram / LinkedIn), o cliente marca um ou os dois; a combinação resolve o `Plan`/`PlanPrice` correspondente entre os planos carregados (`onboardingApi.getPlans()` → `GET /subscription/plan/list/`, filtrados aos que têm algum preço `visible`).
 
 - Envia: `onboardingApi.setPlan(planPriceId)` → `POST /onboarding/plan/`. Isso já cria o trial no plano resolvido. Se a resposta trouxer `trial_active: false`, mostra erro em vez de avançar (evita terminar o onboarding sem assinatura, o que travaria em "Acesso Restrito").
 
@@ -112,7 +112,7 @@ MIG-265: a pergunta é sobre **presença digital** (em quais redes o cliente que
 
 <Accordion title="brand — BrandSourceStep.tsx">
 
-MIG-155/MIG-221. Coleta a(s) fonte(s) da marca: Instagram, Website (ambos, um ou nenhum — modo `manual`). Fluxo em duas fases:
+Coleta a(s) fonte(s) da marca: Instagram, Website (ambos, um ou nenhum — modo `manual`). Fluxo em duas fases:
 
 1. **`input`** — campos de Instagram/Website com validação no blur (`onboardingApi.validateProfile(kind, value)` → `POST /onboarding/validate-profile/`, não bloqueante: verdicts `'unknown'` não travam o avanço). No submit, chama `onboardingApi.previewBrandSource({ instagram, website })` → `POST /onboarding/brand-source/preview/`, que devolve um mock do perfil (sem iniciar a análise).
 2. **`confirm`** — mostra o preview de cada fonte informada (avatar/bio do Instagram, screenshot/og:image do site) com botão "Confirmar"/"Corrigir" por fonte. Confirmar a **última** fonte pendente já dispara `startAnalysis()`, que chama `onboardingApi.setBrandSource({ instagram, website })` → `POST /onboarding/brand-source/` e avança.
@@ -140,13 +140,13 @@ Revisão da identidade visual (logo, paleta de cores, tipografia, referências v
 
 </Accordion>
 
-<Accordion title="review — ReviewStep.tsx (350 linhas)">
+<Accordion title="review — ReviewStep.tsx">
 
 Revisão completa do briefing (dados básicos, público-alvo, tom de voz, produtos, diferenciais, objetivos, CTAs, brand kit). Reaproveita os mesmos componentes de campo da tela de Briefing da plataforma (`src/components/briefing/ReviewFields.tsx` — `Field`, `ListEditor`, `Section`, `TargetPicker`), então o formulário aqui e o de "Minha Marca" têm exatamente os mesmos rótulos e controles.
 
 Ao montar, se a fonte **não** foi `manual` (`session.brand_source !== 'manual'`), chama `onboardingApi.autofillReview(false)` → preenche com IA os campos em branco **sem avançar** (persiste, mas quem decide seguir é o usuário); em falha, cai para `getReview()` puro. Fonte manual nunca chama autofill — a pessoa escolheu preencher sozinha.
 
-- **Autosave (MIG-223):** salva sozinho conforme edita (`advance=false`), sem exigir rolar até o fim e clicar em salvar — evita perder o que já foi digitado.
+- **Autosave:** salva sozinho conforme edita (`advance=false`), sem exigir rolar até o fim e clicar em salvar — evita perder o que já foi digitado.
 - **Continuar:** `onboardingApi.updateReview(data, true, 'review')`.
 
 </Accordion>
@@ -157,7 +157,7 @@ Tela de espera (sem interação) enquanto a estratégia é gerada. Dispara `onbo
 
 </Accordion>
 
-<Accordion title="strategy — StrategyStep.tsx (531 linhas)">
+<Accordion title="strategy — StrategyStep.tsx">
 
 Revisão e aprovação da estratégia (bio, destaques/capas, visão geral do LinkedIn, banner), agrupada por rede contratada (prefixos `ig-`/`li-`). Aprovação é **única** para todo o conjunto — não item a item.
 
@@ -171,9 +171,9 @@ Inclui download em lote das capas de destaque e lightbox de visualização ampli
 
 </Accordion>
 
-<Accordion title="calendar — CalendarStep.tsx (328 linhas)">
+<Accordion title="calendar — CalendarStep.tsx">
 
-Grade semanal proposta pela IA (dia, horário, assunto, formatos — read-only, chips), com catálogo de estilos/CTAs/tags pré-cadastrado (`fetchCalendarCatalog`, `src/services/editorialCalendarCatalog.ts`). MIG-164: a composição da semana (quantos stories/feeds, limite do LinkedIn) é decidida pelo **backend**; o único jeito de mudar é pedir por feedback textual à IA — os formatos não são editáveis diretamente aqui (diferente da tela "Calendário Editorial" da plataforma).
+Grade semanal proposta pela IA (dia, horário, assunto, formatos — read-only, chips), com catálogo de estilos/CTAs/tags pré-cadastrado (`fetchCalendarCatalog`, `src/services/editorialCalendarCatalog.ts`). A composição da semana (quantos stories/feeds, limite do LinkedIn) é decidida pelo **backend**; o único jeito de mudar é pedir por feedback textual à IA — os formatos não são editáveis diretamente aqui (diferente da tela "Calendário Editorial" da plataforma).
 
 - `onboardingApi.getCalendar()` → `GET /onboarding/calendar/`.
 - `updateCalendar(calendar)` → `PUT /onboarding/calendar/` (salva toggle ativo/assunto/horário antes de regerar/aprovar).
@@ -195,19 +195,19 @@ Upload das fotos reais da marca — alimenta a **mesma** biblioteca "Minhas foto
 
 <Accordion title="grid — GridStep.tsx">
 
-MIG-165/Sprint 6 TASK-12: a etapa virou **escolha de referência**, não geração na hora. Mostra 3 estilos pré-cadastrados (`onboardingApi.getGridStyles(refresh)` → `GET /onboarding/grid/styles/`, com `refresh=true` para descartar os já mostrados e pedir outros). Ao escolher:
+A etapa é **escolha de referência**, não geração na hora. Mostra 3 estilos pré-cadastrados (`onboardingApi.getGridStyles(refresh)` → `GET /onboarding/grid/styles/`, com `refresh=true` para descartar os já mostrados e pedir outros). Ao escolher:
 
 1. `onboardingApi.selectGridStyle(reference_id)` → `POST /onboarding/grid/styles/` com `{ reference_id }`.
 2. `onboardingApi.approveGrid()` → `POST /onboarding/grid/approve/` (conclui a etapa e dispara a geração do 1º conteúdo em background).
 3. `onNext()`.
 
-Não há preview nem tela de loading aqui — a geração da imagem personalizada (grid com cores/logo da marca) roda depois por cron, e o cliente é avisado por WhatsApp/notificação (ver `GridApprovalPage` em `paginas.mdx`, tela separada acessada por link).
+Não há preview nem tela de loading aqui — a geração da imagem personalizada (grid com cores/logo da marca) roda depois por cron, e o cliente é avisado por WhatsApp/notificação (a aprovação do mosaico é a tela `/grid/aprovar`, aberta por link; veja [Telas e rotas](/web/paginas)).
 
 </Accordion>
 
 <Accordion title="publish — PublishStep.tsx">
 
-Conexão real de redes sociais, reaproveitando o componente `SocialConnections` (mesmo das Configurações), com props `clientId`, `isOnboarding` e `onConnectionsChange`. MIG-185: conectar **uma** rede não encerra a etapa — a volta do OAuth cai de novo aqui (via `SocialConnected`, ver abaixo), com a conta recém-ligada já marcada, para conectar outras redes propostas se quiser.
+Conexão real de redes sociais, reaproveitando o componente `SocialConnections` (mesmo das Configurações), com props `clientId`, `isOnboarding` e `onConnectionsChange`. Conectar **uma** rede não encerra a etapa — a volta do OAuth cai de novo aqui (via `SocialConnected`, ver abaixo), com a conta recém-ligada já marcada, para conectar outras redes propostas se quiser.
 
 - Botão principal ("Continuar") e secundário ("Pular as outras conexões" / "Fazer depois", rótulo muda conforme já há conexão) chamam o **mesmo** handler: `onboardingApi.completeOnboarding()` → `POST /onboarding/complete/`, seguido de `onNext()`.
 
@@ -223,7 +223,7 @@ Botão "Ir para a plataforma" chama `onFinish` (prop do shell = `handleFinish`):
 
 <Accordion title="SocialConnected.tsx — retorno do OAuth dentro do onboarding">
 
-Não é um "passo" da esteira (`current_step` nunca vale isso) — é a rota `/onboarding/conectado/:platform/:clientId/*` (`src/App.tsx:87`), destino do OAuth quando a conexão parte do onboarding (`origin=onboarding` gravado no `connection_url` da integração). Existe porque a tela de sucesso genérica (`InstagramSuccess`, ver `paginas.mdx`) manda de volta para `/profile` — dentro da esteira a conexão é a própria etapa, não um desvio.
+Não é um "passo" da esteira (`current_step` nunca vale isso) — é a rota `/onboarding/conectado/:platform/:clientId/*`, destino do OAuth quando a conexão parte do onboarding (`origin=onboarding` gravado no `connection_url` da integração). Existe porque a tela de sucesso genérica (`InstagramSuccess`) manda de volta para `/profile` — dentro da esteira a conexão é a própria etapa, não um desvio.
 
 Fluxo: `clearOnboardingCache()` → confirma a integração junto ao Zernio (`GET /api/v1/post/platform-integration/list/?client=:clientId`, força reconciliação sem depender do webhook `account.connected`) → `onboardingApi.getState()` para ler `current_step`:
 - `'publish'` → `navigate('/onboarding?continuar=1')` (volta para a etapa de conexão, deixando a pessoa decidir se conecta mais redes).
@@ -238,7 +238,7 @@ Fluxo: `clearOnboardingCache()` → confirma a integração junto ao Zernio (`GE
 
 **Arquivo:** `src/hooks/useOnboarding.ts`
 
-Hook consumido pelas telas da plataforma (Dashboard, Content, Brandkit, Agenda, etc. — ver `paginas.mdx`) para saber se um cliente pode usar o recurso. Busca `GET /api/v1/client/onboarding-status/:clientId/`, com **cache em memória module-level** (`_cachedStatus`/`_cachedClientId`, não React state) para evitar corrida entre `OnboardingGuard` e o próprio fluxo ao navegar logo após concluir.
+Hook consumido pelas telas da plataforma (dashboard, conteúdos, brandkit, agenda) para saber se um cliente pode usar o recurso. Busca `GET /api/v1/client/onboarding-status/:clientId/`, com **cache em memória module-level** (`_cachedStatus`/`_cachedClientId`, não React state) para evitar corrida entre `OnboardingGuard` e o próprio fluxo ao navegar logo após concluir.
 
 Campos principais de `OnboardingStatus`:
 | Campo | Uso |
@@ -262,4 +262,4 @@ Tentar retomar uma etapa **já concluída** (via chip) devolve 400 do backend �
 
 ## Condição de conclusão
 
-`onboarding_completed`/`is_onboarding_complete` (Sprint 6 / TASK-06) vêm da `OnboardingSession` no backend, não do contador legado `onboarding_step`. O onboarding é considerado "completo o bastante para liberar o app" bem antes do fim literal da esteira (o trial já nasce na etapa `plan`) — chegar a `current_step === 'done'` não é o mesmo que não ter pendências: quem adiou fotos, grid ou estratégia chega em `done` mesmo assim, e essas pendências continuam aparecendo como `pending_steps` no dashboard.
+`onboarding_completed`/`is_onboarding_complete` vêm da `OnboardingSession` no backend, não do contador legado `onboarding_step`. O onboarding é considerado "completo o bastante para liberar o app" bem antes do fim literal da esteira (o trial já nasce na etapa `plan`) — chegar a `current_step === 'done'` não é o mesmo que não ter pendências: quem adiou fotos, grid ou estratégia chega em `done` mesmo assim, e essas pendências continuam aparecendo como `pending_steps` no dashboard.

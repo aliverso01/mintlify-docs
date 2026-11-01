@@ -1,139 +1,64 @@
 ---
-title: "Componentes"
-description: "Inventário de src/components/ por subpasta e props dos componentes reutilizáveis principais"
+title: "Componentes de interface"
+description: "Os componentes reutilizáveis do frontend-miggo e quando criar um componente novo."
 icon: "component"
 ---
 
-`src/components/` tem ~90 arquivos, agrupados por subpasta de domínio. Esta página lista todos os componentes por pasta e detalha props dos reutilizáveis genéricos (`ui/`, `form/`, `common/`). Para os guards de rota (`ProtectedRoute`, `AdminRoute`, `ManagementRoute`, `ClientRoute`, `AgencyRoute`, `ModuloRoute`, `RoleRedirect`, `OnboardingGuard`, `SubscriptionGuard`), ver `roteamento.mdx`.
+O web app nasceu do template TailAdmin (React 19 + Tailwind 4). O design system vive em `src/components/ui/` e `src/components/form/`, e o catálogo com a API de cada componente é o `design.md` na raiz do repositório. As props ficam no próprio código; esta página diz **o que existe** e **quando usar**.
 
-## Inventário por subpasta
+<Warning>
+Não reimplemente botão, modal, input, tabela, toast ou skeleton na mão. Use os componentes abaixo.
+</Warning>
 
-| Subpasta | Componentes |
+## Interface (`src/components/ui/`)
+
+| Componente | Import | Use para |
+|---|---|---|
+| `Button` | `ui/button/Button` | Toda ação. Variantes `primary` e `outline`, tamanhos `sm` e `md`. |
+| `Modal` | `ui/modal` (export `Modal`) | Diálogos. Estado com `useModal()`; largura com `max-w-[NNNpx] m-4`. Fecha com `Esc`. |
+| `useNotification` | `ui/NotificationProvider` | `toast(...)` e `confirm(...)`. Nunca `alert()` ou `window.confirm()`. |
+| `Table`, `TableHeader`, `TableBody`, `TableRow`, `TableCell` | `ui/table` | Tabelas, sempre dentro de `<div className="overflow-x-auto">`. `SortableHeader` e `TableExport` ficam na mesma pasta. |
+| `Skeleton`, `SkeletonTable` | `ui/skeleton/Skeleton` | Estado de carregamento (prefira a spinner). |
+| `Badge`, `Alert`, `Avatar` | `ui/badge`, `ui/alert`, `ui/avatar` | Status, avisos e foto de perfil. |
+| `Dropdown`, `DropdownItem` | `ui/dropdown` | Menus suspensos. |
+| `Pagination` | `ui/pagination/Pagination` | Listas paginadas. |
+| `ResponsiveImage`, componentes de vídeo | `ui/images`, `ui/videos` | Mídia fluida com proporção fixa. |
+
+## Formulários (`src/components/form/`)
+
+| Componente | Use para |
 |---|---|
-| **raiz** (`components/`) | `ProtectedRoute`, `AdminRoute`, `ManagementRoute`, `ClientRoute`, `AgencyRoute`, `ModuloRoute`, `RoleRedirect` (`RoleHomeRedirect` + `LegacyPathRedirect`), `OnboardingGuard`, `SubscriptionGuard`, `OnboardingGamificationWidget`, `OnboardingRequiredState` |
-| `admin/` | `ImportarReferenciaLink` |
-| `analytics/` | `InsightsHistoryCharts`, `PostTimelineModal`, `SmartInsightsPanel` |
-| `auth/` | `SignInForm`, `SignUpForm` |
-| `briefing/` | `BrandMaterialsPanel`, `BriefingReviewModal`, `PlatformProfileConfigPanel`, `ReviewFields` |
-| `Clients/` | `AllowedSocialNetworksModal`, `ContentPresetsModal` |
-| `common/` | `ChartTab`, `ComponentCard`, `GridShape`, `PageBreadCrumb`, `PageMeta` (+ `AppWrapper`), `RouteAnalytics`, `RouteLoader`, `ScrollToTop`, `StatsCard`, `ThemeToggleButton`, `ThemeTogglerTwo` |
-| `ecommerce/` | `CountryMap`, `DemographicCard`, `EcommerceMetrics`, `MonthlySalesChart`, `MonthlyTarget`, `RecentOrders`, `StatisticsChart` |
-| `editorial/` | `CatalogPicker` |
-| `email/` | `EmailImage`, `RichTextEditor` |
-| `form/` | `ClientSearchSelect`, `Form`, `Label`, `MultiSelect`, `Select`, `date-picker`, `group-input/PhoneInput`, `input/Checkbox`, `input/FileInput`, `input/InputField`, `input/Radio`, `input/RadioSm`, `input/TextArea`, `switch/Switch` |
-| `header/` | `Header` (não usado por `AppLayout`, que usa `layout/AppHeader.tsx`), `NotificationDropdown`, `UserDropdown` |
-| `onboarding/` | `EsperaDaAnalise`, `WelcomeTour` |
-| `support/` | `ContactForm`, `SupportChatWidget` |
-| `Subscription/` | `InvoiceList`, `ManualSubscriptionModal`, `SubscriptionHistoryModal`, `TermsAcceptModal` |
-| `tables/BasicTables/` | `BasicTableOne` |
-| `ui/` | `NotificationProvider`, `alert/Alert`, `avatar/Avatar`, `badge/Badge`, `button/Button`, `dropdown/Dropdown`, `dropdown/DropdownItem`, `images/ResponsiveImage`, `images/ThreeColumnImageGrid`, `images/TwoColumnImageGrid`, `modal/index` (`Modal`), `pagination/Pagination`, `skeleton/Skeleton`, `table/index`, `videos/AspectRatioVideo`, `videos/FourIsToThree`, `videos/OneIsToOne`, `videos/SixteenIsToNine`, `videos/TwentyOneIsToNine` |
-| `UserProfile/` | `ChangePasswordCard`, `SocialConnections`, `UserAddressCard`, `UserInfoCard`, `UserMetaCard` |
+| `input/InputField`, `Label`, `input/TextArea`, `input/Checkbox`, `input/Radio`, `input/FileInput` | Campos padrão; `InputField` aceita `success`, `error` e `hint`. |
+| `Select`, `MultiSelect` | Seleção com dropdown estilizado. |
+| `ClientSearchSelect`, `ClientMultiSelect` | Escolher cliente(s) com busca no servidor. É o padrão em qualquer tela de gestão que filtra por cliente. |
+| `date-picker` | Data com flatpickr. |
+| `switch/Switch` | Liga/desliga. |
+| `group-input/PhoneInput` | Telefone com máscara e código de país. |
 
-<Note>
-`components/header/Header.tsx` existe mas o layout ativo (`src/layout/AppLayout.tsx`) usa `src/layout/AppHeader.tsx` — `Header.tsx` parece ser resquício do template original (não confirmado nenhum import ativo dele nesta varredura).
-</Note>
+## Página e layout (`src/components/common/`)
 
-## `ui/button/Button.tsx`
+| Componente | Papel |
+|---|---|
+| `PageMeta` | Título da aba e descrição por página (`react-helmet-async`). |
+| `PageBreadCrumb` | Cabeçalho e breadcrumb da tela. |
+| `ComponentCard`, `StatsCard`, `ChartTab` | Blocos de dashboard. |
+| `MarcaLogo` | Logo da marca do host (Miggo ou agência). Use no lugar de um `<img>` com o logo fixo. |
+| `RouteLoader` | Carregamento usado pelos guards. |
+| `ScrollToTop`, `RouteAnalytics` | Montados uma vez no `App.tsx`. |
+
+Componentes por domínio (`briefing/`, `Clients/`, `Subscription/`, `analytics/`, `onboarding/`, `support/`, `Agencia/`, `modulos/`, `shared/` etc.) servem a uma área de produto. Os guards de rota estão em [Roteamento e áreas](/web/roteamento).
+
+## Estrutura padrão de uma tela
 
 ```tsx
-interface ButtonProps {
-  children: ReactNode;
-  size?: "sm" | "md";               // default "md"
-  variant?: "primary" | "outline";  // default "primary"
-  startIcon?: ReactNode;
-  endIcon?: ReactNode;
-  onClick?: () => void;
-  disabled?: boolean;               // default false
-  className?: string;
-  type?: "button" | "submit" | "reset"; // default "button"
-}
+<PageMeta title="Conteúdos | Miggo" description="..." />
+<PageBreadcrumb pageTitle="Conteúdos" />
+{/* conteúdo */}
 ```
-(`Button.tsx:3-13`)
 
-## `ui/modal/index.tsx` (`Modal`)
+## Quando criar um componente novo
 
-```tsx
-interface ModalProps {
-  isOpen: boolean;
-  onClose: () => void;
-  className?: string;
-  children: React.ReactNode;
-  showCloseButton?: boolean;  // default true
-  isFullscreen?: boolean;     // default false
-}
-```
-(`modal/index.tsx:3-19`). Fecha com `Esc` e trava o scroll do `body` enquanto aberto.
-
-## `ui/alert/Alert.tsx`
-
-```tsx
-interface AlertProps {
-  variant: "success" | "error" | "warning" | "info"; // obrigatório
-  title: string;      // obrigatório
-  message: string;    // obrigatório
-  showLink?: boolean;  // default false
-  linkHref?: string;   // default "#"
-  linkText?: string;   // default "Learn more"
-}
-```
-(`Alert.tsx:3-19`)
-
-## `ui/badge/Badge.tsx`
-
-```tsx
-interface BadgeProps {
-  variant?: "light" | "solid";  // default "light"
-  size?: "sm" | "md";           // default "md"
-  color?: "primary" | "success" | "error" | "warning" | "info" | "light" | "dark"; // default "primary"
-  startIcon?: React.ReactNode;
-  endIcon?: React.ReactNode;
-  children: React.ReactNode;    // obrigatório
-}
-```
-(`Badge.tsx:1-19`)
-
-## `form/input/InputField.tsx`
-
-```tsx
-interface InputProps extends React.InputHTMLAttributes<HTMLInputElement> {
-  type?: "text" | "number" | "email" | "password" | "date" | "time" | string; // default "text"
-  id?: string; name?: string; placeholder?: string;
-  value?: string | number;
-  onChange?: (e: React.ChangeEvent<HTMLInputElement>) => void;
-  className?: string; min?: string; max?: string; step?: number;
-  disabled?: boolean;  // default false
-  success?: boolean;   // default false — estado visual de sucesso
-  error?: boolean;     // default false — estado visual de erro
-  hint?: string;        // texto de ajuda/erro abaixo do campo
-}
-```
-(`InputField.tsx:4-19`) — estende todos os atributos nativos de `<input>`.
-
-## `form/ClientSearchSelect.tsx`
-
-```tsx
-interface ClientSearchSelectProps {
-  apiKey?: string;               // VITE_MIGGO_API_KEY, ou undefined para usar credentials
-  value: string;                 // obrigatório — ID do cliente selecionado, ou "" para nenhum
-  onChange: (value: string, label?: string) => void; // obrigatório
-  placeholder?: string;
-  allowAll?: boolean;            // exibe opção "Todos" (value="")
-  allLabel?: string;
-  extraParams?: Record<string, string>; // filtros extras na querystring
-  disabled?: boolean;
-  className?: string;
-}
-```
-(`ClientSearchSelect.tsx:12-26`). Busca server-side com debounce em `GET /api/v1/client/list/?search=<term>&page_size=10`; sem query digitada, mostra os primeiros 10 clientes.
-
-## Componentes de guard (raiz de `components/`)
-
-Documentados em detalhe em `roteamento.mdx`: `ProtectedRoute`, `AdminRoute`, `ManagementRoute`, `ClientRoute`, `AgencyRoute`, `ModuloRoute`, `RoleHomeRedirect`/`LegacyPathRedirect` (em `RoleRedirect.tsx`), `OnboardingGuard`, `SubscriptionGuard`. Nenhum recebe props — todos leem contexto/hooks e renderizam `<Outlet />` ou um `<Navigate>`.
-
-## Componentes de layout de página comuns
-
-- **`common/RouteLoader`**: spinner de carregamento usado por todos os guards de role enquanto `loading` está `true`.
-- **`common/ScrollToTop`**: rola a página para o topo a cada troca de rota (montado em `App.tsx:63`).
-- **`common/RouteAnalytics`**: só chama `useGoogleAnalytics()` (montado em `App.tsx:64`).
-- **`common/PageBreadCrumb`**: breadcrumb de página, usado nas telas internas.
-- **`common/PageMeta`** / **`AppWrapper`**: `<Helmet>` de título/descrição por página; `AppWrapper` provê o `HelmetProvider` (montado em `main.tsx:26`).
+1. Procure em `ui/`, `form/`, `common/` e no `design.md`. Se existe algo próximo, estenda por prop.
+2. Usado por uma tela só: crie na pasta da tela em `src/pages/<Area>/`.
+3. Usado por duas ou mais telas: mova para `src/components/<dominio>/` (ou `ui/` se não tiver regra de negócio).
+4. Sempre com par `dark:` em toda cor, layout mobile-first e texto em pt-BR. Veja [Layout e tema](/web/layout-e-tema).

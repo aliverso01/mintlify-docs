@@ -1,116 +1,69 @@
 ---
-title: "Estrutura do projeto"
-description: "Árvore de pastas do frontend-miggo e responsabilidade de cada uma"
+title: "Estrutura do web app"
+description: "Onde fica cada coisa no frontend-miggo: pastas de src/, convenção de nomes e arquivos de infraestrutura."
 icon: "folder-tree"
 ---
 
-## Árvore de `src/`
+## `src/`
 
-```
+```text
 src/
-├── App.tsx              # Definição de todas as rotas (react-router) — ver roteamento.mdx
-├── main.tsx              # Entry point: monta providers globais e chama setupAuthFetchInterceptor()
-├── index.css              # Tema Tailwind 4 (tokens @theme), fontes, estilos de libs de terceiros
-├── svg.d.ts               # Tipagem do módulo "*.svg?react" (vite-plugin-svgr)
-├── vite-env.d.ts          # Referência aos tipos do cliente Vite
-│
-├── components/            # Componentes reutilizáveis, agrupados por domínio/subpasta
-│   ├── auth/               # Formulários de login/cadastro
-│   ├── admin/               # ImportarReferenciaLink (MIG-371)
-│   ├── analytics/            # Gráficos e modais de insights
-│   ├── briefing/              # Painéis de configuração de perfil/briefing
-│   ├── Clients/                # Modal de assinatura de contrato do cliente
-│   ├── common/                 # Utilitários de UI compartilhados (breadcrumb, loaders, toggles...)
-│   ├── ecommerce/                # Cards/gráficos herdados do template TailAdmin (dashboard)
-│   ├── editorial/                  # Seletor de catálogo do calendário editorial
-│   ├── email/                       # Editor de rich text e imagem para e-mail marketing
-│   ├── form/                         # Inputs, selects, checkboxes, form wrappers genéricos
-│   ├── header/                        # Header do layout autenticado (dropdown de notificações/usuário)
-│   ├── onboarding/                     # Widgets do fluxo de onboarding (tour, espera de análise)
-│   ├── support/                         # Formulário e widget de chat de suporte
-│   ├── Subscription/                     # Modais de fatura/assinatura manual/termos
-│   ├── tables/                            # Tabelas básicas herdadas do template
-│   ├── ui/                                 # Design system genérico (Alert, Avatar, Badge, Button, Modal...)
-│   ├── UserProfile/                        # Cards de perfil do usuário
-│   ├── ProtectedRoute.tsx, AdminRoute.tsx, ManagementRoute.tsx, ClientRoute.tsx, RoleRedirect.tsx,
-│   │   OnboardingGuard.tsx, SubscriptionGuard.tsx   # Guards de rota — ver roteamento.mdx
-│   └── OnboardingGamificationWidget.tsx, OnboardingRequiredState.tsx
-│
-├── context/                # Providers de estado global via React Context — ver contextos.mdx
-│   ├── AuthContext.tsx, MarcaContext.tsx, SearchContext.tsx, SidebarContext.tsx, ThemeContext.tsx
-│
-├── data/                    # Dados estáticos usados pela UI (não vêm de API)
-│   ├── briefingQuestions.json  # Perguntas do briefing de marca
-│   ├── briefingSections.ts     # Estrutura/seções do briefing
-│   └── supportPrompt.ts        # Texto padrão do prompt de suporte
-│
-├── hooks/                    # Hooks customizados — ver hooks.mdx
-│
-├── icons/                     # SVGs importados como componentes React (via vite-plugin-svgr)
-│   └── index.ts                  # Barrel file — reexporta todos os ícones nomeados
-│
-├── layout/                     # Casca visual do app autenticado — ver layout-e-tema.mdx
-│   ├── AppLayout.tsx, AppHeader.tsx, AppSidebar.tsx, Backdrop.tsx, SidebarWidget.tsx
-│
-├── pages/                       # Telas, uma pasta por área de produto
-│   ├── Admin/                      # Telas exclusivas da equipe Miggo (financeiro, planos, logs...)
-│   ├── Agenda/                       # Sugestão de pauta (admin e cliente)
-│   ├── AuthPages/                     # Sign in/up, reset de senha, retorno de OAuth do Instagram
-│   ├── Brandkit/                       # Identidade visual (logos, cores, tipografia, grid)
-│   ├── Briefing/                        # Tela de briefing de marca
-│   ├── Clients/                          # Listagem de clientes (admin)
-│   ├── Content/                           # Kanban de conteúdo (posts)
-│   ├── Dashboard/                          # Home/analytics/dashboards admin e cliente
-│   ├── EditorialCalendar/                   # Calendário editorial
-│   ├── Grid/                                 # Aprovação do grid (mosaico 3x3) por link
-│   ├── History/                               # Histórico
-│   ├── Legal/                                  # Termos de uso / política de privacidade
-│   ├── Media/                                   # Biblioteca de mídia / download por link assinado
-│   ├── Onboarding/                               # Fluxo completo de onboarding (Steps/)
-│   ├── OtherPage/                                 # 404 e página de suporte
-│   ├── SocialNetworks/                             # Conexão de redes sociais
-│   ├── Subscription/                                # Planos, checkout, billing, success/cancel
-│   └── Users/                                         # Listagem de usuários (admin)
-│
-├── routes/                      # Mapas de caminho por papel — ver roteamento.mdx
-│   ├── rolePaths.ts, legacyPaths.ts
-│
-├── services/                     # Chamadas de API isoladas em módulos — ver services.mdx
-│   ├── editorialCalendarCatalog.ts, jwtAuth.ts, onboardingApi.ts, subscriptionSync.ts
-│
-└── utils/                         # Funções puras utilitárias — ver services.mdx (seção utils)
-    ├── clientDisplay.ts, clientMetaCache.ts, clients.ts, countryCodes.ts, errors.ts, subscriptionStatus.ts
+├── main.tsx          # entrada: instala o interceptor de fetch e monta os providers globais
+├── App.tsx           # todas as rotas (ver Roteamento)
+├── index.css         # Tailwind 4: tokens @theme, fontes, estilos de bibliotecas
+├── components/       # componentes reutilizáveis, por domínio
+│   ├── ui/           # design system: Button, Modal, Badge, Alert, tabela, toast...
+│   ├── form/         # inputs, selects, checkboxes, wrappers de formulário
+│   ├── common/       # breadcrumb, loaders, PageMeta, MarcaLogo, ScrollToTop
+│   ├── auth/ Agencia/ Clients/ Subscription/ admin/ analytics/ brandkit/ briefing/
+│   │   editorial/ email/ header/ modulos/ onboarding/ shared/ support/ UserProfile/ ...
+│   └── *Route.tsx, OnboardingGuard.tsx, SubscriptionGuard.tsx, RoleRedirect.tsx   # guards
+├── context/          # contextos globais (ver Estado e dados)
+├── hooks/            # hooks compartilhados por mais de uma tela
+├── services/         # chamadas de API agrupadas; services/miggoai/ é o cliente do MiggoAI
+├── routes/           # rolePaths.ts (áreas), modulos.ts (permissão), legacyPaths.ts
+├── layout/           # AppLayout, AppHeader, AppSidebar, AppBottomNav, clientNav
+├── pages/            # telas, uma pasta por área de produto
+├── data/             # dados estáticos (perguntas e seções do briefing, prompt do suporte)
+├── icons/            # SVGs como componentes React (index.ts reexporta)
+└── utils/            # funções puras (erros, marca, URLs seguras, status de assinatura)
 ```
 
-## Convenção de nomes observada no projeto
+### `src/pages/`
 
-- **Componentes e páginas**: `PascalCase.tsx`, um componente por arquivo (ex.: `ClientSearchSelect.tsx`, `BrandkitEditor.tsx`).
-- **Hooks**: prefixo `use`, `camelCase.ts` — exceto `authHook.ts`, que foge do padrão (é o hook de autenticação, mas o arquivo não se chama `useAuth.ts`; o hook exportado de dentro dele é `useAuth`).
-- **Contextos**: `NomeContext.tsx`, exportando o `Provider` e um hook de consumo (`useX`) no mesmo arquivo.
-- **Services/utils**: `camelCase.ts`, funções nomeadas exportadas (sem classes).
-- **Pastas de página por domínio**: cada pasta de `pages/` pode conter sub-componentes e hooks locais exclusivos daquela tela (ex.: `pages/Content/useContentBoard.ts`, `pages/Dashboard/useDashboard.ts`) — hooks compartilhados por múltiplas telas vivem em `src/hooks/`, hooks de uma tela só ficam junto da própria pasta.
-- Algumas pastas de `components/` usam PascalCase (`Clients/`, `Subscription/`, `UserProfile/`) e outras lowercase (`auth/`, `common/`, `form/`) — inconsistência existente no código, não corrigida aqui (ver seção de inconsistências no relatório final).
+| Pasta | Telas |
+|---|---|
+| `Admin/` | Telas só da equipe Miggo: financeiro, planos, trials, logs, conversas, e-mail marketing, agências, benefícios, referências de design. |
+| `Admin/MiggoAI/` | Painel de IA. Veja [Painel de IA](/web/painel-de-ia). |
+| `Agencia/` | Home, membros, plano e marca da área `/agency`. |
+| `Content/`, `EditorialCalendar/`, `Agenda/`, `Media/`, `Brandkit/`, `Briefing/` | Operação de conteúdo, compartilhada entre as áreas. |
+| `Onboarding/` | Esteira de onboarding (ver [Onboarding no web app](/web/onboarding)). |
+| `Grid/` | Aprovação do grid por link. |
+| `Dashboard/`, `History/`, `Clients/`, `Users/`, `SocialNetworks/`, `Subscription/`, `Benefits/` | Demais telas. |
+| `AuthPages/`, `Legal/`, `OtherPage/` | Login, reset de senha, retorno de OAuth, termos, 404 e suporte. |
 
-## `public/`
+## Convenção de nomes
 
-```
-public/
-├── favicon.png
-└── images/
-    └── favicon.ico
-```
-Ativos estáticos servidos como estão (o `index.html` também referencia `/images/logo/*.svg`, que não estão em `public/images/` no momento da varredura — não foi possível confirmar a origem desses arquivos de logo).
+| Tipo | Padrão | Exemplo |
+|---|---|---|
+| Componente e tela | `PascalCase.tsx`, um componente por arquivo | `ClientSearchSelect.tsx` |
+| Hook compartilhado | `src/hooks/useAlgo.ts` | `useRoleArea.ts` (o hook de auth vive em `authHook.ts`) |
+| Hook de uma tela só | Ao lado da tela | `pages/Content/useContentBoard.ts` |
+| Contexto | `NomeContext.tsx` com o provider; o hook pode ficar num `.ts` à parte | `SupportChatContext.tsx` + `supportChat.ts` |
+| Service e util | `camelCase.ts`, funções nomeadas | `uploadChunked.ts` |
 
-## `dist/`
+Um `.tsx` que exporta componente **e** valor quebra a regra `react-refresh/only-export-components`; por isso alguns contextos separam o hook num `.ts`.
 
-Saída do build de produção (`vite build`), gerada por `npm run build`. Não deve ser versionada nem editada manualmente; é o diretório copiado para a imagem Nginx (`dockerfile:18`).
-
-## Arquivos de infraestrutura (raiz do repo)
+## Raiz do repositório
 
 | Arquivo | Papel |
 |---|---|
-| `dockerfile` | Build multi-stage: `node:20-alpine` compila (`npm install && npm run build`) e o resultado (`dist/`) é copiado para uma imagem `nginx:stable-alpine`. Recebe `VITE_MIGGO_API_KEY` e `VITE_API_BASE_URL` como build args (`dockerfile:1-21`). |
-| `nginx.conf` | Config estática do Nginx (usada como referência/documentação) — serve a SPA (`try_files ... /index.html`) e faz proxy de `/api` para `https://api.miggomkt.com.br` fixo (`nginx.conf:15-40`). |
-| `nginx.conf.template` | Mesma config, mas parametrizada com `${BACKEND_URL}`/`${BACKEND_HOST}`, processada em runtime pelo `docker-entrypoint.sh` (`nginx.conf.template:19-20,25,29`). |
-| `docker-entrypoint.sh` | Extrai host/URL do backend de `VITE_API_BASE_URL`, roda `envsubst` sobre `nginx.conf.template` e inicia o Nginx (`docker-entrypoint.sh:1-14`). |
-| `docker-compose.yml` | Sobe o serviço `miggo-frontend` atrás de Traefik, com roteamento por domínio (`plataforma.miggomkt.com.br`) e headers `X-Forwarded-Proto` (`docker-compose.yml:1-27`). |
+| `vite.config.ts` | Plugins e proxy `/api` do dev server. |
+| `dockerfile` | Build em dois estágios: `node:20-alpine` gera o `dist/`, `nginx:stable-alpine` serve. |
+| `nginx.conf.template` + `docker-entrypoint.sh` | Config do Nginx com o backend injetado no start do container. |
+| `docker-compose.yml` | Serviço atrás do Traefik, com o router dos domínios de agência. |
+| `.github/workflows/docker-ecr.yml` | Build da imagem e push no Amazon ECR a cada push na `main`. |
+| `design.md` | Catálogo do design system: consulte antes de criar componente. |
+| `.env.example` | Chaves de ambiente, sem valor. |
+
+O deploy está em [Build e deploy do web app](/web/build-e-deploy).

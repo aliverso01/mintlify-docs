@@ -1,158 +1,73 @@
 ---
-title: "Roteamento"
-description: "Todas as rotas do app, separação por área (/admin e /app) e os guards"
+title: "Roteamento e áreas do web app"
+description: "Como o frontend-miggo separa as áreas /admin, /agency e /app e a cadeia de guards que protege cada rota."
 icon: "route"
 ---
 
-O roteamento inteiro é declarado em `src/App.tsx` com `react-router` (`BrowserRouter`, `Routes`, `Route`). O app tem **três áreas mutuamente exclusivas**: `/admin/*` (equipe Miggo), `/agency/*` (agência, MIG-514) e `/app/*` (cliente) — documentado em `src/routes/rolePaths.ts`. Paths de rota são em inglês.
+Todas as rotas são declaradas em `src/App.tsx` com `react-router` 7. As telas são carregadas sob demanda (`lazy`), para a rota pública não baixar o bundle do admin. Os paths são em inglês. A lista completa de rotas está em [Telas e rotas](/web/paginas).
 
-## Separação por área
+## Três áreas, uma por perfil
 
-- `ADMIN_PREFIX = "/admin"`, `CLIENT_PREFIX = "/app"`, `AGENCY_PREFIX = "/agency"` (`src/routes/rolePaths.ts`).
-- `isManagementUser(user)`: `true` se `is_superuser`, `is_staff`, `role === "admin"` ou `role === "manager"`, e `false` para papéis de agência — dá acesso a `/admin/*`.
-- `isFullAdminUser(user)`: `true` se `is_superuser` ou `role === "admin"` (sem `is_staff` desde a MIG-518) — hoje só guarda `/admin/agencies`.
-- `isAgencyUser(user)`: `true` se `role` é `agencia_admin` ou `agencia_membro` — dá acesso a `/agency/*`.
-- `canManageClients(user)`: equipe Miggo ou agência; habilita as telas de carteira.
-- `isClientUser(user)`: `true` se `role === "client"`.
-- `areaPrefixFor(user)` / `homePathFor(user)` / `pathFor(user, subpath)`: resolvem, respectivamente, o prefixo da área, a rota inicial e um caminho absoluto dentro da área do usuário logado. Telas devem usar esses helpers (ou o hook `useRoleArea`, ver `hooks.mdx`) em vez de escrever o prefixo fixo no JSX.
-- **Módulos (MIG-518)**: `ModuloRoute modulo="..."` envolve as telas que dependem de permissão por módulo; `temModulo()` (`src/routes/modulos.ts`) decide. Ver [Área administrativa](/frontend/area-admin#níveis-de-acesso).
-- O preview mode ("visualizar como cliente", `PreviewContext`) foi removido.
-
-## Árvore de rotas (`src/App.tsx`)
-
-| Path | Componente | Camada de proteção | Observações |
+| Área | Quem entra | Guard | Helper em `src/routes/rolePaths.ts` |
 |---|---|---|---|
-| `/onboarding` | `OnboardingFlow` | Pública | Etapa 1 é a criação de conta — MIG-109 (`App.tsx:68`) |
-| `/midia/:token` | `MediaDownloadPage` | Pública | Autorização é o token assinado do link, sem login — MIG-235 (`App.tsx:73`) |
-| `/grid/aprovar` | `GridApprovalPage` | `ProtectedRoute` (só login) | Fora dos guards de onboarding/assinatura — MIG-165 (`App.tsx:80`) |
-| `/onboarding/conectado/:platform/:clientId/*` | `SocialConnected` | `ProtectedRoute` | Retorno de OAuth iniciado no onboarding — MIG-185 (`App.tsx:87`) |
-| `/` | `RoleHomeRedirect` | `ProtectedRoute` | Redireciona para `homePathFor(user)` (`App.tsx:90`) |
-| Rotas legadas (`LEGACY_ROOT_PATHS`) | `LegacyPathRedirect` | `ProtectedRoute` | Ver seção abaixo (`App.tsx:94-96`) |
-| `/admin` (index) | `Home` | `ProtectedRoute > OnboardingGuard > SubscriptionGuard > AppLayout > ManagementRoute` | Dashboard da equipe |
-| `/admin/analytics` | `AnalyticsDashboard` | idem | |
-| `/admin/profile` | `UserProfiles` | idem | |
-| `/admin/content` | `ContentKanban` | idem + `ModuloRoute conteudo` | Mesmo módulo em `editorial-calendar`, `agenda/sugestao`, `media-library`, `brandkit` e `content/parados` |
-| `/admin/editorial-calendar` | `EditorialCalendar` | idem | |
-| `/admin/agenda/sugestao` | `AgendaSugestao` | idem | |
-| `/admin/media-library` | `MediaLibrary` | idem | |
-| `/admin/acervo` | `<Navigate to="/admin/design-references?aba=acervo" replace />` | idem | Redireciona para `/admin/design-references?aba=acervo` — MIG-371 (antes tela dedicada — MIG-455) |
-| `/admin/brandkit` | `BrandkitPage` | idem | |
-| `/admin/briefing` | `Briefing` | idem | |
-| `/admin/history` | `HistoryList` | idem | |
-| `/admin/social-networks` | `SocialNetworksPage` | idem | |
-| `/admin/notifications` | `NotificationHistory` | idem | |
-| `/admin/clients` | `ClientsList` | idem | |
-| `/admin/trials` | `TrialsPanel` | idem | MIG-246 |
-| `/admin/content/parados` | `StalledPosts` | idem | Fila de posts parados, fora do Kanban semanal |
-| `/admin/users` | `UsersList` | idem | |
-| `/admin/logs` | `IntegrationLogs` | idem | |
-| `/admin/support` | `AdminSupportPage` | idem | |
-| `/admin/conversations` | `ConversationsPage` | idem | |
-| `/admin/message-flows` | `MessageFlowsPage` | idem | |
-| `/admin/email-marketing` | `EmailMarketingPage` | idem | MIG-264 |
-| `/admin/design-references` | `DesignReferences` | idem | Referências de design (abas: Grids visuais, Referências de Títulos/Copies e Acervo Miggo — MIG-382, MIG-371) |
-| `/admin/benefits` | `Admin/BenefitsAdmin` | idem | Cadastro dos benefícios oficiais e fila de moderação |
-| `/admin/plans` | `PlansEntry` | idem | Com módulo `financeiro`, abre a aba Planos de `/admin/billing` |
-| `/admin/miggoai` | `MiggoAI/Overview` | idem | MIG-507/508; demais telas em `miggoai/runs`, `miggoai/runs/:tipo/:id`, `miggoai/generate/:clientId/:postId`, `miggoai/prompts`, `miggoai/prompts/:id`, `miggoai/clients/:id`, `miggoai/usage`, `miggoai/models` |
-| `/admin/billing` | `BillingModule` | ... `> ManagementRoute > ModuloRoute financeiro` | Gestor entra com o módulo |
-| `/admin/financial` | `<Navigate to="/admin/billing" replace />` | idem | |
-| `/admin/team` | `TeamManagement` | ... `> ManagementRoute > ModuloRoute time` | |
-| `/admin/agencies` | `AgenciasList` | ... `> ManagementRoute > AdminRoute` | Só admin pleno — MIG-513 |
-| `/admin/agencies/:id` | `AgenciaDetalhe` | idem | Usuários, domínios e marca da agência |
-| `/agency` (index) | `Agencia/AgenciaHome` | `ProtectedRoute > OnboardingGuard > SubscriptionGuard > AppLayout > AgencyRoute` | MIG-514 |
-| `/agency/{analytics,profile,content,content/parados,editorial-calendar,agenda/sugestao,media-library,brandkit,briefing,history,social-networks,notifications,clients}` | mesmos componentes do `/admin` | idem (+ `ModuloRoute` `conteudo` ou `clientes`) | Backend escopa aos clientes da agência |
-| `/agency/members` | `Agencia/Membros` | idem + `ModuloRoute membros` | |
-| `/agency/plan` | `Agencia/Plano` | idem + `ModuloRoute plano` | |
-| `/agency/brand` | `Agencia/Marca` | idem + `ModuloRoute marca` | MIG-517 |
-| `/app` (index) | `Home` | `ProtectedRoute > OnboardingGuard > SubscriptionGuard > AppLayout > ClientRoute` | Dashboard do cliente |
-| `/app/analytics` | `AnalyticsDashboard` | idem | |
-| `/app/profile` | `UserProfiles` | idem | |
-| `/app/content` | `ContentKanban` | idem | |
-| `/app/editorial-calendar` | `EditorialCalendar` | idem | |
-| `/app/agenda/sugestao` | `AgendaSugestao` | idem | |
-| `/app/media-library` | `MediaLibrary` | idem | |
-| `/app/brandkit` | `BrandkitPage` | idem | |
-| `/app/briefing` | `Briefing` | idem | |
-| `/app/history` | `HistoryList` | idem | |
-| `/app/social-networks` | `SocialNetworksPage` | idem | |
-| `/app/notifications` | `NotificationHistory` | idem | |
-| `/app/plans` | `Plans` | idem | |
-| `/app/billing` | `ClientBilling` | idem | |
-| `/app/subscription/checkout` | `Checkout` | idem | |
-| `/app/subscription/success` | `Success` | idem | |
-| `/app/subscription/cancel` | `Cancel` | idem | |
-| `/app/beneficios` | `Benefits/BenefitsPage` | idem | "Meus Benefícios". Vitrine aberta a todos; cupom, link e instruções só para assinante pagante — MIG-387 |
-| `/app/support` | `SupportPage` | idem | |
-| `/app/instagram/success/:clientId/*` | `InstagramSuccess` | idem | |
-| `/app/linkedin/success/:clientId/*` | `InstagramSuccess` | idem | Reusa o mesmo componente |
-| `/app/whatsapp/success/:clientId/*` | `InstagramSuccess` | idem | Reusa o mesmo componente |
-| `/app/tiktok/success/:clientId/*`, `/app/facebook/success/:clientId/*` | `InstagramSuccess` | idem | Reusa o mesmo componente |
-| `/signin` | `SignIn` | Pública | |
-| `/signup` | `<Navigate to="/onboarding" replace />` | Pública | MIG-154: `/signup` foi substituída pelo onboarding como registro oficial |
-| `/reset-password` | `ResetPassword` | Pública | |
-| `/terms` | `TermsOfUse` | Pública | |
-| `/privacy` | `PrivacyPolicy` | Pública | |
-| `*` | `NotFound` | Pública | Fallback |
+| `/admin/*` | Equipe Miggo: `role` `admin` ou `manager`, `is_staff` ou `is_superuser` | `ManagementRoute` | `isManagementUser` |
+| `/agency/*` | Agência: `role` `agencia_admin` ou `agencia_membro` | `AgencyRoute` | `isAgencyUser` |
+| `/app/*` | Cliente (e qualquer papel inesperado) | `ClientRoute` | `isClientUser` |
 
-## Cadeia de guards (rotas autenticadas)
+As áreas são mutuamente exclusivas. A raiz `/` não tem tela: `RoleHomeRedirect` manda cada usuário para a home da própria área (`homePathFor`).
 
-Ordem exata em `App.tsx`:
+Dentro do `/admin` há dois recortes a mais:
 
-```
-ProtectedRoute
-  └── (rotas soltas: /grid/aprovar, /onboarding/conectado/*, /, legadas)
-  └── OnboardingGuard
-        └── SubscriptionGuard
-              └── AppLayout
-                    ├── ManagementRoute → rotas /admin/*
-                    │     ├── ModuloRoute → telas por módulo
-                    │     └── AdminRoute → /admin/agencies, /admin/agencies/:id
-                    ├── AgencyRoute → rotas /agency/*
-                    │     └── ModuloRoute → telas por módulo
-                    └── ClientRoute → rotas /app/*
+- **Admin pleno** (`isFullAdminUser`: `is_superuser` ou `role === "admin"`). O gestor não é admin pleno. Hoje só `/admin/agencies` exige isso, pelo `AdminRoute`.
+- **Módulos.** `ModuloRoute modulo="..."` libera a tela se `temModulo(user, modulo)` (`src/routes/modulos.ts`, espelho de `app/account/modulos.py` da Plataforma). Admin e superusuário têm todos os módulos; `agencia_admin` tem `clientes`, `conteudo`, `membros`, `plano` e `marca`; gestor e membro de agência dependem da lista `modulos` do usuário. Veja [Área administrativa](/web/area-admin).
+
+<Warning>
+Guard é navegação, não autorização. Esconder a rota ou o botão não impede a chamada: a Plataforma e o MiggoAI recusam por endpoint (`401`/`403`). Toda tela nova depende dessa recusa no backend.
+</Warning>
+
+## Cadeia de guards
+
+```text
+ProtectedRoute                       exige login; sem sessão → /signin?next=<rota>
+├── /grid/aprovar, /onboarding/conectado/..., /, rotas legadas
+└── OnboardingGuard                  cliente com onboarding incompleto → /onboarding
+    └── SubscriptionGuard            cliente sem assinatura ativa → tela de bloqueio
+        └── AppLayout                sidebar, header, providers de layout
+            ├── ManagementRoute      /admin/*
+            │   ├── ModuloRoute      telas por módulo
+            │   └── AdminRoute       /admin/agencies
+            ├── AgencyRoute          /agency/*
+            │   └── ModuloRoute
+            └── ClientRoute          /app/*
 ```
 
-1. **`ProtectedRoute`** (`src/components/ProtectedRoute.tsx:4-19`): exige `user` autenticado (via `useAuth`). Sem usuário, redireciona para `/signin?next=<path>`, preservando `pathname + search` para retorno pós-login.
-2. **`OnboardingGuard`** (`src/components/OnboardingGuard.tsx:13-76`): só se aplica a `user.role === 'client'`. Libera direto rotas de `allowedPaths` (`/onboarding`, `/plans`, `/subscription/checkout|success|cancel`, `/billing`). Consulta `useClient`, `useSubscription` e `useOnboarding`; se já há assinatura ativa, deixa passar mesmo sem onboarding completo (assinatura pode ter sido criada manualmente pelo admin); senão, redireciona para `/onboarding` quando `!isComplete && !status?.onboarding_skipped`.
-3. **`SubscriptionGuard`** (`src/components/SubscriptionGuard.tsx:10-141`): também só filtra clientes. Permite sempre um conjunto de rotas (`/app/plans`, `/app/billing`, `/app/subscription*`, `/app/profile`, `/app/support`, os equivalentes legados sem prefixo, e `/onboarding`). Sem assinatura ativa fora dessas rotas, renderiza uma tela de bloqueio com CTA para assinar ou (se aplicável) abrir o portal de cobrança da Stripe. Se `subscription.status === 'UNPAID'`, mostra um banner de aviso mas libera o acesso.
-4. **`AppLayout`**: casca visual (sidebar/header) — ver `layout-e-tema.mdx`.
-5. **`ManagementRoute`** (`src/components/ManagementRoute.tsx:12-22`): bloqueia quem não é `isManagementUser`, redirecionando para `homePathFor(user)`.
-6. **`ClientRoute`** (`src/components/ClientRoute.tsx`): manda usuário de agência para `/agency/clients` e bloqueia quem é `isManagementUser` (checagem por exclusão, não por `role === 'client'`, para não gerar ping-pong de redirect com `ManagementRoute` em roles inesperados), mandando para `/admin`.
-7. **`AdminRoute`** (`src/components/AdminRoute.tsx`): dentro de `/admin`, restringe para `isFullAdminUser` (hoje só agências) — gestor (`role === 'manager'`) não passa.
-8. **`AgencyRoute`** (`src/components/AgencyRoute.tsx`): libera `/agency/*` só para `isAgencyUser`; os demais voltam para `homePathFor(user)`.
-9. **`ModuloRoute`** (`src/components/ModuloRoute.tsx`): recebe `modulo` e libera se `temModulo(user, modulo)`; senão volta para `homePathFor(user)`. Billing e time deixaram o `AdminRoute` e passaram a ser por módulo (`financeiro`, `time`).
+| Guard | Regra |
+|---|---|
+| `ProtectedRoute` | Sem `user`, redireciona para `/signin?next=<pathname+search>`; o login volta para lá. |
+| `OnboardingGuard` | Só filtra `role === "client"`. Libera as rotas de onboarding, planos e checkout. Com assinatura ativa, deixa passar mesmo sem onboarding concluído (assinatura criada pelo admin). Sem isso, manda para `/onboarding` se o onboarding não terminou e não foi pulado (`onboarding_skipped`). |
+| `SubscriptionGuard` | Só filtra clientes. Sempre libera `/app/plans`, `/app/billing`, `/app/subscription/*`, `/app/profile` e `/app/support`. Sem assinatura ativa, mostra a tela de bloqueio com o caminho para assinar ou abrir o portal de cobrança. Com pagamento pendente (`UNPAID`), mostra um aviso e libera. |
+| `ManagementRoute` | Quem não é equipe Miggo volta para a própria área. |
+| `AgencyRoute` | Quem não é agência volta para a própria área. |
+| `ClientRoute` | Bloqueia por exclusão: agência vai para `/agency/clients`, equipe Miggo vai para `/admin`. Assim um papel desconhecido cai em `/app` em vez de entrar em loop de redirect. |
+| `AdminRoute`, `ModuloRoute` | Quem não passa volta para a home da área. |
 
-Todos os guards de role usam `RouteLoader` como estado de carregamento enquanto `useAuth().loading` é `true`.
+Enquanto `useAuth().loading` é `true`, os guards de papel mostram `RouteLoader`.
 
-## Redirecionamento por papel
+## Montar links
 
-- **`RoleHomeRedirect`** (`src/components/RoleRedirect.tsx:11-17`): usado na rota `/`; aguarda `loading` resolver e navega para `homePathFor(user)`.
-- **`LegacyPathRedirect`** (`src/components/RoleRedirect.tsx:24-33`): usado nas rotas de `LEGACY_ROOT_PATHS`; resolve o destino via `resolveLegacyPath(user, location.pathname)` preservando `search` e `hash`.
+Não escreva `/admin/content` ou `/app/content` no JSX: o mesmo componente serve a mais de uma área. Use o hook `useRoleArea`:
 
-## Rotas legadas e seus redirecionamentos
-
-`src/routes/legacyPaths.ts:11-34` lista as rotas raiz que existiam **antes** da separação em `/admin` e `/app`. Continuam registradas para não quebrar bookmarks, e-mails do backend e redirect URIs de OAuth:
-
-```
-/analytics, /profile, /content, /editorial-calendar, /agenda/sugestao, /media-library,
-/brandkit, /briefing, /history, /social-networks, /notifications, /support, /plans,
-/billing, /subscription/checkout, /subscription/success, /subscription/cancel,
-/clients, /users, /instagram/success/:clientId/*, /linkedin/success/:clientId/*,
-/whatsapp/success/:clientId/*
+```tsx
+const { path, isManagement } = useRoleArea();
+<Link to={path("content")}>Conteúdos</Link>   // /admin/content, /agency/content ou /app/content
 ```
 
-A resolução do destino (`resolveLegacyPath`, `src/routes/rolePaths.ts:85-98`) usa um mapa explícito (`LEGACY_ROUTES`, `rolePaths.ts:73-79`) só para os caminhos que **divergem** entre as áreas:
+## Rotas públicas
 
-| Rota legada | Destino admin | Destino cliente |
-|---|---|---|
-| `/clients` | `/admin/clients` | não existe → cai no início da área (`homePathFor`) |
-| `/users` | `/admin/users` | não existe → início |
-| `/subscription/checkout` | não existe → início | `/app/subscription/checkout` |
-| `/subscription/success` | não existe → início | `/app/subscription/success` |
-| `/subscription/cancel` | não existe → início | `/app/subscription/cancel` |
+`/signin`, `/reset-password`, `/onboarding` (a etapa 1 cria a conta), `/midia/:token` (download de mídia por link assinado, sem login), `/terms` e `/privacy`. `/signup` redireciona para `/onboarding`.
 
-Qualquer outra rota legada não mapeada cai no mesmo subpath dentro da área resolvida (ex.: `/brandkit` → `/admin/brandkit` ou `/app/brandkit`).
+## Rotas legadas
 
-<Note>
-Regra do código (comentário em `legacyPaths.ts:9`): **não adicionar rota nova aqui** — rota nova já nasce dentro de `/admin` ou `/app`. `LEGACY_ROOT_PATHS` é só para o que existia antes da separação.
-</Note>
+As rotas raiz de antes da separação em áreas (`/content`, `/brandkit`, `/billing`, `/clients`, os retornos de OAuth `/instagram/success/...` etc.) continuam registradas em `src/routes/legacyPaths.ts` para não quebrar links salvos, e-mails já enviados e redirect URIs de OAuth. `LegacyPathRedirect` resolve o destino com `resolveLegacyPath`: na maioria, o mesmo subpath na área do usuário; `/clients` e `/users` só existem no admin, e `/subscription/*` só no cliente (quem não tem a tela vai para a home).
+
+Rota nova nasce dentro de uma área. Não acrescente nada em `legacyPaths.ts`.

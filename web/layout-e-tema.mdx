@@ -1,6 +1,6 @@
 ---
-title: "Layout e tema"
-description: "A casca visual da aplicação, o sistema de tema claro/escuro, tokens de design e ícones."
+title: "Layout e tema do web app"
+description: "A casca visual do frontend-miggo, o tema claro e escuro, os tokens de design, a paleta por marca e os ícones."
 icon: "palette"
 ---
 
@@ -8,16 +8,18 @@ icon: "palette"
 
 `src/layout/AppLayout.tsx` é o componente que envolve **todas** as telas autenticadas. Ele monta os providers de layout e o esqueleto visual:
 
-```
+```text
 AppLayout
-├── SidebarProvider          (estado da sidebar)
-│   └── SearchProvider       (busca global)
-│       ├── LayoutContent
-│       │   ├── AppSidebar + Backdrop
-│       │   └── coluna principal
-│       │       ├── AppHeader
-│       │       └── <Outlet />   ← a tela da rota
-│       │   └── SupportChatWidget
+└── SidebarProvider
+    └── SearchProvider
+        └── SupportChatProvider
+            └── LayoutContent
+                ├── AppSidebar + Backdrop
+                ├── coluna principal
+                │   ├── AppHeader
+                │   └── <Outlet />          ← a tela da rota
+                ├── SupportChatWidget
+                └── AppBottomNav            ← só na área do cliente
 ```
 
 | Arquivo | Responsabilidade |
@@ -26,7 +28,9 @@ AppLayout
 | `src/layout/AppSidebar.tsx` | Menu lateral e navegação |
 | `src/layout/AppHeader.tsx` | Cabeçalho: busca, tema, perfil |
 | `src/layout/Backdrop.tsx` | Fundo escurecido quando a sidebar abre no mobile |
-| `src/layout/SidebarWidget.tsx` | Bloco promocional/informativo no pé da sidebar |
+| `src/layout/SidebarWidget.tsx` | Bloco informativo no pé da sidebar |
+| `src/layout/AppBottomNav.tsx` | Barra inferior do cliente no mobile (inclui a aba "Ajuda", que abre o chat de suporte) |
+| `src/layout/clientNav.tsx` | Itens de menu do cliente e o link da central de ajuda (`VITE_HELP_CENTER_URL`) |
 
 ### Deslocamento da coluna principal
 
@@ -38,7 +42,7 @@ A margem esquerda do conteúdo reage ao estado da sidebar, lido de `useSidebar()
 | Recolhida | `lg:ml-[90px]` |
 | `isMobileOpen` | `ml-0` |
 
-A transição é `transition-all duration-300 ease-in-out`, e o conteúdo é limitado por `max-w-(--breakpoint-2xl)` com padding crescente por breakpoint (`p-4 md:p-6 xl:p-8 2xl:p-10`).
+A transição é `transition-all duration-300 ease-in-out`. O conteúdo é limitado por `max-w-(--breakpoint-2xl)` com padding crescente por breakpoint (`p-4 md:p-6 xl:p-8 2xl:p-10`).
 
 ### Regra de cliente inativo
 
@@ -57,7 +61,7 @@ A transição é `transition-all duration-300 ease-in-out`, e o conteúdo é lim
 </Steps>
 
 <Note>
-  A checagem roda no layout, não por rota — então vale para toda a área `/app` de uma vez. Falha de rede é engolida com `console.error` e o cliente segue considerado ativo.
+  A checagem roda no layout, não por rota, então vale para toda a área `/app` de uma vez. Se a chamada falhar, o cliente segue considerado ativo. Quem barra o acesso aos dados é a Plataforma.
 </Note>
 
 ## Tema claro e escuro
@@ -84,7 +88,7 @@ const { theme, toggleTheme } = useTheme();
   A escrita no `localStorage` só acontece depois de `isInitialized`, para não sobrescrever a preferência salva com o valor padrão no primeiro render.
 </Tip>
 
-No CSS, o modo escuro é declarado como variante customizada do Tailwind 4 (`src/index.css:5`):
+No CSS, o modo escuro é uma variante customizada do Tailwind 4 em `src/index.css`:
 
 ```css
 @custom-variant dark (&:is(.dark *));
@@ -94,7 +98,7 @@ Ou seja: qualquer utilitário prefixado com `dark:` responde à classe `dark` co
 
 ## Tokens de design
 
-`src/index.css` (903 linhas) concentra todo o design system, usando o bloco `@theme` do Tailwind 4.
+`src/index.css` concentra os tokens do design system no bloco `@theme` do Tailwind 4.
 
 ### Tipografia
 
@@ -144,13 +148,17 @@ A paleta turquesa da Miggo, de `--color-brand-25` a `--color-brand-950`:
 
 Há ainda as famílias de acento em amarelo (`--color-miggo-yellow-*`) e as bases `--color-black: #1d1d1b`, `--color-white`, `--color-current`, `--color-transparent`.
 
+### Paleta por marca
+
+Em domínio de agência a paleta muda em tempo de execução: `applyMarca` (`src/utils/marca.ts`), chamada pelo `MarcaContext`, sobrescreve as variáveis `--color-brand-*` no `<html>` com a escala da agência; `clearMarca` volta à da Miggo. Por isso as classes `brand-*` já acompanham a marca. Gráficos e SVG que não usam classe Tailwind leem a cor em vigor com `corDaMarca()` ou `corDoGrafico()`.
+
 <Warning>
-  Use os tokens, não hex solto no JSX. Cor escrita à mão não acompanha o tema escuro nem uma futura troca de paleta.
+  Use os tokens, não hex solto no JSX. Cor escrita à mão não acompanha o tema escuro nem a paleta da agência.
 </Warning>
 
 ### Utilitários de menu
 
-A partir de `src/index.css:213`, o arquivo declara utilitários próprios com `@utility` para a navegação da sidebar, em pares ativo/inativo:
+`src/index.css` também declara utilitários próprios com `@utility` para a navegação da sidebar, em pares ativo/inativo:
 
 `menu-item`, `menu-item-active`, `menu-item-inactive`, `menu-item-icon`, `menu-item-icon-active`, `menu-item-icon-inactive`, `menu-item-icon-size`, `menu-item-arrow`, `menu-item-arrow-active`, `menu-item-arrow-inactive`, `menu-dropdown-item`, `menu-dropdown-item-active`, `menu-dropdown-item-inactive`, `menu-dropdown-badge`, `menu-dropdown-badge-active`.
 
@@ -158,30 +166,21 @@ Ao adicionar item de menu, reaproveite esses utilitários em vez de repetir as c
 
 ## Ícones
 
-`src/icons/` reúne 59 arquivos SVG, importados como componentes React pelo **vite-plugin-svgr** (configurado em `vite.config.ts`). A tipagem dos imports vem de `src/svg.d.ts`.
+`src/icons/` reúne os SVGs do app, importados como componentes React pelo **vite-plugin-svgr** (configurado em `vite.config.ts`). `src/icons/index.ts` reexporta cada um como componente nomeado; a tipagem vem de `src/svg.d.ts`.
 
 ```tsx
-import AlertIcon from "../icons/alert.svg?react";
+import { AlertIcon, PlusIcon } from "../icons";
 ```
 
 Como o SVG vira componente, ele aceita `className` e herda `currentColor` — o que faz o ícone acompanhar o tema sem variante extra.
 
-## Pontos de atenção encontrados
-
-<Warning>
-  Dois problemas de encoding no repositório, que valem correção quando alguém passar por esses arquivos:
-
-  - `src/layout/AppLayout.tsx` começa com **BOM UTF-8**.
-  - `src/index.css` tem **mojibake** nos comentários da paleta (`Miggo Brand Colors � Turquesa`, e o mesmo nos dois blocos de amarelo).
-</Warning>
-
 ## Relacionados
 
 <Columns cols={2}>
-  <Card title="Contextos" icon="box" href="/frontend/contextos">
-    `SidebarContext`, `SearchContext`, `MarcaContext` e `ThemeContext` em detalhe.
+  <Card title="Estado e dados" icon="database" href="/web/estado-e-dados">
+    `SidebarContext`, `SearchContext`, `MarcaContext` e `ThemeContext`.
   </Card>
-  <Card title="Componentes" icon="component" href="/frontend/componentes">
-    Inventário dos componentes por subpasta.
+  <Card title="Componentes de interface" icon="component" href="/web/componentes">
+    O design system e quando criar componente novo.
   </Card>
 </Columns>

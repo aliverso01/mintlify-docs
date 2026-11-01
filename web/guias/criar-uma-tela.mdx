@@ -1,0 +1,95 @@
+---
+title: "Criar uma tela no web app"
+description: "Passo a passo para acrescentar uma tela ao frontend-miggo: rota, guard de papel e módulo, hook, service, menu e verificação."
+icon: "square-plus"
+---
+
+O exemplo cria a tela "Relatórios" para a equipe Miggo e para agências, em `/admin/reports` e `/agency/reports`, protegida pelo módulo `clientes`.
+
+<Steps>
+  <Step title="Confirme o endpoint e a permissão na Plataforma">
+    Antes do front, o endpoint precisa existir e recusar quem não pode (`401`/`403`), com escopo por agência quando for o caso. Confira na [Referência de API da Plataforma](/plataforma/api-referencia).
+
+    <Warning>
+    Esconder a rota ou o botão não é autorização. Quem digita a URL ou chama a API direto passa pelo front. A regra de acesso tem de estar no backend.
+    </Warning>
+  </Step>
+
+  <Step title="Crie a tela">
+    Em `src/pages/<Area>/`, um componente `PascalCase.tsx` com a estrutura padrão:
+
+    ```tsx
+    // src/pages/Reports/ReportsPage.tsx
+    import PageMeta from "../../components/common/PageMeta";
+    import PageBreadcrumb from "../../components/common/PageBreadCrumb";
+    import { useRelatorios } from "./useRelatorios";
+
+    export default function ReportsPage() {
+      const { itens, erro, carregando } = useRelatorios();
+      return (
+        <>
+          <PageMeta title="Relatórios | Miggo" description="Relatórios da carteira" />
+          <PageBreadcrumb pageTitle="Relatórios" />
+          {/* carregando → Skeleton; erro → Alert; vazio → estado vazio; lista → Table */}
+        </>
+      );
+    }
+    ```
+
+    Use os componentes de [Componentes de interface](/web/componentes): `Skeleton` no carregamento, `Table` dentro de `overflow-x-auto`, `useNotification` para toast e confirmação.
+  </Step>
+
+  <Step title="Busque os dados num hook">
+    Se só esta tela usa os dados, o hook fica ao lado dela (`src/pages/Reports/useRelatorios.ts`). Se outras telas vão usar, vá para `src/hooks/`. Chame caminho relativo (`/api/v1/...`) e trate erro com `getErrorMessage`. O token é automático. Veja [Consumir a API](/web/guias/consumir-a-api).
+  </Step>
+
+  <Step title="Registre a rota">
+    Em `src/App.tsx`, importe com `lazy` e ponha a rota dentro da área certa, com o guard de módulo:
+
+    ```tsx
+    const ReportsPage = lazy(() => import("./pages/Reports/ReportsPage"));
+
+    // dentro de <Route path="/admin" element={<ManagementRoute />}>
+    <Route element={<ModuloRoute modulo="clientes" />}>
+      <Route path="reports" element={<ReportsPage />} />
+    </Route>
+
+    // e o mesmo dentro de <Route path="/agency" element={<AgencyRoute />}>
+    ```
+
+    | Quem pode ver | Onde registrar |
+    |---|---|
+    | Toda a equipe Miggo | Dentro de `ManagementRoute`, sem `ModuloRoute` |
+    | Equipe com um módulo | `ModuloRoute modulo="..."` dentro de `ManagementRoute` |
+    | Só admin pleno | Dentro de `AdminRoute` |
+    | Agência | Dentro de `AgencyRoute`, com o módulo da agência |
+    | Cliente | Dentro de `ClientRoute` |
+
+    O path é em inglês (`reports`, não `relatorios`). Não acrescente nada em `src/routes/legacyPaths.ts`. Módulo novo precisa existir primeiro em `app/account/modulos.py` da Plataforma.
+  </Step>
+
+  <Step title="Ponha no menu">
+    Em `src/layout/AppSidebar.tsx`, acrescente o item ao grupo da área com o mesmo `modulo` da rota (ou `superuserOnly`, `financeOnly`). Para o cliente, o menu é `src/layout/clientNav.tsx`.
+
+    ```tsx
+    { icon: <PieChartIcon />, name: "Relatórios", path: "/admin/reports", modulo: "clientes" },
+    ```
+
+    Dentro das telas, monte links com `useRoleArea().path("reports")`, nunca com o prefixo fixo.
+  </Step>
+
+  <Step title="Verifique">
+    ```bash
+    npm run lint
+    npm run build
+    ```
+
+    Depois, no navegador ([Rodar o web app localmente](/web/rodar-localmente)):
+
+    - entre como admin, como gestor **sem** o módulo e como agência: a rota abre ou volta para a home conforme o esperado;
+    - chame o endpoint sem permissão (ex.: com o gestor sem módulo) e confirme o `403` da API;
+    - confira tema claro e escuro, largura de celular e os estados de carregando, vazio e erro.
+
+    Não há test runner no web app. Veja [Qualidade e verificação](/web/qualidade).
+  </Step>
+</Steps>

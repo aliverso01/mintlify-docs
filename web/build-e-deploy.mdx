@@ -1,6 +1,6 @@
 ---
-title: "Build e deploy"
-description: "Como o bundle é gerado, a imagem Docker montada no GitHub Actions e publicada no ECR, e o Nginx configurado em tempo de execução."
+title: "Build e deploy do web app"
+description: "Como o frontend-miggo vira imagem Docker no Amazon ECR, como o Nginx é configurado no start do container e como uma versão chega ao Dokploy."
 icon: "cloud-upload"
 ---
 
@@ -41,7 +41,7 @@ O `dockerfile` usa build em dois estágios:
 
 ## Build da imagem no ECR (GitHub Actions)
 
-A imagem de produção é construída pelo workflow `.github/workflows/docker-ecr.yml` (MIG-494) e publicada no **Amazon ECR**. O workflow **não faz deploy**: a troca de versão no Dokploy continua manual.
+A imagem de produção é construída pelo workflow `.github/workflows/docker-ecr.yml` e publicada no **Amazon ECR**. O workflow **não faz deploy**: a troca de versão no Dokploy continua manual.
 
 | Item | Como está no workflow |
 | --- | --- |
@@ -92,8 +92,8 @@ Ele deriva o host a partir da URL, substitui os três placeholders no template c
 | SPA | `location /` com `try_files $uri $uri/ /index.html`, para o roteamento client-side do React Router |
 | Proxy da API | `location /api` com `proxy_pass $backend` |
 | Headers | `Host: ${BACKEND_HOST}`, `X-Real-IP`, `X-Forwarded-For`, `X-Forwarded-Proto` |
-| Host da agência | `X-Miggo-Host: $host` e `X-Miggo-Proxy-Token: ${PROXY_HOST_TOKEN}` no `/api` (MIG-516). O backend só confia no host quando o token confere; sem token, trata como host Miggo. `proxy_set_header` substitui o que o cliente mandar, então não dá para forjar |
-| Marca por host | `location = /index.html` com `ssi on` (só HTML, `ssi_silent_errors on`, `Cache-Control: no-cache`) e `location = /api/v1/agency/meta-tags/`, que repassa host e token com `Accept-Encoding` vazio, para o include das meta-tags da marca da agência (MIG-517) |
+| Host da agência | `X-Miggo-Host: $host` e `X-Miggo-Proxy-Token: ${PROXY_HOST_TOKEN}` no `/api`. A Plataforma só confia no host quando o token confere; sem token, trata como host Miggo. `proxy_set_header` substitui o que o cliente mandar, então não dá para forjar |
+| Marca por host | `location = /index.html` com `ssi on` (só HTML, `ssi_silent_errors on`, `Cache-Control: no-cache`) e `location = /api/v1/agency/meta-tags/`, que repassa host e token com `Accept-Encoding` vazio, para o include das meta-tags da marca da agência |
 | WebSocket | `proxy_http_version 1.1` com `Upgrade` e `Connection: upgrade` |
 | TLS para Cloudflare | `proxy_ssl_server_name on`, `proxy_ssl_name ${BACKEND_HOST}`, `proxy_ssl_session_reuse off`, `proxy_ssl_protocols TLSv1.2 TLSv1.3` |
 | DNS | `resolver 8.8.8.8 8.8.4.4 valid=300s`, `resolver_timeout 5s` |
@@ -102,10 +102,29 @@ Ele deriva o host a partir da URL, substitui os três placeholders no template c
 | Erros | `error_page 500 502 503 504 /50x.html` |
 
 <Warning>
-  O limite de upload aqui é **50 MB**, enquanto o Traefik do backend permite 100 MB (`maxRequestBodyBytes=104857600`) e o Django recebe `FILE_UPLOAD_MAX_MEMORY_SIZE=104857600`. O gargalo efetivo para quem passa pelo frontend é o `client_max_body_size` de 50M. Se um upload grande falhar só em produção, este é o primeiro número a conferir.
+  O limite de upload que vale para quem passa pelo web app é o `client_max_body_size` de **50 MB** deste Nginx, menor que o da Plataforma. Se um upload grande falhar só em produção, confira este número primeiro.
 </Warning>
 
 Existe também um `nginx.conf` no repositório, sem placeholders — o que a imagem usa é o **`.template`** processado pelo entrypoint.
+
+## Publicar uma versão
+
+<Steps>
+  <Step title="Merge na main">
+    O push na `main` dispara o `docker-ecr.yml`. A `develop` não gera imagem.
+  </Step>
+  <Step title="Imagem no ECR">
+    O job publica `<ECR_REPOSITORY>:<sha do commit>` e `:latest`. Confira o job verde no GitHub Actions antes de seguir.
+  </Step>
+  <Step title="Troca no Dokploy (manual)">
+    O workflow não faz deploy. No Dokploy, aponte o app do frontend para a imagem nova (de preferência a tag `:<sha>`, que identifica o commit) e reinicie. As variáveis de runtime (`VITE_API_BASE_URL`, `PROXY_HOST_TOKEN`) ficam no app do Dokploy.
+  </Step>
+  <Step title="Conferir">
+    Abra `https://app.miggomkt.com.br`, faça login e confira uma chamada a `/api/*` e o painel de IA no `/admin/miggoai`.
+  </Step>
+</Steps>
+
+Os domínios de cada ambiente estão em [Ambientes](/arquitetura/ambientes).
 
 ## Compose e Traefik
 
@@ -131,7 +150,7 @@ Rótulos Traefik:
 | Porta interna | `80` |
 | Middleware | `frontend-headers`, injetando `X-Forwarded-Proto: https` |
 
-Domínios de agência (MIG-516) entram por um segundo router, `miggo-web-agencias`: regra `HostRegexp` casando qualquer host (`.+`, sintaxe Traefik v3) com `priority=1`, para só pegar o host que nenhum outro router pegou; `tls=true` **sem** `certresolver` (o TLS termina na Cloudflare) e o mesmo serviço `miggo-web`. O fallback origin do Cloudflare for SaaS apontando para este servidor é passo manual.
+Domínios de agência entram por um segundo router, `miggo-web-agencias`: regra `HostRegexp` casando qualquer host (`.+`, sintaxe Traefik v3) com `priority=1`, para só pegar o host que nenhum outro router pegou; `tls=true` **sem** `certresolver` (o TLS termina na Cloudflare) e o mesmo serviço `miggo-web`. O fallback origin do Cloudflare for SaaS apontando para este servidor é passo manual.
 
 A rede `root_default` é **externa**: precisa existir antes de subir o serviço.
 
@@ -179,7 +198,7 @@ Em `npm run dev` o papel do Nginx é feito pelo `vite.config.ts`, que também en
 ## Relacionados
 
 <Columns cols={3}>
-  <Card title="Configuração" icon="settings" href="/frontend/configuracao" />
+  <Card title="Rodar localmente" icon="download" href="/web/rodar-localmente" />
   <Card title="Ambientes" icon="layers" href="/arquitetura/ambientes" />
-  <Card title="Deploy do backend" icon="server" href="/backend/deploy" />
+  <Card title="Deploy da Plataforma" icon="server" href="/plataforma/deploy" />
 </Columns>

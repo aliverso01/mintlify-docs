@@ -118,8 +118,7 @@
             "group": "Comece aqui",
             "pages": [
               "web/rodar-localmente",
-              "web/estrutura",
-              "web/autenticacao"
+              "web/estrutura"
             ]
           },
           {
@@ -132,17 +131,18 @@
           {
             "group": "Conceitos",
             "pages": [
+              "web/autenticacao",
               "web/roteamento",
               "web/estado-e-dados",
               "web/componentes",
-              "web/layout-e-tema"
+              "web/layout-e-tema",
+              "web/onboarding"
             ]
           },
           {
             "group": "Áreas",
             "pages": [
               "web/paginas",
-              "web/onboarding",
               "web/area-admin",
               "web/painel-de-ia"
             ]
