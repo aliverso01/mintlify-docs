@@ -1,0 +1,1573 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "MiggoAI (backend)",
+    "version": "2.3.0",
+    "description": "API do serviço de IA da Miggo. Aceita o JWT da plataforma (RS256) para a gestão Miggo e Api-Key para chamadas entre serviços."
+  },
+  "paths": {
+    "/api/clients/": {
+      "get": {
+        "operationId": "clients_retrieve",
+        "description": "Lista clientes do backend-miggo. Aceita `?search=` e `?workflow=`.\n\n`workflow` vem como 'true' (padrão do painel), 'false' ou 'all' — só este\núltimo traz a carteira inteira. O padrão é o recorte de quem tem o workflow\nligado: é sobre eles que o MiggoAI trabalha.",
+        "tags": [
+          "Clientes"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      }
+    },
+    "/api/clients/{client_id}/": {
+      "get": {
+        "operationId": "clients_retrieve_2",
+        "description": "Detalhe de um cliente, incluindo o briefing (client-meta).",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "client_id",
+            "schema": {
+              "type": "integer"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Clientes"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      }
+    },
+    "/api/clients/{client_id}/presets/": {
+      "get": {
+        "operationId": "clients_presets_retrieve",
+        "description": "Predefinições de conteúdo do cliente cadastradas na plataforma (backend-miggo)\n— somente leitura. É o que a geração de imagem aplica, em teste e em produção;\na tela de geração mostra isto para quem testa saber o que vai valer (MIG-248).\n\n`galeria.prontas` conta só as fotos que podem concorrer de fato (já lidas\npela análise por IA do backend e não reprovadas como referência): foto\nrecém-enviada aparece em `total` mas só vira candidata depois da análise.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "client_id",
+            "schema": {
+              "type": "integer"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Clientes"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      }
+    },
+    "/api/clients/{client_id}/variables/": {
+      "get": {
+        "operationId": "clients_variables_retrieve",
+        "description": "Preferências de variáveis já salvas pra este cliente (respostas fornecidas\nmanualmente em gerações anteriores, reaproveitadas automaticamente nas próximas).",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "client_id",
+            "schema": {
+              "type": "integer"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Clientes"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      },
+      "put": {
+        "operationId": "clients_variables_update",
+        "description": "MIG-507 — \"Salvar como padrão do cliente\": ação explícita do painel.\nMesmas regras da gravação na geração (volátil e vazio não entram).",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "client_id",
+            "schema": {
+              "type": "integer"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Clientes"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      }
+    },
+    "/api/clients/{client_id}/variables/{key}/": {
+      "delete": {
+        "operationId": "clients_variables_destroy",
+        "description": "MIG-508 — apaga UMA resposta salva do cliente (`DELETE`), para a próxima\ngeração voltar a usar o valor automático. 204, ou 404 se a chave não existe.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "client_id",
+            "schema": {
+              "type": "integer"
+            },
+            "required": true
+          },
+          {
+            "in": "path",
+            "name": "key",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Clientes"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No response body"
+          }
+        }
+      }
+    },
+    "/api/custos/chamadas/": {
+      "get": {
+        "operationId": "custos_chamadas_retrieve",
+        "description": "MIG-508 — log de chamadas pagas (trilha de auditoria, só leitura), mais nova primeiro.\n\nFiltros: `modelo`, `etapa`, `client_id`, `sem_preco` e `estimado` (true/false),\n`from` e `to` (AAAA-MM-DD, dia local, inclusivos). Paginação `?page=&page_size=`\n(máx. 200) → `{count, page, page_size, results}`. Data ou client_id inválido: 400.",
+        "tags": [
+          "Custos"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      }
+    },
+    "/api/custos/cotacoes/": {
+      "get": {
+        "operationId": "custos_cotacoes_retrieve",
+        "description": "MIG-508 — cotações USD→BRL, da mais recente para a mais antiga.\n\nGET `?page=&page_size=` (máx. 200) → `{count, page, page_size, results}`.\nPOST (só superusuário) `{data: AAAA-MM-DD, taxa: \"5.4321\"}` grava com\n`fonte=manual`; se o dia já tem cotação, ela é corrigida (200), senão criada\n(201). Taxa fora de 1–100 é 400.",
+        "tags": [
+          "Custos"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      },
+      "post": {
+        "operationId": "custos_cotacoes_create",
+        "description": "MIG-508 — cotações USD→BRL, da mais recente para a mais antiga.\n\nGET `?page=&page_size=` (máx. 200) → `{count, page, page_size, results}`.\nPOST (só superusuário) `{data: AAAA-MM-DD, taxa: \"5.4321\"}` grava com\n`fonte=manual`; se o dia já tem cotação, ela é corrigida (200), senão criada\n(201). Taxa fora de 1–100 é 400.",
+        "tags": [
+          "Custos"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      }
+    },
+    "/api/custos/dashboard/": {
+      "get": {
+        "operationId": "custos_dashboard_retrieve",
+        "description": "`?periodo=mes` (padrão, mês corrente até hoje), `?periodo=30d` (últimos 30\ndias, hoje incluído) ou `?periodo=intervalo&desde=AAAA-MM-DD&ate=AAAA-MM-DD`.",
+        "tags": [
+          "Custos"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      }
+    },
+    "/api/custos/precos/": {
+      "get": {
+        "operationId": "custos_precos_retrieve",
+        "description": "MIG-508 — tabela de preços (antes só no admin do Django).\n\nGET: lista por `modelo`. POST (só superusuário): cria; `modelo` é único (400 se\nrepetido). Salvar/apagar limpa o cache do preço na hora (`signals.py`).",
+        "tags": [
+          "Custos"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      },
+      "post": {
+        "operationId": "custos_precos_create",
+        "description": "MIG-508 — tabela de preços (antes só no admin do Django).\n\nGET: lista por `modelo`. POST (só superusuário): cria; `modelo` é único (400 se\nrepetido). Salvar/apagar limpa o cache do preço na hora (`signals.py`).",
+        "tags": [
+          "Custos"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      }
+    },
+    "/api/custos/precos/{id}/": {
+      "get": {
+        "operationId": "custos_precos_retrieve_2",
+        "description": "GET / PUT / PATCH / DELETE de um preço (escrita só superusuário).",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "integer"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Custos"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      },
+      "put": {
+        "operationId": "custos_precos_update",
+        "description": "GET / PUT / PATCH / DELETE de um preço (escrita só superusuário).",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "integer"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Custos"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      },
+      "patch": {
+        "operationId": "custos_precos_partial_update",
+        "description": "GET / PUT / PATCH / DELETE de um preço (escrita só superusuário).",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "integer"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Custos"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "custos_precos_destroy",
+        "description": "GET / PUT / PATCH / DELETE de um preço (escrita só superusuário).",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "integer"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Custos"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No response body"
+          }
+        }
+      }
+    },
+    "/api/generations/": {
+      "get": {
+        "operationId": "generations_retrieve",
+        "description": "Lista generations, paginada (MIG-506): `?page=&page_size=` mais os filtros\n`environment`, `workflow`, `client_id`, `post_id` e `status`.\n\nResposta no mesmo formato da `LinhaListView`: `count`, `page`,\n`total_pages` e `results`.",
+        "tags": [
+          "Gerações"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      }
+    },
+    "/api/generations/{id}/": {
+      "get": {
+        "operationId": "generations_retrieve_2",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "integer"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Gerações"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "generations_destroy",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "integer"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Gerações"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No response body"
+          }
+        }
+      }
+    },
+    "/api/generations/context/": {
+      "get": {
+        "operationId": "generations_context_retrieve",
+        "description": "Prévia do contexto que o `runner` vai usar pra preencher as variáveis dessa\ngeração (dados reais do cliente/post/calendário + respostas já salvas do\ncliente) — SEM chamar a IA. Usado pelo frontend pra pré-preencher os campos\nde variável na tela de Gerar, em vez de deixá-los em branco.",
+        "tags": [
+          "Gerações"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      }
+    },
+    "/api/generations/execucoes/{id}/": {
+      "get": {
+        "operationId": "generations_execucoes_retrieve",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "integer"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Gerações"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      }
+    },
+    "/api/generations/gerar-agora/": {
+      "post": {
+        "operationId": "generations_gerar_agora_create",
+        "description": "POST /api/generations/gerar-agora/ — MIG-379. Gera AGORA o próximo card\n'pending' de um cliente, com a mesma rotina do cron diário\n(`services.rodada.gerar_para_cliente`). Body: { \"client_id\": 123 }.\n\nÉ o que o botão \"Criar agora\" do painel dispara, via backend-miggo. Até aqui\no botão só marcava `generation_requested_at` no cliente e o card dependia da\npróxima passada do cron (até 15 min, e nada se o cron estivesse fora do ar).\n\nA marca no cliente continua sendo feita pelo backend e é a REDUNDÂNCIA: se\nesta chamada não chegar, ou a rodada estiver travada por outra em andamento,\no cron ainda atende o pedido. Por isso a resposta é 202 na hora — o resultado\naparece no painel de gerações, não nesta requisição.\n\nMIG-379 (volta) — o 202 diz qual dos dois desfechos aconteceu:\n\n    {\"client_id\": 123, \"status\": \"aceito\"}   lock tomado, rodando agora\n    {\"client_id\": 123, \"status\": \"na_fila\"}  rodada em andamento, fica para o cron\n\nAntes o lock só era tentado DENTRO da thread, e a resposta saía 'aceito'\nantes de alguém saber o desfecho: com rodada em andamento o usuário via\n\"Geração iniciada\" e nada acontecia. Continua 202 nos dois casos — 'na_fila'\né desfecho normal, não erro, e um não-2xx seria auditado como falha de\ndisparo, o que é mentira.",
+        "tags": [
+          "Gerações"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      }
+    },
+    "/api/generations/gerar-card/": {
+      "post": {
+        "operationId": "generations_gerar_card_create",
+        "description": "POST /api/generations/gerar-card/ — MIG-379. Geração completa de UM card já\nexistente (título → imagem → legenda → hashtags, reserva e entrega\nincluídas), pelo mesmo `rodada.processar_post` da rodada diária.\nBody: { \"post_id\": 5409, \"client_id\": 123 }.\n\nDiferente de `production/complete/`, que roda síncrono para o painel do\nMiggoAI: aqui responde 202 e trabalha em thread, porque quem chama é o\nbackend-miggo dentro de uma requisição de usuário.\n\nRoda sob o mesmo lock da rodada. `processar_post` reserva o card mudando o\nstatus para `processing`, mas o cron lista os `pending` de uma vez e só\nreserva na hora de processar cada um: sem o lock, um disparo aqui no meio da\nrodada geraria o mesmo card duas vezes — duas vezes o custo de IA.\n\nMIG-379 (volta) — o caso em que o disparo não é tomado deixou de se\nesconder atrás de um 'aceito'. O 202 diz qual foi:\n\n    {\"post_id\": 5409, \"client_id\": 123, \"status\": \"aceito\"}\n    {\"post_id\": 5409, \"client_id\": 123, \"status\": \"na_fila\"}",
+        "tags": [
+          "Gerações"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      }
+    },
+    "/api/generations/grid/": {
+      "post": {
+        "operationId": "generations_grid_create",
+        "description": "POST /api/generations/grid/ — MIG-408. Gera o mosaico 3x3 do onboarding e\ndevolve a imagem em base64. Body: { \"client_id\": <int>,\n\"cores\": [\"#111\",\"#222\",\"#333\"], \"nicho\": \"estética automotiva\",\n\"descricao_referencia\": \"...\", \"feedback\": \"...\",\n\"referencia_url\": \"https://...\", \"logo_url\": \"https://...\",\n\"peca_anterior_url\": \"https://...\" } — fora o\n`client_id`, todos opcionais menos, na prática, a referência (sem ela o grid\né gerado do zero, que é a degradação suave de quando a biblioteca está\nvazia).\n\nSÍNCRONA, ao contrário de `gerar-card` e `regenerate`: quem chama é o\nbackend-miggo de dentro da thread/cron dele, nunca de uma requisição de\nusuário. O ESTADO DA ETAPA continua vivendo lá (`data.grid` da sessão), e\nfalha aqui deixa o registro em 'pending' para o cron de lá tentar de novo —\num job com estado deste lado criaria um segundo lugar para a mesma verdade.\n\nMIG-419: o que passou a existir deste lado é o REGISTRO da geração\n(`Generation` + trilha de etapas), como banner e destaques já tinham. Sem\nele, a peça saía e não aparecia na lista de produções — e uma falha não\ndeixava rastro nenhum aqui. Daí o `client_id` ter virado obrigatório: sem\ncliente não há a quem pendurar o registro.\n\nA imagem continua voltando no corpo, em base64, para a plataforma guardá-la\n(o bucket daqui é privado e assina URL com validade de uma hora).",
+        "tags": [
+          "Gerações"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      }
+    },
+    "/api/generations/grid/by-key/{idempotency_key}/": {
+      "get": {
+        "operationId": "generations_grid_by_key_retrieve",
+        "description": "GET /api/generations/grid/by-key/<idempotency_key>/ — MIG-427. Consulta o\nestado de uma geração de grid PELA CHAVE, não pelo pk.\n\nExiste porque no caso que o card descreve o chamador nunca chegou a receber\no pk: o POST estourou o read timeout de 300s do lado dele enquanto a\ngeração seguia aqui. Sem este endpoint a plataforma só sabe perguntar por\nid, e a única saída dela era regerar — que é exatamente a duplicata\ncobrada.\n\n`?client_id=<id>` (opcional) amarra a consulta ao cliente: chave de outro\ncliente responde o MESMO 404 de chave desconhecida — a diferença entre as\nduas contaria a quem perguntou que aquela chave existe. Sem o parâmetro, a\nconsulta é só pela chave (compat com quem já chama assim).",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "idempotency_key",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Gerações"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      }
+    },
+    "/api/generations/linhas/": {
+      "get": {
+        "operationId": "generations_linhas_retrieve",
+        "tags": [
+          "Gerações"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      }
+    },
+    "/api/generations/perfil/banner/": {
+      "post": {
+        "operationId": "generations_perfil_banner_create",
+        "description": "POST /api/generations/perfil/banner/ — banner de capa do LinkedIn.\nBody: { client_id, content, subject, bg_color, outline_color, feedback }.\nMIG-247: o banner do LinkedIn não tem logo — `logo_url`, se vier, é ignorado.",
+        "tags": [
+          "Gerações"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      }
+    },
+    "/api/generations/perfil/bio/": {
+      "post": {
+        "operationId": "generations_perfil_bio_create",
+        "description": "POST /api/generations/perfil/bio/ — MIG-418. Gera a bio de perfil e devolve\no texto. Body: { \"client_id\": <int>, \"rede\": \"instagram\"|\"linkedin\",\n\"briefing\": {...}, \"bio_atual\": \"...\", \"feedback\": \"...\",\n\"max_caracteres\": 150 }.\n\nMIG-419: passa pelo `run_workflow`, então a geração fica registrada\n(`Generation` + trilha) e aparece na lista de produções.\n\nMesmo contrato do `GridView`: SÍNCRONA, nada persistido deste lado, e 502\nquando a peça não sai (a plataforma preserva a bio anterior em vez de\ngravar vazio). O FORMATO e o TETO de caracteres continuam sendo da\nplataforma — ela já tem a regra, e duas regras para a mesma coisa é como a\ndivergência entre o agente antigo e o onboarding começou.",
+        "tags": [
+          "Gerações"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      }
+    },
+    "/api/generations/perfil/by-key/{idempotency_key}/": {
+      "get": {
+        "operationId": "generations_perfil_by_key_retrieve",
+        "description": "GET /api/generations/perfil/by-key/<chave>/?client_id=<id> — MIG-474. Estado\nde uma peça de perfil (bio, banner ou destaques) pela chave de idempotência;\ncom SUCCESS traz o MESMO corpo que o POST síncrono devolve para aquela peça.\n\n`client_id` é obrigatório: chave de outro cliente e chave desconhecida\nrespondem o MESMO 404 — a diferença contaria a quem perguntou que a chave existe.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "idempotency_key",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Gerações"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      }
+    },
+    "/api/generations/perfil/destaques/": {
+      "post": {
+        "operationId": "generations_perfil_destaques_create",
+        "description": "POST /api/generations/perfil/destaques/ — capas de destaque do Instagram.\nBody: { client_id, destaques: [{texto, icone, bg_color, outline_color}],\nbg_color, outline_color }. `image_urls` volta na MESMA ordem em que os\ndestaques foram enviados — a plataforma casa capa com destaque por índice.",
+        "tags": [
+          "Gerações"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      }
+    },
+    "/api/generations/production/": {
+      "post": {
+        "operationId": "generations_production_create",
+        "description": "Base para os endpoints de teste/produção — só muda o `environment`.",
+        "tags": [
+          "Gerações"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      }
+    },
+    "/api/generations/production/complete/": {
+      "post": {
+        "operationId": "generations_production_complete_create",
+        "description": "Base pros endpoints de geração COMPLETA (título → imagem → legenda → hashtags\nem sequência, cada um como sua própria `Generation`) — só muda o `environment`.",
+        "tags": [
+          "Gerações"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      }
+    },
+    "/api/generations/regenerate/": {
+      "post": {
+        "operationId": "generations_regenerate_create",
+        "description": "POST /api/generations/regenerate/ — regera UM item de um card já gerado\n(`target`: 'titulo' | 'imagem' | 'legenda') e grava o resultado de volta no\npost. Body: { \"post_id\": 5409, \"target\": \"imagem\", \"instrucao\": \"...\",\n\"media_id\": 412, \"media_link_ids\": [31, 33] } — os três últimos opcionais;\n`media_id` e `media_link_ids` só valem para a imagem.\n\nResponde 202 na hora e faz o trabalho numa thread: gerar imagem leva minutos\n(300s de timeout por chamada no `openai_service`) e o painel da Miggo chama\nisto através do backend-miggo — segurar a requisição aberta nessa cadeia toda\nestouraria o timeout de algum proxy no meio. O `since_id` devolvido é o marco\npara o polling em `regenerate/status/`.",
+        "tags": [
+          "Gerações"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      }
+    },
+    "/api/generations/regenerate/status/": {
+      "get": {
+        "operationId": "generations_regenerate_status_retrieve",
+        "description": "GET /api/generations/regenerate/status/?post_id=&target=&since_id= —\nandamento da regeração disparada acima, para polling do painel.\n\n`since_id` é o que separa esta regeração das anteriores: só contam as\ngenerations criadas depois dele. Enquanto nenhuma aparecer, ainda é 'running'\n(a thread pode não ter chegado a criar a primeira).",
+        "tags": [
+          "Gerações"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      }
+    },
+    "/api/generations/resumo/": {
+      "get": {
+        "operationId": "generations_resumo_retrieve",
+        "description": "Contagem por status com os mesmos filtros da lista (MIG-506): o dashboard\ncontava baixando todas as gerações.",
+        "tags": [
+          "Gerações"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      }
+    },
+    "/api/generations/test/": {
+      "post": {
+        "operationId": "generations_test_create",
+        "description": "Base para os endpoints de teste/produção — só muda o `environment`.",
+        "tags": [
+          "Gerações"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      }
+    },
+    "/api/generations/test/complete/": {
+      "post": {
+        "operationId": "generations_test_complete_create",
+        "description": "Base pros endpoints de geração COMPLETA (título → imagem → legenda → hashtags\nem sequência, cada um como sua própria `Generation`) — só muda o `environment`.",
+        "tags": [
+          "Gerações"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      }
+    },
+    "/api/posts/": {
+      "get": {
+        "operationId": "posts_retrieve",
+        "description": "Lista posts (cards) do backend-miggo. Aceita `?client_id=`, `?status=` (nome do\nstatus, ver `?status=` em `/api/posts/statuses/`), `?start_date=` e `?end_date=`\n(YYYY-MM-DD — só filtra por data quando os dois vêm preenchidos).",
+        "tags": [
+          "Posts"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      }
+    },
+    "/api/posts/{post_id}/": {
+      "get": {
+        "operationId": "posts_retrieve_2",
+        "description": "Detalhe de um post (card).",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "post_id",
+            "schema": {
+              "type": "integer"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Posts"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      }
+    },
+    "/api/posts/formats/": {
+      "get": {
+        "operationId": "posts_formats_retrieve",
+        "description": "Formatos de post disponíveis (id + nome) — usado pelo frontend pra resolver os\nids de `post_format`/`suggested_formats` em nomes legíveis (ex.: 2 → \"feed\").",
+        "tags": [
+          "Posts"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      }
+    },
+    "/api/posts/statuses/": {
+      "get": {
+        "operationId": "posts_statuses_retrieve",
+        "description": "Status de post disponíveis (id + nome) — o filtro `?status=` de `/api/posts/`\nespera o NOME (ex.: \"pending\"), não o id.",
+        "tags": [
+          "Posts"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      }
+    },
+    "/api/prompts/": {
+      "get": {
+        "operationId": "prompts_retrieve",
+        "description": "Lista/cria prompts. Aceita `?workflow=<key>`.",
+        "tags": [
+          "Prompts"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      },
+      "post": {
+        "operationId": "prompts_create",
+        "description": "Lista/cria prompts. Aceita `?workflow=<key>`.",
+        "tags": [
+          "Prompts"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      }
+    },
+    "/api/prompts/{id}/": {
+      "get": {
+        "operationId": "prompts_retrieve_2",
+        "description": "Detalhe/edição/remoção de um prompt. PUT versiona o conteúdo anterior.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "integer"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Prompts"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      },
+      "put": {
+        "operationId": "prompts_update",
+        "description": "Detalhe/edição/remoção de um prompt. PUT versiona o conteúdo anterior.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "integer"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Prompts"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "prompts_destroy",
+        "description": "Detalhe/edição/remoção de um prompt. PUT versiona o conteúdo anterior.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "integer"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Prompts"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No response body"
+          }
+        }
+      }
+    },
+    "/api/prompts/{id}/activate/": {
+      "post": {
+        "operationId": "prompts_activate_create",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "integer"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Prompts"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      }
+    },
+    "/api/prompts/{id}/deactivate/": {
+      "post": {
+        "operationId": "prompts_deactivate_create",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "integer"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Prompts"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      }
+    },
+    "/api/prompts/{id}/detect-variables/": {
+      "post": {
+        "operationId": "prompts_detect_variables_create",
+        "description": "Compara as chaves `{{...}}` do conteúdo atual com as `PromptVariable` já cadastradas.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "integer"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Prompts"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      }
+    },
+    "/api/prompts/{id}/preview/": {
+      "post": {
+        "operationId": "prompts_preview_create",
+        "description": "Renderiza o prompt com os valores enviados, só para visualização — nunca chama IA.\n\nDevolve também `structural`: o bloco de formato de saída que o sistema anexa\nao prompt na hora da geração (ver `output_contract`). Ele não é editável, mas\nprecisa aparecer no preview — senão quem edita não enxerga o prompt inteiro\nque vai para a IA.\n\nMIG-508: `content` opcional renderiza o texto que ainda está no editor, sem\nsalvar — o preview acompanha a edição em vez de mostrar a última versão.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "integer"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Prompts"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      }
+    },
+    "/api/prompts/{id}/variables/": {
+      "get": {
+        "operationId": "prompts_variables_retrieve",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "integer"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Prompts"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      },
+      "post": {
+        "operationId": "prompts_variables_create",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "integer"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Prompts"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      }
+    },
+    "/api/prompts/{id}/versions/": {
+      "get": {
+        "operationId": "prompts_versions_retrieve",
+        "description": "Versões arquivadas (o conteúdo atual está no próprio prompt, em `current_version`).\nCada item traz `version`, `content`, `created_by_username`, `change_note` e `created_at`.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "integer"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Prompts"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      }
+    },
+    "/api/prompts/{id}/versions/{version}/restore/": {
+      "post": {
+        "operationId": "prompts_versions_restore_create",
+        "description": "MIG-508 — volta o conteúdo da versão N, sem apagar nada do histórico.\n\nO texto atual é arquivado como versão nova (com `change_note` \"Restaurada da vN\")\ne o conteúdo da vN passa a ser o atual, com `current_version` avançado — o mesmo\ncaminho da edição normal (`trocar_conteudo`). 404 se a versão não existe; 400 se\nela já é a atual.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "integer"
+            },
+            "required": true
+          },
+          {
+            "in": "path",
+            "name": "version",
+            "schema": {
+              "type": "integer"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Prompts"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      }
+    },
+    "/api/prompts/variables/{id}/": {
+      "put": {
+        "operationId": "prompts_variables_update",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "integer"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Prompts"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "prompts_variables_destroy",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "integer"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Prompts"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No response body"
+          }
+        }
+      }
+    },
+    "/api/prompts/workflows/": {
+      "get": {
+        "operationId": "prompts_workflows_retrieve",
+        "description": "Lista os workflows ativos, com a config aninhada e `modelos_sem_preco`.\n\n`?todos=1` traz também os inativos — é o que a tela de configuração do\n/admin usa, senão um workflow desligado não teria como ser religado.",
+        "tags": [
+          "Prompts"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      }
+    },
+    "/api/prompts/workflows/{id}/": {
+      "get": {
+        "operationId": "prompts_workflows_retrieve_2",
+        "description": "MIG-508 — edição do workflow pelo /admin da plataforma (antes só no admin do Django).\n\nPATCH (só superusuário) `{\"is_active\"?: bool, \"order\"?: int, \"config\"?: {\"text_model\"?,\n\"image_model\"?, \"temperature\"? (0–2), \"max_tokens\"? (1–128000)}}`. Devolve o workflow\ncomo na lista, com `modelos_sem_preco`: modelo sem `PrecoModelo` é AVISO, não erro\n(MIG-441) — modelo novo pode ser legítimo e o preço ainda não estar cadastrado.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "integer"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Prompts"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      },
+      "patch": {
+        "operationId": "prompts_workflows_partial_update",
+        "description": "MIG-508 — edição do workflow pelo /admin da plataforma (antes só no admin do Django).\n\nPATCH (só superusuário) `{\"is_active\"?: bool, \"order\"?: int, \"config\"?: {\"text_model\"?,\n\"image_model\"?, \"temperature\"? (0–2), \"max_tokens\"? (1–128000)}}`. Devolve o workflow\ncomo na lista, com `modelos_sem_preco`: modelo sem `PrecoModelo` é AVISO, não erro\n(MIG-441) — modelo novo pode ser legítimo e o preço ainda não estar cadastrado.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "integer"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Prompts"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        }
+      }
+    },
+    "/api/token/": {
+      "post": {
+        "operationId": "token_create",
+        "description": "Takes a set of user credentials and returns an access and refresh JSON web\ntoken pair to prove the authentication of those credentials.",
+        "tags": [
+          "Autenticação"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TokenObtainPair"
+              }
+            },
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/TokenObtainPair"
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/TokenObtainPair"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenObtainPair"
+                }
+              }
+            },
+            "description": ""
+          }
+        }
+      }
+    },
+    "/api/token/refresh/": {
+      "post": {
+        "operationId": "token_refresh_create",
+        "description": "Takes a refresh type JSON web token and returns an access type JSON web\ntoken if the refresh token is valid.",
+        "tags": [
+          "Autenticação"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TokenRefresh"
+              }
+            },
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/TokenRefresh"
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/TokenRefresh"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenRefresh"
+                }
+              }
+            },
+            "description": ""
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "TokenObtainPair": {
+        "type": "object",
+        "properties": {
+          "username": {
+            "type": "string",
+            "writeOnly": true
+          },
+          "password": {
+            "type": "string",
+            "writeOnly": true
+          },
+          "access": {
+            "type": "string",
+            "readOnly": true
+          },
+          "refresh": {
+            "type": "string",
+            "readOnly": true
+          }
+        },
+        "required": [
+          "access",
+          "password",
+          "refresh",
+          "username"
+        ]
+      },
+      "TokenRefresh": {
+        "type": "object",
+        "properties": {
+          "access": {
+            "type": "string",
+            "readOnly": true
+          },
+          "refresh": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "access",
+          "refresh"
+        ]
+      }
+    },
+    "securitySchemes": {
+      "jwtAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
+    }
+  },
+  "servers": [
+    {
+      "url": "https://backend-ai.miggomkt.com.br",
+      "description": "Produção"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Autenticação"
+    },
+    {
+      "name": "Clientes"
+    },
+    {
+      "name": "Custos"
+    },
+    {
+      "name": "Gerações"
+    },
+    {
+      "name": "Posts"
+    },
+    {
+      "name": "Prompts"
+    }
+  ]
+}

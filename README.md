@@ -1,55 +1,67 @@
-# Mintlify Starter Kit
+# Portal de desenvolvedor da Miggo
 
-Use the starter kit to get your docs deployed and ready to customize.
+Fonte do [developer.miggomkt.com.br](https://developer.miggomkt.com.br), feito em
+[Mintlify](https://mintlify.com). Documenta os três softwares da Miggo para quem
+mexe no código: a Plataforma (`backend-miggo`), o Web app (`frontend-miggo`) e o
+MiggoAI (`miggoai_v2/backend`). Regras de escrita e de navegação: [`AGENTS.md`](AGENTS.md).
 
-Click the green **Use this template** button at the top of this repo to copy the Mintlify starter kit. The starter kit contains examples with
+## Estrutura
 
-- Guide pages
-- Navigation
-- Customizations
-- API reference pages
-- Use of popular components
+| Caminho | Aba |
+|---|---|
+| `index.mdx`, `quickstart.mdx`, `arquitetura/` | Visão geral |
+| `plataforma/` | Plataforma (`backend-miggo`) |
+| `web/` | Web app (`frontend-miggo`) |
+| `miggoai/` | MiggoAI (backend do serviço de IA) |
+| `releases/` | Changelog |
+| `api-reference/<software>/openapi.json` | specs OpenAPI usados pela Referência de API |
+| `scripts/openapi_tags.py` | pós-processamento dos specs (tags, `info`, `servers`) |
+| `docs.json` | navegação, redirects e tema |
 
-**[Follow the full quickstart guide](https://starter.mintlify.com/quickstart)**
-
-## AI-assisted writing
-
-Set up your AI coding tool to work with Mintlify:
+## Preview local
 
 ```bash
-npx skills add https://mintlify.com/docs
+npx -y mint dev --port 3002
+npx -y mint broken-links   # antes de commitar
 ```
 
-This command installs Mintlify's documentation skill for your configured AI tools like Claude Code, Cursor, Windsurf, and others. The skill includes component reference, writing standards, and workflow guidance.
+## Regenerar a Referência de API
 
-See the [AI tools guides](/ai-tools) for tool-specific setup.
+Os specs são gerados do código da `main` de cada repo com o `drf-spectacular`
+e pós-processados pelo `scripts/openapi_tags.py`, que troca tags genéricas
+(`api`, `generations`) por tags por recurso e as traduz para pt-BR. Cada tag
+vira um grupo na navegação.
 
-## Development
+O `settings.py` dos dois repos lê variáveis obrigatórias (`DEBUG`, `DB_*`,
+`MIGGO_API_KEY`, chaves JWT etc.). Gere o spec com um `.env` copiado do
+`.env.example` do repo e preenchido com valores fictícios: o comando só importa
+URLs e views, não conecta no banco nem chama serviço externo. Nunca use o `.env`
+de um ambiente real para isso.
 
-Install the [Mintlify CLI](https://www.npmjs.com/package/mint) to preview your documentation changes locally. To install, use the following command:
+**Plataforma** (no checkout da `main` do `backend-miggo`):
 
+```bash
+./venv/Scripts/python.exe manage.py spectacular --format openapi-json   --file <repo-de-doc>/api-reference/backend-miggo/openapi.json
 ```
-npm i -g mint
+
+**MiggoAI** (em `miggoai_v2/backend`, na `main`):
+
+```bash
+./venv/Scripts/python.exe manage.py spectacular --format openapi-json   --file <repo-de-doc>/api-reference/miggoai/openapi.json
 ```
 
-Run the following command at the root of your documentation, where your `docs.json` is located:
+Depois, na raiz deste repo:
 
+```bash
+python scripts/openapi_tags.py api-reference/backend-miggo/openapi.json --perfil plataforma --versao 2.3.0
+python scripts/openapi_tags.py api-reference/miggoai/openapi.json --perfil miggoai --versao 2.3.0
 ```
-mint dev
-```
 
-View your local preview at `http://localhost:3000`.
+O script sai com código `1` e lista os caminhos que ficaram sem tag quando
+surge um prefixo novo: acrescente a regra em `REGRAS_POR_CAMINHO` e rode de novo.
+Tag nova em inglês declarada no código entra em `TRADUCOES`.
 
-## Publishing changes
+## Publicação
 
-Install our GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app) to propagate changes from your repo to your deployment. Changes are deployed to production automatically after pushing to the default branch.
-
-## Need help?
-
-### Troubleshooting
-
-- If your dev environment isn't running: Run `mint update` to ensure you have the most recent version of the CLI.
-- If a page loads as a 404: Make sure you are running in a folder with a valid `docs.json`.
-
-### Resources
-- [Mintlify documentation](https://mintlify.com/docs)
+O deploy é automático no push da `main`. Trabalhe em branch e não faça push
+direto: veja [`AGENTS.md`](AGENTS.md).
