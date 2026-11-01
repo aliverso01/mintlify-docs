@@ -1,10 +1,10 @@
 ---
-title: "Área administrativa e área da agência"
+title: "Áreas /admin e /agency do Web app"
 description: "Níveis de acesso, módulos e telas do /admin (equipe Miggo) e do /agency (agência) no frontend-miggo."
 icon: "shield"
 ---
 
-O web app tem uma área de gestão para a equipe Miggo (`/admin/*`) e outra para agências (`/agency/*`). As duas reaproveitam as telas de operação de conteúdo; o que muda é quem entra, o que o menu mostra e quais clientes a Plataforma devolve. A tabela de rotas está em [Telas e rotas](/web/paginas).
+O Web app tem uma área de gestão para a equipe Miggo (`/admin/*`) e outra para agências (`/agency/*`). As duas reaproveitam as telas de operação de conteúdo; o que muda é quem entra, o que o menu mostra e quais clientes a Plataforma devolve. A tabela de rotas está em [Telas e rotas](/web/paginas).
 
 ## Níveis de acesso
 
@@ -20,7 +20,7 @@ Os predicados ficam em `src/routes/rolePaths.ts` e `src/routes/modulos.ts`:
 
 ### Módulos
 
-O papel diz **quem** é; o módulo diz **o que** pode usar. `temModulo` espelha `app/account/modulos.py` da Plataforma ([Account](/plataforma/apps/account)):
+O papel diz **quem** é; o módulo diz **o que** pode usar. `temModulo` espelha `app/account/modulos.py` da Plataforma ([Contas e usuários](/plataforma/apps/account)):
 
 | Papel | Módulos |
 |---|---|
@@ -71,7 +71,7 @@ O acervo é o banco de imagens interno da Miggo, usado pela seleção automátic
 - **Alocação:** a foto é global ou restrita a clientes e nichos. O card mostra o resumo da alocação e alerta "Sem vínculo — ninguém vê" quando a foto é restrita e sem destinatário.
 - **Conferir como um cliente vê:** troca a lista para `GET /api/v1/media/acervo/elegiveis/?client_id=`, a mesma regra que a geração usa para escolher imagem.
 
-As rotas do acervo na Plataforma são só da gestão: cliente recebe `403`. O modelo e as regras estão em [Media](/plataforma/apps/media).
+As rotas do acervo na Plataforma são só da gestão: cliente recebe `403`. O modelo e as regras estão em [Mídia e acervo](/plataforma/apps/media).
 
 ## Área `/agency`
 
@@ -99,14 +99,14 @@ O backend da agência está em [Agência](/plataforma/apps/agencia).
 
 | Tela | App da Plataforma |
 |---|---|
-| Clientes, usuários, time | [Client](/plataforma/apps/client), [Account](/plataforma/apps/account) |
-| Faturamento, planos, trials | [Subscription](/plataforma/apps/subscription) |
+| Clientes, usuários, time | [Clientes](/plataforma/apps/client), [Contas e usuários](/plataforma/apps/account) |
+| Faturamento, planos, trials | [Assinaturas e cobrança](/plataforma/apps/subscription) |
 | Benefícios | [Benefits](/plataforma/apps/benefits) |
-| Logs de integração | [Integration](/plataforma/apps/integration) |
-| Conversas e fluxos | [Conversation](/plataforma/apps/conversation) |
+| Logs de integração | [Log de integrações](/plataforma/apps/integration) |
+| Conversas e fluxos | [Conversas de WhatsApp](/plataforma/apps/conversation) |
 | E-mail marketing | [Email marketing](/plataforma/apps/emailmarketing) |
 | Notificações | [Notification](/plataforma/apps/notification) |
-| Posts parados | [Post](/plataforma/apps/post) |
-| Acervo, referências | [Media](/plataforma/apps/media), [Brandkit](/plataforma/apps/brandkit) |
+| Posts parados | [Posts e publicação](/plataforma/apps/post) |
+| Acervo, referências | [Mídia e acervo](/plataforma/apps/media), [Brandkit](/plataforma/apps/brandkit) |
 | Agências | [Agência](/plataforma/apps/agencia) |
 | Painel de IA | [Referência de API do MiggoAI](/miggoai/api-referencia) |

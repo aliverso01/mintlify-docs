@@ -1,5 +1,5 @@
 ---
-title: "Autenticação"
+title: "Autenticação na Plataforma"
 description: "Como obter, renovar e usar o token da Plataforma, quando usar a Api-Key de serviço e como o backend decide quem vê o quê."
 icon: "shield-check"
 ---
@@ -8,7 +8,7 @@ A API aceita duas credenciais:
 
 | Credencial | Header | Quem usa |
 |---|---|---|
-| **JWT** (access token) | `Authorization: Bearer <access>` | Pessoas: o web app, scripts de quem tem conta |
+| **JWT** (access token) | `Authorization: Bearer <access>` | Pessoas: o Web app, scripts de quem tem conta |
 | **Api-Key de serviço** | `Authorization: Api-Key <chave>` | Serviços internos, como o MiggoAI |
 
 A permissão padrão de toda view (`HasAPIKeyOrIsAuthenticated`) aceita qualquer uma das duas. Views mais restritas pedem papel, módulo ou recusam a Api-Key, como descrito abaixo.
@@ -56,15 +56,15 @@ A permissão padrão de toda view (`HasAPIKeyOrIsAuthenticated`) aceita qualquer
 
 ### No navegador: refresh em cookie httpOnly
 
-O web app não usa `/token/`. Ele entra por `POST /api/v1/account/login/` (e-mail e senha) ou `POST /api/v1/account/google/` (ID token do Google). Essas rotas devolvem o `access` no corpo e gravam o refresh num **cookie httpOnly** (`miggo_refresh`, `path=/api/v1/account/`), que o JavaScript não lê.
+O Web app não usa `/token/`. Ele entra por `POST /api/v1/account/login/` (e-mail e senha) ou `POST /api/v1/account/google/` (ID token do Google). Essas rotas devolvem o `access` no corpo e gravam o refresh num **cookie httpOnly** (`miggo_refresh`, `path=/api/v1/account/`), que o JavaScript não lê.
 
 Para renovar, o navegador chama `POST /api/v1/account/token/refresh/` com o **corpo vazio**: o refresh vai no cookie e o rotacionado volta no cookie. Quem manda `refresh` no corpo recebe-o de volta no corpo também. `POST /api/v1/account/logout/` apaga o cookie.
 
-Como o front consome isso: [Autenticação no web app](/web/autenticacao).
+Como o front consome isso: [Autenticação no Web app](/web/autenticacao).
 
 ## O token: RS256 e claims
 
-O token é assinado em **RS256** com a `JWT_PRIVATE_KEY` do backend. A chave pública é derivada dela, e o **MiggoAI valida o mesmo access** com a sua cópia da pública (`MIGGO_JWT_PUBLIC_KEY`). Por isso o painel de IA no `/admin` do web app usa o token da Plataforma, sem login próprio.
+O token é assinado em **RS256** com a `JWT_PRIVATE_KEY` do backend. A chave pública é derivada dela, e o **MiggoAI valida o mesmo access** com a sua cópia da pública (`MIGGO_JWT_PUBLIC_KEY`). Por isso o painel de IA no `/admin` do Web app usa o token da Plataforma, sem login próprio.
 
 | Configuração | Valor |
 |---|---|

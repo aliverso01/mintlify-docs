@@ -1,5 +1,5 @@
 ---
-title: "Workflows de geração"
+title: "Workflows de geração do MiggoAI"
 description: "O que cada workflow de geração faz por dentro: runner, contexto, título, imagem, legenda, hashtags, grid e peças de perfil."
 icon: "workflow"
 ---
@@ -35,7 +35,7 @@ Os workflows vivem em `backend/apps/generations/services/`. Cada um é uma chave
 **Passo a passo**:
 1. Cria a `Generation` já como `RUNNING` (precisa do `id` para o path das imagens).
 2. Se `variable_overrides` tem `format_key` sem `formato_motivo`, injeta `formato_motivo = 'escolhido manualmente na geração'`.
-3. Salva os overrides "persistíveis" (exclui chaves de encadeamento e voláteis) em `ClientVariableValue`, via `client_services.save_variables`. Com `salvar_variaveis=False` (o painel de IA no `/admin` da plataforma) esse passo é pulado: o override vale só para a execução, e gravar o padrão do cliente vira ação explícita (`PUT /api/clients/<id>/variables/`).
+3. Salva os overrides "persistíveis" (exclui chaves de encadeamento e voláteis) em `ClientVariableValue`, via `client_services.save_variables`. Com `salvar_variaveis=False` (o painel de IA no `/admin` da Plataforma) esse passo é pulado: o override vale só para a execução, e gravar o padrão do cliente vira ação explícita (`PUT /api/clients/<id>/variables/`).
 4. Monta o contexto com `context_builder.build_context(client_id, post_id)`.
 5. Sobrepõe respostas já salvas do cliente (exceto voláteis) por cima do contexto fresco.
 6. Despacha para o runner do workflow certo (`_WORKFLOW_RUNNERS[workflow_key]`), passando `context`, `variable_overrides` e um callback `on_stage` que atualiza `Generation.stage` em tempo real (salva imediatamente, não espera o fim — para o polling do painel).
@@ -168,7 +168,7 @@ A referência de estilo do grid é o mosaico de outra marca (ou um template com 
 
 ### Peças de perfil: bio, banner e destaques
 
-- **Bio** (`bio_workflow.py`): texto, com formato e teto de caracteres definidos pela plataforma no pedido (`rede`, `max_caracteres`).
+- **Bio** (`bio_workflow.py`): texto, com formato e teto de caracteres definidos pela Plataforma no pedido (`rede`, `max_caracteres`).
 - **Banner do LinkedIn** (`banner_workflow.py`): a IA gera só a arte de fundo, quadrada, por `openai_service.gerar_arte` (`images/generations`, modelo de imagem da config do workflow); a peça final é composta em HTML e renderizada pelo Chromium do Playwright (`composicao.py`). O banner não leva logo. A arte de fundo é guardada (`result.banner.arte_path`) e reaproveitada no ajuste seguinte quando o pedido não fala da arte.
 - **Capas de destaque** (`destaques_workflow.py`): sem IA. Template HTML determinístico (cúpula, ícone e legenda), renderizado pelo Chromium, para as capas saírem iguais entre si.
 
@@ -212,7 +212,7 @@ python manage.py cleanup_test_generations --hours 24
 
 ### `generate_daily_contents`
 
-Rodada diária: roda `run_complete` em `PRODUCTION` nos cards `pending` dos clientes com o workflow ligado e entrega o resultado no post. Quando roda, janela, opções e entrega estão em [Gerar conteúdo](/miggoai/guias/gerar-conteudo) e [Integração com a plataforma](/miggoai/guias/integracao-com-a-plataforma#o-que-o-miggoai-escreve).
+Rodada diária: roda `run_complete` em `PRODUCTION` nos cards `pending` dos clientes com o workflow ligado e entrega o resultado no post. Quando roda, janela, opções e entrega estão em [Gerar conteúdo](/miggoai/guias/gerar-conteudo) e [Integração com a Plataforma](/miggoai/integracao-com-a-plataforma#o-que-o-miggoai-escreve).
 
 ### `estimar_custo_historico`
 

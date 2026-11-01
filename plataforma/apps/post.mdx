@@ -4,7 +4,7 @@ description: "Conteúdo, status, aprovação por WhatsApp, publicação por rede
 icon: "images"
 ---
 
-O app `post` modela o conteúdo produzido para o cliente (`Post`) e tudo o que acontece com ele até a rede social: formato, status e histórico de transições, mídia vinculada, envio para aprovação por WhatsApp, publicação por rede via Zernio, conexões das redes do cliente, configurações de perfil (bio, capa, destaques) e insights de desempenho. A visão de ponta a ponta está em [Ciclo do conteúdo](/plataforma/guias/ciclo-do-conteudo).
+O app `post` modela o conteúdo produzido para o cliente (`Post`) e tudo o que acontece com ele até a rede social: formato, status e histórico de transições, mídia vinculada, envio para aprovação por WhatsApp, publicação por rede via Zernio, conexões das redes do cliente, configurações de perfil (bio, capa, destaques) e insights de desempenho. A visão de ponta a ponta está em [Ciclo do conteúdo](/plataforma/ciclo-do-conteudo).
 
 ## Models principais
 
@@ -69,7 +69,7 @@ O flow muda conforme a rede do post estar conectada (`CONTENT_APPROVATION_CONNEC
 
 - O OAuth das redes é feito no Zernio. O webhook `account.connected` ativa a `PlatformIntegration` casando por `(profile_id, platform)`, porque o `profile_id` do Zernio identifica o cliente e é o mesmo para todas as redes dele.
 - `zernio.sync_platform_connections` reconcilia as conexões quando o webhook não chega (chamado pelo status do onboarding). O comando `repair_platform_integrations` realinha integrações gravadas na rede errada.
-- WhatsApp é conectado pelo código de verificação do [onboarding](/plataforma/apps/onboarding).
+- WhatsApp é conectado pelo código de verificação do [Onboarding na Plataforma](/plataforma/apps/onboarding).
 
 ## Peças de perfil
 

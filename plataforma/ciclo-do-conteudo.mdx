@@ -1,5 +1,5 @@
 ---
-title: "Ciclo do conteúdo"
+title: "Ciclo do conteúdo na Plataforma"
 description: "O caminho de um post de ponta a ponta: onboarding do cliente, geração no MiggoAI, aprovação e publicação nas redes pelo Zernio."
 icon: "refresh-cw"
 ---
@@ -16,7 +16,7 @@ flowchart LR
 
 ## 1. Onboarding
 
-O cliente passa pelas etapas de `/api/v1/onboarding/`, na ordem que o web app conduz. O estado fica numa `OnboardingSession`, e `GET state/` diz onde ele parou.
+O cliente passa pelas etapas de `/api/v1/onboarding/`, na ordem que o Web app conduz. O estado fica numa `OnboardingSession`, e `GET state/` diz onde ele parou.
 
 | Etapa | Endpoints | O que acontece |
 |---|---|---|
@@ -29,7 +29,7 @@ O cliente passa pelas etapas de `/api/v1/onboarding/`, na ordem que o web app co
 | Grid | `grid/styles/`, `grid/`, `grid/approve/` | Escolhe o estilo; o mosaico 3x3 é gerado no MiggoAI e aprovado pelo cliente |
 | Primeiro conteúdo e conclusão | `first-content/`, `first-content/approve/`, `complete/` | Mostra o primeiro post e encerra o onboarding |
 
-`POST resume/` retoma a esteira na etapa pendente. Regras de cada etapa em [Onboarding](/plataforma/apps/onboarding).
+`POST resume/` retoma a esteira na etapa pendente. Regras de cada etapa em [Onboarding na Plataforma](/plataforma/apps/onboarding).
 
 <Note>
   O grid do onboarding é gerado pelo MiggoAI em `POST /api/generations/grid/`, com `idempotency_key`: repetir a chamada não gera nem cobra outra imagem. Se a geração demora, o MiggoAI responde `202` e o backend acompanha pela chave por até `GRID_ASYNC_ESPERA_MAXIMA` segundos. Ver [Gerar conteúdo no MiggoAI](/miggoai/guias/gerar-conteudo).
@@ -109,7 +109,7 @@ O post precisa de formato e de mídia vinculada, e o cliente precisa ter direito
 Quem fecha o desfecho, do mais rápido ao mais lento:
 
 1. O webhook `/webhooks/zernio/status/`, quando o Zernio avisa.
-2. O botão "Verificar status" do web app (`POST /api/v1/post/publication/<id>/check-status/`).
+2. O botão "Verificar status" do Web app (`POST /api/v1/post/publication/<id>/check-status/`).
 3. A rotina `reconcile_zernio_posts`, que consulta o Zernio sobre as publicações paradas.
 
 <Note>

@@ -21,13 +21,13 @@ As variáveis vêm do `.env` (dev) ou do serviço no Dokploy (homologação e pr
 | `CSRF_TRUSTED_ORIGINS` | Não | vazio | Origens confiáveis para o Django admin. |
 | `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT` | Sim | — | PostgreSQL. Homologação e produção têm bancos separados. |
 
-## Integração com a plataforma
+## Integração com a Plataforma
 
 | Variável | Obrigatória | Padrão | Efeito |
 |---|---|---|---|
 | `MIGGO_API_BASE_URL` | Sim | — | Base da API do `backend-miggo`, com `/api/v1/` no fim (ex.: `https://api.miggomkt.com.br/api/v1/`). |
 | `MIGGO_API_KEY` | Sim | — | Chave que o MiggoAI apresenta ao `backend-miggo` (`Authorization: Api-Key ...`) para ler cliente, post e brandkit e para entregar o resultado. Segredo, diferente por ambiente. |
-| `MIGGO_JWT_PUBLIC_KEY` | Sim | — | Chave pública (PEM) que valida o token da plataforma (RS256). Tem de ser o par da `JWT_PRIVATE_KEY` do `backend-miggo`. Na env, `\n` literal vira quebra de linha. |
+| `MIGGO_JWT_PUBLIC_KEY` | Sim | — | Chave pública (PEM) que valida o token da Plataforma (RS256). Tem de ser o par da `JWT_PRIVATE_KEY` do `backend-miggo`. Na env, `\n` literal vira quebra de linha. |
 | `ACERVO_SERVICE_TOKEN` | Não | vazio | Credencial das rotas do banco de imagens da Miggo no `backend-miggo` (header `Acervo-Service-Token`). Mesmo valor nos dois serviços. Vazia, o banco é ignorado com `WARNING` e a geração usa só a galeria do cliente. |
 
 <Note>

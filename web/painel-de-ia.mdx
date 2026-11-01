@@ -1,6 +1,6 @@
 ---
-title: "Painel de IA no /admin"
-description: "As telas do MiggoAI dentro do /admin do web app: rotas, quem acessa, como falam com o MiggoAI e o que cada uma faz."
+title: "Painel de IA do Web app"
+description: "As telas do MiggoAI dentro do /admin do Web app: rotas, quem acessa, como falam com o MiggoAI e o que cada uma faz."
 icon: "sparkles"
 ---
 
@@ -12,7 +12,7 @@ O painel de IA é a interface de operação do MiggoAI. Ele vive no `frontend-mi
 |---|---|
 | Rota | As rotas `/admin/miggoai/*` ficam dentro do `ManagementRoute`: entra a equipe Miggo (admin e gestor). Não há `ModuloRoute` nelas. |
 | Menu | Os itens do grupo "MiggoAI" no menu lateral exigem o módulo `miggoai`; "Modelos" aparece só para `is_superuser`. |
-| MiggoAI | Aceita o JWT da plataforma quando o claim `is_management` é `true`; fora disso responde `403`. Não confere o módulo `miggoai`. |
+| MiggoAI | Aceita o JWT da Plataforma quando o claim `is_management` é `true`; fora disso responde `403`. Não confere o módulo `miggoai`. |
 | Escrita restrita | Alterar modelos, preços e cotações exige superusuário. `useIsSuperuser()` (`MiggoAI/superuser.ts`) só decide o que a tela mostra; o MiggoAI recusa a escrita com `403`. |
 
 <Warning>
@@ -37,7 +37,7 @@ sequenceDiagram
 | Peça | Arquivo | Papel |
 |---|---|---|
 | Base URL | `src/services/miggoai/config.ts` | `VITE_MIGGOAI_API_URL` (default `http://localhost:8010`). `isMiggoaiApiUrl` marca essa origem com caminho `/api/` como API. |
-| Token | `src/services/jwtAuth.ts` | O interceptor anexa o Bearer da plataforma **só** a essa origem, com o mesmo refresh e retry no `401` das chamadas à Plataforma. |
+| Token | `src/services/jwtAuth.ts` | O interceptor anexa o Bearer da Plataforma **só** a essa origem, com o mesmo refresh e retry no `401` das chamadas à Plataforma. |
 | Cliente tipado | `src/services/miggoai/api.ts` e `types.ts` | Uma função por endpoint. Erros viram `MiggoaiApiError` (`status`, `corpo`). `403` vira "Seu usuário não tem acesso ao MiggoAI."; falha de rede ou CORS vira status `0` com mensagem amigável. |
 | Rotas | `src/pages/Admin/MiggoAI/routes.ts` | `miggoaiPaths` monta todos os caminhos do painel. Não escreva `/admin/miggoai/...` à mão. |
 
@@ -69,7 +69,7 @@ Toda geração escolhe um ambiente no topo da tela (`SeletorDeAmbiente`, em `com
 Em produção a tela pinta uma faixa de alerta (`FaixaDeProducao`), o botão muda de cor (`BotaoExecutar`) e toda execução passa por `ConfirmarProducaoModal`, que lista o que será sobrescrito ("o título", "a legenda"...).
 
 <Warning>
-O ambiente aqui é do **MiggoAI** (gerar em teste ou gravar no card), não da infraestrutura. Cada deploy do web app fala com o MiggoAI configurado em `VITE_MIGGOAI_API_URL` no seu build; os dois modos usam esse mesmo serviço. Veja [Ambientes](/arquitetura/ambientes).
+O ambiente aqui é do **MiggoAI** (gerar em teste ou gravar no card), não da infraestrutura. Cada deploy do Web app fala com o MiggoAI configurado em `VITE_MIGGOAI_API_URL` no seu build; os dois modos usam esse mesmo serviço. Veja [Ambientes](/arquitetura/ambientes).
 </Warning>
 
 ## Variáveis e "Salvar como padrão"
@@ -92,4 +92,4 @@ Algumas ações de IA moram em telas da Plataforma e passam pela API dela, não 
 - **Ligar ou desligar o agente MiggoAI de um cliente** e **gerar agora**: modal de predefinições do cliente em `/admin/clients` (`PUT /api/v1/client/miggoai-workflow/{id}/` com `{ enabled }` e `POST /api/v1/client/miggoai-generate-now/{id}/`). Se o MiggoAI não responder ao disparo, o pedido fica na fila e é atendido em até 15 minutos.
 - **Pedir outra versão de um item do card**: modal de edição do post no Kanban de conteúdos.
 
-Veja [Ciclo do conteúdo](/plataforma/guias/ciclo-do-conteudo) e [Gerar conteúdo no MiggoAI](/miggoai/guias/gerar-conteudo).
+Veja [Ciclo do conteúdo](/plataforma/ciclo-do-conteudo) e [Gerar conteúdo no MiggoAI](/miggoai/guias/gerar-conteudo).

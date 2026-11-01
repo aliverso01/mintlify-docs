@@ -341,7 +341,7 @@ Registro individual congelado de cada chamada efetuada à OpenAI, com tokens e c
 
 ### `UsuarioPlataforma`
 
-`backend/apps/common/models.py`. Usuário local que espelha um usuário da gestão da plataforma: quem entra com o token do backend-miggo precisa de um `User` daqui, porque gerações, execuções e auditoria apontam `created_by` para ele. O vínculo é o id da plataforma, não o e-mail (que pode mudar lá). O espelho é criado sem senha e sem staff.
+`backend/apps/common/models.py`. Usuário local que espelha um usuário da gestão da Plataforma: quem entra com o token do backend-miggo precisa de um `User` daqui, porque gerações, execuções e auditoria apontam `created_by` para ele. O vínculo é o id da Plataforma, não o e-mail (que pode mudar lá). O espelho é criado sem senha e sem staff.
 
 | Campo | Tipo | Detalhe |
 |---|---|---|

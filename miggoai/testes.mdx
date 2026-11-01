@@ -11,7 +11,7 @@ A suíte usa o runner do Django (`manage.py test`, classes `django.test.TestCase
 | `generations` | `apps/generations/tests/` | workflows, contrato de saída, runner, rodada e lock, idempotência do grid, peças de perfil, fila e entrega, regeneração, galeria e banco de imagens, chamadas à OpenAI simuladas |
 | `prompts` | `apps/prompts/tests/` | renderização e versionamento |
 | `custos` | `apps/custos/tests/` | registro, preços, câmbio, agregados, estimativa retroativa e API do painel |
-| `clients`, `common` | `tests.py`, `tests_listagem.py` | variáveis salvas, listagem de clientes e token da plataforma |
+| `clients`, `common` | `tests.py`, `tests_listagem.py` | variáveis salvas, listagem de clientes e token da Plataforma |
 | `core` | `core/tests.py` | configuração do Celery (sem Redis: URL fictícia) |
 
 As chamadas à OpenAI e ao `backend-miggo` são simuladas com `unittest.mock`; nenhum teste chama os serviços de verdade.

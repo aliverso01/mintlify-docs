@@ -1,10 +1,10 @@
 ---
-title: "Componentes de interface"
+title: "Componentes de interface do Web app"
 description: "Os componentes reutilizáveis do frontend-miggo e quando criar um componente novo."
 icon: "component"
 ---
 
-O web app nasceu do template TailAdmin (React 19 + Tailwind 4). O design system vive em `src/components/ui/` e `src/components/form/`, e o catálogo com a API de cada componente é o `design.md` na raiz do repositório. As props ficam no próprio código; esta página diz **o que existe** e **quando usar**.
+O Web app nasceu do template TailAdmin (React 19 + Tailwind 4). O design system vive em `src/components/ui/` e `src/components/form/`, e o catálogo com a API de cada componente é o `design.md` na raiz do repositório. As props ficam no próprio código; esta página diz **o que existe** e **quando usar**.
 
 <Warning>
 Não reimplemente botão, modal, input, tabela, toast ou skeleton na mão. Use os componentes abaixo.
@@ -50,11 +50,7 @@ Componentes por domínio (`briefing/`, `Clients/`, `Subscription/`, `analytics/`
 
 ## Estrutura padrão de uma tela
 
-```tsx
-<PageMeta title="Conteúdos | Miggo" description="..." />
-<PageBreadcrumb pageTitle="Conteúdos" />
-{/* conteúdo */}
-```
+Toda tela abre com `PageMeta` e `PageBreadcrumb`. O passo a passo está em [Criar uma tela no Web app](/web/guias/criar-uma-tela).
 
 ## Quando criar um componente novo
 

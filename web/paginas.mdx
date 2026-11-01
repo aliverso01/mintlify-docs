@@ -1,5 +1,5 @@
 ---
-title: "Telas e rotas do web app"
+title: "Telas e rotas do Web app"
 description: "Tabela de todas as rotas do frontend-miggo: caminho, tela, área e módulo exigido."
 icon: "layout-dashboard"
 ---
@@ -17,7 +17,7 @@ A maioria das telas de operação é montada em mais de uma área com **o mesmo 
 | `/signin` | `AuthPages/SignIn` | Pública. Com sessão, volta para o `?next=` (só caminho interno) ou para `/`. |
 | `/signup` | redireciona para `/onboarding` | Pública |
 | `/reset-password` | `AuthPages/ResetPassword` | Pública |
-| `/onboarding` | `Onboarding/OnboardingShell` | Pública (a etapa 1 cria a conta). Veja [Onboarding no web app](/web/onboarding). |
+| `/onboarding` | `Onboarding/OnboardingShell` | Pública (a etapa 1 cria a conta). Veja [Onboarding no Web app](/web/onboarding). |
 | `/midia/:token` | `Media/MediaDownloadPage` | Pública. Quem autoriza é o token assinado do link enviado por WhatsApp. |
 | `/terms`, `/privacy` | `Legal/TermsOfUse`, `Legal/PrivacyPolicy` | Pública |
 | `/grid/aprovar` | `Grid/GridApprovalPage` | Login, fora dos guards de onboarding e assinatura (aprovação do grid por link). |

@@ -1,12 +1,12 @@
 ---
-title: "Onboarding"
+title: "Onboarding na Plataforma"
 description: "Esteira de entrada do cliente no app onboarding: etapas, análise da marca, estratégia, calendário, grid e handoff do primeiro conteúdo para o MiggoAI."
 icon: "rocket"
 ---
 
 O app `onboarding` conduz o cliente do cadastro até o primeiro conteúdo. Ele mantém uma sessão por cliente (`OnboardingSession`) com a etapa atual, as fontes da marca, o status das tarefas assíncronas e um `JSONField` (`data`) com revisão do briefing, estratégia, calendário proposto, estado do grid e primeiro conteúdo. Ainda atualiza o contador legado `Client.onboarding_step` por compatibilidade.
 
-Quem consome: o front do cliente (retoma o fluxo por `GET /api/v1/onboarding/state/`), crons do Dokploy (grids pendentes, lembretes de aprovação, primeira geração), o ManyChat (código de verificação e lembretes por WhatsApp) e o MiggoAI, que produz o grid, as peças de perfil e o primeiro post. A visão de ponta a ponta está em [Ciclo do conteúdo](/plataforma/guias/ciclo-do-conteudo).
+Quem consome: o front do cliente (retoma o fluxo por `GET /api/v1/onboarding/state/`), crons do Dokploy (grids pendentes, lembretes de aprovação, primeira geração), o ManyChat (código de verificação e lembretes por WhatsApp) e o MiggoAI, que produz o grid, as peças de perfil e o primeiro post. A visão de ponta a ponta está em [Ciclo do conteúdo](/plataforma/ciclo-do-conteudo).
 
 ## Models principais
 
@@ -112,7 +112,7 @@ Agendamento em [Tarefas agendadas](/plataforma/tarefas-agendadas).
 | `ONBOARDING_GRID_BACKOFF_1..3`, `ONBOARDING_GRID_PAID_MAX` | Retentativa e teto do grid. |
 | `GRID_APPROVAL_REMINDER_INTERVAL_HOURS`, `GRID_APPROVAL_MAX_REMINDERS` | Régua de lembretes. |
 
-Lista completa em [Configuração](/plataforma/configuracao).
+Lista completa em [Variáveis de ambiente da Plataforma](/plataforma/configuracao).
 
 ## Onde fica no código
 

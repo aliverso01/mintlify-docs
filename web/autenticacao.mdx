@@ -1,10 +1,10 @@
 ---
-title: "Sessão e login no web app"
+title: "Sessão e login no Web app"
 description: "Como o frontend-miggo guarda a sessão, renova o token e anexa o JWT às chamadas da Plataforma e do MiggoAI."
 icon: "shield-check"
 ---
 
-O web app autentica sempre por **JWT** emitido pela Plataforma. Como o token é emitido, quais claims carrega e como a API recusa está em [Autenticação da Plataforma](/plataforma/autenticacao). Esta página cobre só o lado do navegador.
+O Web app autentica sempre por **JWT** emitido pela Plataforma. Como o token é emitido, quais claims carrega e como a API recusa está em [Autenticação da Plataforma](/plataforma/autenticacao). Esta página cobre só o lado do navegador.
 
 ## Onde a sessão mora
 
@@ -46,7 +46,7 @@ O refresh vai para `VITE_JWT_REFRESH_URL` (default `/api/v1/account/token/refres
 | `requestPasswordReset`, `confirmPasswordReset` | `POST /api/v1/account/password-reset/request/` e `.../confirm/` |
 | `requestVerificationCode` | `GET /api/v1/client/generate-activation-code/<clientId>/` |
 
-O cadastro de cliente acontece no [onboarding](/web/onboarding); `/signup` só redireciona para lá.
+O cadastro de cliente acontece no [Onboarding no Web app](/web/onboarding); `/signup` só redireciona para lá.
 
 O tipo `User` traz `role` (`admin`, `manager`, `client`, `agencia_admin`, `agencia_membro`), `is_staff`, `is_superuser`, `agencia`, `agencia_nome` e `modulos`. É isso que os guards e `useRoleArea` usam para decidir a área e o que mostrar. Veja [Roteamento e áreas](/web/roteamento).
 
@@ -54,6 +54,6 @@ O tipo `User` traz `role` (`admin`, `manager`, `client`, `agencia_admin`, `agenc
 
 Com `VITE_GOOGLE_CLIENT_ID` definida, o `main.tsx` envolve o app em `GoogleOAuthProvider` e os formulários de login e cadastro mostram o botão. O `credential` devolvido pelo Google vai para `loginWithGoogle`. Sem a variável, o botão some.
 
-## Token da plataforma no MiggoAI
+## Token da Plataforma no MiggoAI
 
-O [painel de IA](/web/painel-de-ia) chama o MiggoAI direto do navegador com o mesmo Bearer. O MiggoAI valida o JWT da plataforma (RS256) e só aceita usuário de gestão Miggo. Veja [Autenticação do MiggoAI](/miggoai/autenticacao).
+O [painel de IA](/web/painel-de-ia) chama o MiggoAI direto do navegador com o mesmo Bearer. O MiggoAI valida o JWT da Plataforma (RS256) e só aceita usuário de gestão Miggo. Veja [Autenticação do MiggoAI](/miggoai/autenticacao).

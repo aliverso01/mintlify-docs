@@ -82,13 +82,7 @@ No front, o Traefik ganhou um router *catch-all* (`HostRegexp`, `priority=1`) pa
 
 ## Variáveis de ambiente
 
-| Variável | Para quê |
-|---|---|
-| `PROXY_HOST_TOKEN` | Segredo compartilhado com o nginx do front. Vazio = `X-Miggo-Host` ignorado |
-| `PLATFORM_BASE_DOMAIN` | Base dos subdomínios `<slug>.<base>` (padrão `localhost` com `DEBUG`) |
-| `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ZONE_ID` | API de custom hostnames. Sem elas o cadastro de domínio próprio responde com erro de configuração |
-| `AGENCIA_CNAME_ALVO` | Destino do CNAME mostrado à agência; também entra em `HOSTS_PLATAFORMA` |
-| `HOSTS_PLATAFORMA` | Hosts extras da Miggo (CSV), somados aos fixos e aos derivados de `FRONTEND_URL`/`BACKEND_URL` |
+`PROXY_HOST_TOKEN`, `PLATFORM_BASE_DOMAIN`, `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ZONE_ID`, `AGENCIA_CNAME_ALVO` e `HOSTS_PLATAFORMA`. Padrões e efeito de cada uma em [Variáveis de ambiente da Plataforma](/plataforma/configuracao).
 
 ## Onde fica no código
 

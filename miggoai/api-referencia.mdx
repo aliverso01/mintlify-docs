@@ -1,7 +1,7 @@
 ---
 title: "Introdução à API do MiggoAI"
 description: "Base URL, autenticação, formato de erro, paginação, idempotência e polling da API do MiggoAI."
-icon: "plug"
+icon: "book-open"
 ---
 
 A API do MiggoAI é REST + JSON, servida pelo Django REST Framework. Cada endpoint está na referência gerada do OpenAPI, nesta mesma aba, agrupada por recurso (Autenticação, Clientes, Custos, Gerações, Posts e Prompts).
@@ -21,8 +21,8 @@ Homologação roda em serviço e banco próprios (ver [Ambientes](/arquitetura/a
 | `/api/generations/` | gerar, consultar e apagar gerações; grid, perfil, rodada, regeneração |
 | `/api/prompts/` | workflows, prompts, versões e variáveis |
 | `/api/custos/` | dashboard, preços, cotações e log de chamadas |
-| `/api/clients/` | clientes da plataforma (proxy) e variáveis salvas |
-| `/api/posts/` | posts, formatos e status da plataforma (proxy) |
+| `/api/clients/` | clientes da Plataforma (proxy) e variáveis salvas |
+| `/api/posts/` | posts, formatos e status da Plataforma (proxy) |
 | `/api/token/` | token local (SimpleJWT) |
 
 ## Autenticação
@@ -34,7 +34,7 @@ curl https://backend-ai.miggomkt.com.br/api/generations/resumo/ \
   -H "Authorization: Bearer $ACCESS_DA_PLATAFORMA"
 ```
 
-Token da plataforma (painel), `Api-Key` (backend-miggo) ou token local: ver [Autenticação](/miggoai/autenticacao).
+Token da Plataforma (painel), `Api-Key` (backend-miggo) ou token local: ver [Autenticação](/miggoai/autenticacao).
 
 ## Erros
 
@@ -70,7 +70,7 @@ Gerar leva de segundos a minutos (uma imagem pode levar até 300 s). Por isso v�
 
 | Disparo | Resposta | Como acompanhar |
 |---|---|---|
-| `POST gerar-agora/`, `POST gerar-card/` | `202 {status: "aceito" \| "na_fila"}` | lista de gerações (`linhas/`) ou o próprio post na plataforma |
+| `POST gerar-agora/`, `POST gerar-card/` | `202 {status: "aceito" \| "na_fila"}` | lista de gerações (`linhas/`) ou o próprio post na Plataforma |
 | `POST regenerate/` | `202 {since_id, ...}` | `GET regenerate/status/?post_id=&target=&since_id=` até `success` ou `failed` |
 | `POST grid/` com fila | `202 {status, generation_id}` | `GET grid/by-key/<chave>/?client_id=` |
 | `POST perfil/{bio,banner,destaques}/` com fila | `202 {status, generation_id}` | `GET perfil/by-key/<chave>/?client_id=` |

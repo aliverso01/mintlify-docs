@@ -8,7 +8,7 @@ Todas as gerações passam pelo mesmo núcleo (`apps/generations/services/runner
 
 | Fluxo | Quem dispara | Endpoint ou comando | Resultado |
 |---|---|---|---|
-| Rodada diária | agendador do Dokploy | `generate_daily_contents` | entregue no post da plataforma |
+| Rodada diária | agendador do Dokploy | `generate_daily_contents` | entregue no post da Plataforma |
 | [Gerar agora](#gerar-agora-e-gerar-card) | `backend-miggo` (botão do admin) | `POST /api/generations/gerar-agora/` | entregue no post |
 | [Gerar card](#gerar-agora-e-gerar-card) | `backend-miggo` | `POST /api/generations/gerar-card/` | entregue no post |
 | [Regenerar](#regenerar-um-item-do-card) | `backend-miggo` | `POST /api/generations/regenerate/` | entregue no post |
@@ -75,7 +75,7 @@ Os dois respondem `202` na hora e trabalham fora da requisição:
   Decida pelo `status`, não pelo código HTTP. `aceito`: o lock foi tomado e a geração começou. Qualquer outra coisa (`na_fila`, campo ausente): já havia rodada em andamento e o pedido fica para o cron. Adiar é desfecho normal, por isso os dois são `202`.
 </Warning>
 
-`400` sem `client_id`/`post_id` ou com valor não numérico. Cliente sem grid: a rodada não chama nenhuma etapa paga e registra `cliente sem grid — nada gerado.`. O resultado aparece no post da plataforma e na lista de gerações (`GET /api/generations/linhas/`).
+`400` sem `client_id`/`post_id` ou com valor não numérico. Cliente sem grid: a rodada não chama nenhuma etapa paga e registra `cliente sem grid — nada gerado.`. O resultado aparece no post da Plataforma e na lista de gerações (`GET /api/generations/linhas/`).
 
 ## Regenerar um item do card
 
@@ -106,7 +106,7 @@ curl "$AI/api/generations/regenerate/status/?post_id=5409&target=imagem&since_id
 
 ## Grid do onboarding
 
-Gera o mosaico 3x3 da marca e devolve a imagem em base64 (a plataforma guarda a peça; o bucket do MiggoAI é privado e assina URL por uma hora).
+Gera o mosaico 3x3 da marca e devolve a imagem em base64 (a Plataforma guarda a peça; o bucket do MiggoAI é privado e assina URL por uma hora).
 
 ```bash
 curl -X POST $AI/api/generations/grid/ -H "Authorization: Api-Key $KEY" \
@@ -161,7 +161,7 @@ curl "$AI/api/generations/grid/by-key/grid-42-3f9c/?client_id=42" -H "Authorizat
 | `POST perfil/banner/` | `client_id`, `content` ou `subject`, `bg_color`, `outline_color`, `feedback` | banner do LinkedIn em base64 (sem logo) |
 | `POST perfil/destaques/` | `client_id`, `destaques: [{texto, icone, bg_color, outline_color}]`, `bg_color`, `outline_color` | capas em base64, na ordem enviada |
 
-No banner, a arte de fundo vem da OpenAI e a peça final é composta em HTML com Chromium (Playwright); as capas de destaque são só template HTML, sem IA. `502` quando a peça não sai: a plataforma mantém a anterior. Com `idempotency_key` e fila ligada (`PERFIL_ASYNC`), respondem `202` e o resultado sai em `GET perfil/by-key/<chave>/?client_id=` (`client_id` obrigatório), com o mesmo corpo da resposta síncrona.
+No banner, a arte de fundo vem da OpenAI e a peça final é composta em HTML com Chromium (Playwright); as capas de destaque são só template HTML, sem IA. `502` quando a peça não sai: a Plataforma mantém a anterior. Com `idempotency_key` e fila ligada (`PERFIL_ASYNC`), respondem `202` e o resultado sai em `GET perfil/by-key/<chave>/?client_id=` (`client_id` obrigatório), com o mesmo corpo da resposta síncrona.
 
 ## Gerar pelo painel
 
@@ -206,5 +206,5 @@ Com `REDIS_URL` e a flag do fluxo ligada, o trabalho sai da thread e vai para o 
 
 <Columns cols={2}>
   <Card title="Workflows" icon="workflow" href="/miggoai/workflows">O que cada etapa faz por dentro.</Card>
-  <Card title="Integração com a plataforma" icon="link" href="/miggoai/guias/integracao-com-a-plataforma">Leitura e entrega no backend-miggo.</Card>
+  <Card title="Integração com a Plataforma" icon="link" href="/miggoai/integracao-com-a-plataforma">Leitura e entrega no backend-miggo.</Card>
 </Columns>

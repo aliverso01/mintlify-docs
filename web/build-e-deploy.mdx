@@ -1,5 +1,5 @@
 ---
-title: "Build e deploy do web app"
+title: "Build e deploy do Web app"
 description: "Como o frontend-miggo vira imagem Docker no Amazon ECR, como o Nginx é configurado no start do container e como uma versão chega ao Dokploy."
 icon: "cloud-upload"
 ---
@@ -102,7 +102,7 @@ Ele deriva o host a partir da URL, substitui os três placeholders no template c
 | Erros | `error_page 500 502 503 504 /50x.html` |
 
 <Warning>
-  O limite de upload que vale para quem passa pelo web app é o `client_max_body_size` de **50 MB** deste Nginx, menor que o da Plataforma. Se um upload grande falhar só em produção, confira este número primeiro.
+  O limite de upload que vale para quem passa pelo Web app é o `client_max_body_size` de **50 MB** deste Nginx, menor que o da Plataforma. Se um upload grande falhar só em produção, confira este número primeiro.
 </Warning>
 
 Existe também um `nginx.conf` no repositório, sem placeholders — o que a imagem usa é o **`.template`** processado pelo entrypoint.
@@ -199,6 +199,6 @@ Em `npm run dev` o papel do Nginx é feito pelo `vite.config.ts`, que também en
 
 <Columns cols={3}>
   <Card title="Rodar localmente" icon="download" href="/web/rodar-localmente" />
-  <Card title="Ambientes" icon="layers" href="/arquitetura/ambientes" />
+  <Card title="Ambientes" icon="globe" href="/arquitetura/ambientes" />
   <Card title="Deploy da Plataforma" icon="server" href="/plataforma/deploy" />
 </Columns>

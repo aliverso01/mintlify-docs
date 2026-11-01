@@ -1,5 +1,5 @@
 ---
-title: "Onboarding no web app"
+title: "Onboarding no Web app"
 description: "Como funciona a esteira de onboarding em /onboarding: etapas, chamadas à API, navegação e retomada."
 icon: "footprints"
 ---
@@ -139,7 +139,7 @@ Revisão da identidade visual (logo, paleta de cores, tipografia, referências v
 
 <Accordion title="review — ReviewStep.tsx">
 
-Revisão completa do briefing (dados básicos, público-alvo, tom de voz, produtos, diferenciais, objetivos, CTAs, brand kit). Reaproveita os mesmos componentes de campo da tela de Briefing da plataforma (`src/components/briefing/ReviewFields.tsx` — `Field`, `ListEditor`, `Section`, `TargetPicker`), então o formulário aqui e o de "Minha Marca" têm exatamente os mesmos rótulos e controles.
+Revisão completa do briefing (dados básicos, público-alvo, tom de voz, produtos, diferenciais, objetivos, CTAs, brand kit). Reaproveita os mesmos componentes de campo da tela de Briefing da Plataforma (`src/components/briefing/ReviewFields.tsx` — `Field`, `ListEditor`, `Section`, `TargetPicker`), então o formulário aqui e o de "Minha Marca" têm exatamente os mesmos rótulos e controles.
 
 Ao montar, se a fonte **não** foi `manual` (`session.brand_source !== 'manual'`), chama `onboardingApi.autofillReview(false)` → preenche com IA os campos em branco **sem avançar** (persiste, mas quem decide seguir é o usuário); em falha, cai para `getReview()` puro. Fonte manual nunca chama autofill — a pessoa escolheu preencher sozinha.
 
@@ -170,7 +170,7 @@ Inclui download em lote das capas de destaque e lightbox de visualização ampli
 
 <Accordion title="calendar — CalendarStep.tsx">
 
-Grade semanal proposta pela IA (dia, horário, assunto, formatos — read-only, chips), com catálogo de estilos/CTAs/tags pré-cadastrado (`fetchCalendarCatalog`, `src/services/editorialCalendarCatalog.ts`). A composição da semana (quantos stories/feeds, limite do LinkedIn) é decidida pelo **backend**; o único jeito de mudar é pedir por feedback textual à IA — os formatos não são editáveis diretamente aqui (diferente da tela "Calendário Editorial" da plataforma).
+Grade semanal proposta pela IA (dia, horário, assunto, formatos — read-only, chips), com catálogo de estilos/CTAs/tags pré-cadastrado (`fetchCalendarCatalog`, `src/services/editorialCalendarCatalog.ts`). A composição da semana (quantos stories/feeds, limite do LinkedIn) é decidida pelo **backend**; o único jeito de mudar é pedir por feedback textual à IA — os formatos não são editáveis diretamente aqui (diferente da tela "Calendário Editorial" da Plataforma).
 
 - `onboardingApi.getCalendar()` → `GET /onboarding/calendar/`.
 - `updateCalendar(calendar)` → `PUT /onboarding/calendar/` (salva toggle ativo/assunto/horário antes de regerar/aprovar).
@@ -181,7 +181,7 @@ Grade semanal proposta pela IA (dia, horário, assunto, formatos — read-only, 
 
 <Accordion title="media — MediaStep.tsx">
 
-Upload das fotos reais da marca — alimenta a **mesma** biblioteca "Minhas fotos" da plataforma (é dela que o agente de IA tira imagens reais para os posts). Não bloqueia o onboarding.
+Upload das fotos reais da marca — alimenta a **mesma** biblioteca "Minhas fotos" da Plataforma (é dela que o agente de IA tira imagens reais para os posts). Não bloqueia o onboarding.
 
 - `onboardingApi.getMedia()` → `GET /onboarding/media/` (devolve `media` + `limits`: `max_image_mb`, `max_video_mb`, e no trial gratuito `free_trial`+`max_files`).
 - Validação client-side (tamanho por arquivo, contagem total no trial) antes de `onboardingApi.uploadMedia(files)` → `POST /onboarding/media/` (`FormData`).
@@ -214,7 +214,7 @@ Conexão real de redes sociais, reaproveitando o componente `SocialConnections` 
 
 Tela final. Busca `onboardingApi.getSummary()` → `GET /onboarding/summary/` para mostrar os próximos conteúdos previstos (data, formato, horário). Checklist fixo (estratégia criada, calendário configurado, primeiros conteúdos em produção — sempre `done: true`, não reflete estado real por item). Destaca que o estilo visual e os primeiros conteúdos chegam depois, por WhatsApp.
 
-Botão "Ir para a plataforma" chama `onFinish` (prop do shell = `handleFinish`): `onboardingApi.completeOnboarding()` → `POST /onboarding/complete/`, depois `clearOnboardingCache()` e `navigate('/')`.
+Botão "Ir para a Plataforma" chama `onFinish` (prop do shell = `handleFinish`): `onboardingApi.completeOnboarding()` → `POST /onboarding/complete/`, depois `clearOnboardingCache()` e `navigate('/')`.
 
 </Accordion>
 
@@ -235,7 +235,7 @@ Fluxo: `clearOnboardingCache()` → confirma a integração junto ao Zernio (`GE
 
 **Arquivo:** `src/hooks/useOnboarding.ts`
 
-Hook consumido pelas telas da plataforma (dashboard, conteúdos, brandkit, agenda) para saber se um cliente pode usar o recurso. Busca `GET /api/v1/client/onboarding-status/:clientId/`, com **cache em memória module-level** (`_cachedStatus`/`_cachedClientId`, não React state) para evitar corrida entre `OnboardingGuard` e o próprio fluxo ao navegar logo após concluir.
+Hook consumido pelas telas da Plataforma (dashboard, conteúdos, brandkit, agenda) para saber se um cliente pode usar o recurso. Busca `GET /api/v1/client/onboarding-status/:clientId/`, com **cache em memória module-level** (`_cachedStatus`/`_cachedClientId`, não React state) para evitar corrida entre `OnboardingGuard` e o próprio fluxo ao navegar logo após concluir.
 
 Campos principais de `OnboardingStatus`:
 | Campo | Uso |
@@ -246,7 +246,7 @@ Campos principais de `OnboardingStatus`:
 | `grid_reference_chosen` | Se a referência de grid já foi escolhida (separa escolha, no onboarding, de aprovação do mosaico, na `GridApprovalPage`). |
 | `onboarding_skipped` | Definido por `skipOnboarding` (o "Configurar Depois" do `BrandSourceStep`). |
 
-Deriva `isInOnboardingFlow = !!onboarding_current_step && onboarding_current_step !== 'done'` — usado (ex.: em `InstagramSuccess.tsx`) para decidir se o retorno de um OAuth deve emendar de volta no onboarding ou seguir para a plataforma normal. `clearOnboardingCache()` é exportado e chamado sempre que uma ação pode ter mudado o status (aprovação de grid, conclusão, conexão social) para forçar releitura.
+Deriva `isInOnboardingFlow = !!onboarding_current_step && onboarding_current_step !== 'done'` — usado (ex.: em `InstagramSuccess.tsx`) para decidir se o retorno de um OAuth deve emendar de volta no onboarding ou seguir para a Plataforma normal. `clearOnboardingCache()` é exportado e chamado sempre que uma ação pode ter mudado o status (aprovação de grid, conclusão, conexão social) para forçar releitura.
 
 ## Retomada de onboarding incompleto
 

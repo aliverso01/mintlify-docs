@@ -1,7 +1,7 @@
 ---
 title: "Log de integrações"
 description: "Como o app integration registra as chamadas do backend a serviços externos e onde consultá-las."
-icon: "plug"
+icon: "scroll-text"
 ---
 
 O app `integration` define um único model, `Integration`: o **log de auditoria das chamadas a serviços externos** (Stripe, Asaas, ManyChat, Instagram, Zernio, MiggoAI, Jira). O app não escreve nesse log; quem escreve são os módulos que fazem a chamada de saída. Ele só expõe leitura e exclusão.

@@ -1,5 +1,5 @@
 ---
-title: "Webhooks"
+title: "Webhooks da Plataforma"
 description: "Como a Plataforma recebe e valida os eventos de Stripe, Asaas, Zernio, ManyChat e Jira, e como testá-los localmente."
 icon: "webhook"
 ---
@@ -20,7 +20,7 @@ Regras comuns a todos os que validam:
 
 - **Variável vazia → `503`.** O webhook recusa todo evento até a variável ser configurada, e loga o motivo em nível `error`.
 - **Token ou assinatura errados → `401`** (Stripe: `400 invalid signature`). Tokens são comparados com `hmac.compare_digest`.
-- **Toda chamada vira uma linha em `Integration`** (exceto ManyChat e Jira), com payload, resposta e status. É o primeiro lugar para investigar — tela `/admin/logs` ou [Integration](/plataforma/apps/integration).
+- **Toda chamada vira uma linha em `Integration`** (exceto ManyChat e Jira), com payload, resposta e status. É o primeiro lugar para investigar — tela `/admin/logs` ou [Log de integrações](/plataforma/apps/integration).
 
 ## Stripe
 
@@ -100,7 +100,7 @@ O WhatsApp chega pelo ManyChat, que chama a Plataforma por *External Request* de
 
 **Validação.** O ManyChat não assina o payload; o token compartilhado vai no header `X-Miggo-Token` (ou `Authorization: Bearer <token>`) e é comparado com `MANYCHAT_WEBHOOK_TOKEN`.
 
-O Dynamic Block decide o que mostrar pelo `ConversationFlowState`, nunca por parâmetro da URL. Por isso a mesma URL serve a qualquer flow criado na Plataforma. Erro de processamento no `/webhooks/manychat/` responde `200`, porque um `500` faria o ManyChat reenviar em laço. Detalhes do motor de flows em [Conversation](/plataforma/apps/conversation).
+O Dynamic Block decide o que mostrar pelo `ConversationFlowState`, nunca por parâmetro da URL. Por isso a mesma URL serve a qualquer flow criado na Plataforma. Erro de processamento no `/webhooks/manychat/` responde `200`, porque um `500` faria o ManyChat reenviar em laço. Detalhes do motor de flows em [Conversas de WhatsApp](/plataforma/apps/conversation).
 
 ## Jira
 

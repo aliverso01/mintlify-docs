@@ -38,7 +38,7 @@ O app `brandkit` (na interface, "Minha marca") guarda a identidade visual de cad
 
 **Referências**
 
-- `DesignReference` de tipo `grid` alimenta a escolha de estilo do [onboarding](/plataforma/apps/onboarding); as de tipo `post` orientam a arte. A descrição técnica é gerada por visão em segundo plano.
+- `DesignReference` de tipo `grid` alimenta a escolha de estilo do [Onboarding na Plataforma](/plataforma/apps/onboarding); as de tipo `post` orientam a arte. A descrição técnica é gerada por visão em segundo plano.
 - `CopyReference` é criada a partir de texto colado, de um link ou de prints. A ordem dos slides é a ordem de upload, e cada print é transcrito separadamente. O `style_tag` é validado contra a taxonomia de estilos por formato.
 - **Importar por link** (Instagram ou Pinterest): o servidor abre o post num navegador, sem conta logada, e captura o elemento do post (várias imagens só em carrossel). Uma captura por vez por processo. O resultado pode virar referência visual, de copy ou as duas, ligadas por `par_id`.
 
@@ -48,7 +48,7 @@ As rotas de importação por link exigem usuário da equipe (`IsManagementUserOn
 
 **Grid do cliente**
 
-As views de grid (regerar, status, aprovar, pedir ajuste) delegam a `app.onboarding.services`, que concentra o pipeline e a idempotência da geração. Veja [Onboarding](/plataforma/apps/onboarding#grid-estilo-visual).
+As views de grid (regerar, status, aprovar, pedir ajuste) delegam a `app.onboarding.services`, que concentra o pipeline e a idempotência da geração. Veja [Onboarding na Plataforma](/plataforma/apps/onboarding#grid-estilo-visual).
 
 ## Filas
 

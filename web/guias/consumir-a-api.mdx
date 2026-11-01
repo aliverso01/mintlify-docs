@@ -1,10 +1,10 @@
 ---
-title: "Consumir a API no web app"
+title: "Consumir a API no Web app"
 description: "Como uma tela do frontend-miggo chama a Plataforma e o MiggoAI: caminho relativo, token automático, refresh e tratamento de 401, 403 e erros de validação."
 icon: "plug"
 ---
 
-O web app usa `fetch` nativo. Não há cliente HTTP nem interceptor por tela: `setupAuthFetchInterceptor()` (em `src/services/jwtAuth.ts`, instalado no `main.tsx`) já cuida do token para toda chamada de API.
+O Web app usa `fetch` nativo. Não há cliente HTTP nem interceptor por tela: `setupAuthFetchInterceptor()` (em `src/services/jwtAuth.ts`, instalado no `main.tsx`) já cuida do token para toda chamada de API.
 
 ## Regras
 
@@ -78,5 +78,5 @@ Formato de erro, paginação e códigos estão em [Referência de API da Platafo
 As telas do [painel de IA](/web/painel-de-ia) usam o cliente tipado `src/services/miggoai/api.ts`, que prefixa `VITE_MIGGOAI_API_URL` e transforma erro em `MiggoaiApiError`. O interceptor reconhece essa origem e anexa o mesmo token. Para uma chamada nova ao MiggoAI, acrescente uma função em `api.ts` e o tipo em `types.ts`, em vez de usar `fetch` direto na tela.
 
 <Warning>
-O token da plataforma só sai do app para a origem de `VITE_MIGGOAI_API_URL`. Chamada para qualquer outro domínio vai sem `Authorization`, de propósito.
+O token da Plataforma só sai do app para a origem de `VITE_MIGGOAI_API_URL`. Chamada para qualquer outro domínio vai sem `Authorization`, de propósito.
 </Warning>

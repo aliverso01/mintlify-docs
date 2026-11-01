@@ -1,10 +1,10 @@
 ---
 title: "Arquitetura do MiggoAI"
-description: "Onde o MiggoAI se encaixa entre a plataforma, o painel de IA e a OpenAI, e como o código está organizado."
+description: "Onde o MiggoAI se encaixa entre a Plataforma, o painel de IA e a OpenAI, e como o código está organizado."
 icon: "network"
 ---
 
-O MiggoAI é um serviço interno de geração de conteúdo. Ele não é dono de cliente nem de post: lê esses dados ao vivo do `backend-miggo`, gera o conteúdo com a OpenAI e devolve o resultado, seja na resposta (grid, bio, banner, destaques), seja entregando direto no post da plataforma (rodada diária, gerar card, regenerar).
+O MiggoAI é um serviço interno de geração de conteúdo. Ele não é dono de cliente nem de post: lê esses dados ao vivo do `backend-miggo`, gera o conteúdo com a OpenAI e devolve o resultado, seja na resposta (grid, bio, banner, destaques), seja entregando direto no post da Plataforma (rodada diária, gerar card, regenerar).
 
 ```mermaid
 flowchart LR
@@ -19,11 +19,11 @@ flowchart LR
 
 | Quem chama | Para quê | Credencial |
 |---|---|---|
-| Painel de IA (`frontend-miggo`, `/admin/miggoai`) | operar: ver execuções, gerar, editar prompts, custos e modelos | token da plataforma |
+| Painel de IA (`frontend-miggo`, `/admin/miggoai`) | operar: ver execuções, gerar, editar prompts, custos e modelos | token da Plataforma |
 | `backend-miggo` | acionar geração: gerar agora, gerar card, regenerar, grid e peças de perfil do onboarding | chave de serviço |
 | Agendador do Dokploy | rodar `generate_daily_contents` | — (comando no container) |
 
-Detalhes de cada credencial em [Autenticação](/miggoai/autenticacao); endpoints da plataforma consumidos em [Integração com a plataforma](/miggoai/guias/integracao-com-a-plataforma).
+Detalhes de cada credencial em [Autenticação](/miggoai/autenticacao); endpoints da Plataforma consumidos em [Integração com a Plataforma](/miggoai/integracao-com-a-plataforma).
 
 ## O que o MiggoAI guarda
 

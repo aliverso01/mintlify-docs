@@ -56,15 +56,15 @@ flowchart TD
 | --- | --- | --- | --- |
 | Web app → Plataforma | `Authorization: Bearer <access>` (JWT RS256 emitido em `POST /api/v1/account/token/`) | toda a API `/api/v1/*` | [Autenticação na Plataforma](/plataforma/autenticacao) |
 | Web app → MiggoAI | o mesmo JWT da Plataforma | painel de IA: prompts, execuções, custos, geração manual | [Painel de IA](/web/painel-de-ia) |
-| Plataforma → MiggoAI | `Authorization: Api-Key <MIGGOAI_V2_API_KEY>` | grid do onboarding, gerar agora, gerar card, regenerar item, peças de perfil | [Integração com a Plataforma](/miggoai/guias/integracao-com-a-plataforma) |
-| MiggoAI → Plataforma | `Authorization: Api-Key <MIGGO_API_KEY>` | ler clientes, calendário e posts; entregar mídia e conteúdo | [Integração com a Plataforma](/miggoai/guias/integracao-com-a-plataforma) |
+| Plataforma → MiggoAI | `Authorization: Api-Key <MIGGOAI_V2_API_KEY>` | grid do onboarding, gerar agora, gerar card, regenerar item, peças de perfil | [Integração com a Plataforma](/miggoai/integracao-com-a-plataforma) |
+| MiggoAI → Plataforma | `Authorization: Api-Key <MIGGO_API_KEY>` | ler clientes, calendário e posts; entregar mídia e conteúdo | [Integração com a Plataforma](/miggoai/integracao-com-a-plataforma) |
 | Provedores → Plataforma | assinatura ou token por provedor | cobrança, publicação, conexão de contas, WhatsApp | [Webhooks](/plataforma/guias/webhooks) |
 
 Toda chamada da Plataforma a um serviço externo, MiggoAI incluído, é registrada na tabela `Integration` (app [`integration`](/plataforma/apps/integration)). O registro é *best-effort*: falhar ao auditar nunca derruba o fluxo.
 
 ## API da Plataforma
 
-Os recursos ficam sob `/api/v1/`, um prefixo por app Django (`/api/v1/account/`, `/api/v1/client/`, `/api/v1/agency/`, `/api/v1/post/`…). Os webhooks ficam fora do prefixo, em `/webhooks/`. A lista completa de endpoints, agrupada por recurso, está na [Referência de API da Plataforma](/plataforma/api-referencia); o mapa de apps está em [Estrutura do backend](/plataforma/estrutura).
+Os recursos ficam sob `/api/v1/`, um prefixo por app Django (`/api/v1/account/`, `/api/v1/client/`, `/api/v1/agency/`, `/api/v1/post/`…). Os webhooks ficam fora do prefixo, em `/webhooks/`. A lista completa de endpoints, agrupada por recurso, está na [Referência de API da Plataforma](/plataforma/api-referencia); o mapa de apps está em [Estrutura da Plataforma](/plataforma/estrutura).
 
 ## Próximos passos
 

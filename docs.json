@@ -22,11 +22,12 @@
             "group": "Comece aqui",
             "pages": [
               "index",
-              "quickstart"
+              "quickstart",
+              "arquitetura/convencoes"
             ]
           },
           {
-            "group": "Arquitetura",
+            "group": "Conceitos",
             "pages": [
               "arquitetura/visao-geral",
               "arquitetura/fluxos",
@@ -37,8 +38,7 @@
           {
             "group": "Referência",
             "pages": [
-              "arquitetura/glossario",
-              "arquitetura/convencoes"
+              "arquitetura/glossario"
             ]
           }
         ]
@@ -52,58 +52,64 @@
             "pages": [
               "plataforma/rodar-localmente",
               "plataforma/configuracao",
-              "plataforma/autenticacao",
-              "plataforma/estrutura"
+              "plataforma/autenticacao"
             ]
           },
           {
             "group": "Guias",
             "pages": [
-              "plataforma/guias/ciclo-do-conteudo",
-              "plataforma/guias/webhooks",
+              "plataforma/guias/adicionar-rotina-agendada",
+              "plataforma/guias/webhooks"
+            ]
+          },
+          {
+            "group": "Conceitos",
+            "pages": [
+              "plataforma/estrutura",
+              "plataforma/ciclo-do-conteudo",
               "plataforma/filas-e-celery",
-              "plataforma/tarefas-agendadas",
+              {
+                "group": "Domínios",
+                "pages": [
+                  "plataforma/apps/account",
+                  "plataforma/apps/client",
+                  "plataforma/apps/agencia",
+                  "plataforma/apps/onboarding",
+                  "plataforma/apps/brandkit",
+                  "plataforma/apps/post",
+                  "plataforma/apps/editorial-calendar",
+                  "plataforma/apps/media",
+                  "plataforma/apps/agenda",
+                  "plataforma/apps/subscription",
+                  "plataforma/apps/benefits",
+                  "plataforma/apps/conversation",
+                  "plataforma/apps/emailmarketing",
+                  "plataforma/apps/notification",
+                  "plataforma/apps/history",
+                  "plataforma/apps/integration"
+                ]
+              }
+            ]
+          },
+          {
+            "group": "Referência",
+            "pages": [
+              "plataforma/api-referencia",
+              {
+                "group": "Endpoints da Plataforma",
+                "openapi": {
+                  "source": "api-reference/backend-miggo/openapi.json",
+                  "directory": "api-reference/plataforma"
+                }
+              },
+              "plataforma/modelo-de-dados",
               "plataforma/comandos"
             ]
           },
           {
-            "group": "Domínios",
-            "pages": [
-              "plataforma/modelo-de-dados",
-              "plataforma/apps/account",
-              "plataforma/apps/client",
-              "plataforma/apps/agencia",
-              "plataforma/apps/onboarding",
-              "plataforma/apps/brandkit",
-              "plataforma/apps/post",
-              "plataforma/apps/editorial-calendar",
-              "plataforma/apps/media",
-              "plataforma/apps/agenda",
-              "plataforma/apps/subscription",
-              "plataforma/apps/benefits",
-              "plataforma/apps/conversation",
-              "plataforma/apps/emailmarketing",
-              "plataforma/apps/notification",
-              "plataforma/apps/history",
-              "plataforma/apps/integration"
-            ]
-          },
-          {
-            "group": "Referência de API",
-            "pages": [
-              "plataforma/api-referencia"
-            ]
-          },
-          {
-            "group": "Endpoints da Plataforma",
-            "openapi": {
-              "source": "api-reference/backend-miggo/openapi.json",
-              "directory": "api-reference/plataforma"
-            }
-          },
-          {
             "group": "Operação",
             "pages": [
+              "plataforma/tarefas-agendadas",
               "plataforma/testes",
               "plataforma/deploy"
             ]
@@ -118,7 +124,8 @@
             "group": "Comece aqui",
             "pages": [
               "web/rodar-localmente",
-              "web/estrutura"
+              "web/configuracao",
+              "web/autenticacao"
             ]
           },
           {
@@ -131,20 +138,20 @@
           {
             "group": "Conceitos",
             "pages": [
-              "web/autenticacao",
+              "web/estrutura",
               "web/roteamento",
               "web/estado-e-dados",
               "web/componentes",
               "web/layout-e-tema",
-              "web/onboarding"
+              "web/onboarding",
+              "web/area-admin",
+              "web/painel-de-ia"
             ]
           },
           {
-            "group": "Áreas",
+            "group": "Referência",
             "pages": [
-              "web/paginas",
-              "web/area-admin",
-              "web/painel-de-ia"
+              "web/paginas"
             ]
           },
           {
@@ -165,39 +172,40 @@
             "pages": [
               "miggoai/rodar-localmente",
               "miggoai/configuracao",
-              "miggoai/autenticacao",
-              "miggoai/arquitetura"
+              "miggoai/autenticacao"
             ]
           },
           {
             "group": "Guias",
             "pages": [
               "miggoai/guias/gerar-conteudo",
-              "miggoai/guias/integracao-com-a-plataforma"
+              "miggoai/guias/editar-um-prompt"
             ]
           },
           {
             "group": "Conceitos",
             "pages": [
+              "miggoai/arquitetura",
               "miggoai/workflows",
               "miggoai/prompts",
               "miggoai/integracao-openai",
               "miggoai/custos",
+              "miggoai/integracao-com-a-plataforma"
+            ]
+          },
+          {
+            "group": "Referência",
+            "pages": [
+              "miggoai/api-referencia",
+              {
+                "group": "Endpoints do MiggoAI",
+                "openapi": {
+                  "source": "api-reference/miggoai/openapi.json",
+                  "directory": "api-reference/miggoai"
+                }
+              },
               "miggoai/modelo-de-dados"
             ]
-          },
-          {
-            "group": "Referência de API",
-            "pages": [
-              "miggoai/api-referencia"
-            ]
-          },
-          {
-            "group": "Endpoints do MiggoAI",
-            "openapi": {
-              "source": "api-reference/miggoai/openapi.json",
-              "directory": "api-reference/miggoai"
-            }
           },
           {
             "group": "Operação",
@@ -213,7 +221,7 @@
         "icon": "history",
         "groups": [
           {
-            "group": "Releases",
+            "group": "Changelog",
             "pages": [
               "releases/index",
               "releases/versionamento"
@@ -483,6 +491,16 @@
     {
       "source": "/releases/proposta-versionamento",
       "destination": "/releases/versionamento",
+      "permanent": true
+    },
+    {
+      "source": "/plataforma/guias/ciclo-do-conteudo",
+      "destination": "/plataforma/ciclo-do-conteudo",
+      "permanent": true
+    },
+    {
+      "source": "/miggoai/guias/integracao-com-a-plataforma",
+      "destination": "/miggoai/integracao-com-a-plataforma",
       "permanent": true
     }
   ]

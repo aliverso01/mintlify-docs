@@ -1,5 +1,5 @@
 ---
-title: "Qualidade e verificação do web app"
+title: "Qualidade e verificação do Web app"
 description: "Como verificar uma mudança no frontend-miggo: ESLint, TypeScript estrito, build e a configuração de Vite e Tailwind."
 icon: "check-check"
 ---
@@ -50,7 +50,7 @@ Não introduza `any` novo: tipe a resposta da API ou use `unknown` com narrowing
 `vite.config.ts` define:
 
 - **Plugins:** `@vitejs/plugin-react` e `vite-plugin-svgr` (SVG vira componente React nomeado, base de `src/icons/index.ts`).
-- **Proxy `/api`:** repassa para `VITE_API_BASE_URL`, reescreve `Origin`/`Referer`, reescreve o domínio do cookie para `localhost` e envia `X-Miggo-Host` (e `X-Miggo-Proxy-Token`, se houver `PROXY_HOST_TOKEN`). Em produção o Nginx faz o mesmo papel.
+- **Proxy `/api`:** veja [Build e deploy do Web app](/web/build-e-deploy#desenvolvimento-o-proxy-do-vite).
 - **`allowedHosts: [".localhost"]`:** aceita `<slug>.localhost` para testar domínio de agência.
 - Sem aliases de import: os imports são relativos.
 

@@ -1,5 +1,5 @@
 ---
-title: "Rodar o web app localmente"
+title: "Rodar o Web app localmente"
 description: "Instala o frontend-miggo, configura as variáveis VITE_* e sobe o servidor de desenvolvimento."
 icon: "download"
 ---
@@ -35,23 +35,7 @@ O `frontend-miggo` é uma SPA em React 19 + Vite 6 + TypeScript. Em desenvolvime
 
 ## Variáveis de ambiente
 
-<Warning>
-Tudo que começa com `VITE_` é embutido no bundle e fica **público** no navegador. Nunca coloque segredo numa variável `VITE_*`.
-</Warning>
-
-| Variável | Obrigatória | Para que serve |
-|---|---|---|
-| `VITE_API_BASE_URL` | Sim | URL da Plataforma. No dev é o destino do proxy `/api` do Vite; em produção, o Nginx do container usa o mesmo valor como `BACKEND_URL`. O código do app não a lê: ele sempre chama caminhos relativos (`/api/v1/...`). |
-| `VITE_MIGGOAI_API_URL` | Só para o painel de IA | URL do MiggoAI. Default `http://localhost:8010`. É a **única** origem externa que recebe o token da plataforma. Não consta no `.env.example`; acrescente à mão. |
-| `VITE_JWT_REFRESH_URL` | Não | Rota de renovação do access token. Default `/api/v1/account/token/refresh/`. |
-| `VITE_GOOGLE_CLIENT_ID` | Não | Client ID do login com Google. Sem ele, o botão "Entrar com Google" some. |
-| `VITE_HELP_CENTER_URL` | Não | Link da central de ajuda no menu. Default `https://ajuda.miggomkt.com.br`. |
-| `VITE_CLARITY_PROJECT_ID` | Não | Projeto do Microsoft Clarity. Só carrega em build de produção. |
-| `PROXY_HOST_TOKEN` | Não | Lida pelo `vite.config.ts` **sem** o prefixo `VITE_` (não vai para o bundle). O proxy a envia como `X-Miggo-Proxy-Token` junto com `X-Miggo-Host`, para a Plataforma confiar no host de domínio de agência. |
-
-<Tip>
-Para testar um domínio de agência local, use `<slug>.localhost:5173`: o Vite aceita qualquer subdomínio de `.localhost`, e o proxy repassa esse host em `X-Miggo-Host`.
-</Tip>
+O `.env` mínimo para desenvolvimento é `VITE_API_BASE_URL=http://localhost:8000`. A lista completa, com o que é público e o que vai só para o proxy, está em [Variáveis de ambiente do Web app](/web/configuracao).
 
 ## Scripts
 

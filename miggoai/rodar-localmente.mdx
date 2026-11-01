@@ -35,7 +35,7 @@ O MiggoAI é o serviço de IA da Miggo: gera título, imagem, legenda, hashtags,
     cp .env.example .env
     ```
 
-    Preencha pelo menos `SECRET_KEY`, `DEBUG`, `DB_*`, `MIGGO_API_KEY`, `MIGGO_API_BASE_URL` e `MIGGO_JWT_PUBLIC_KEY`. Esta última não está no `.env.example`, mas as settings não carregam sem ela. Tabela completa em [Variáveis de ambiente](/miggoai/configuracao).
+    Preencha pelo menos `SECRET_KEY`, `DEBUG`, `DB_*`, `MIGGO_API_KEY`, `MIGGO_API_BASE_URL` e `MIGGO_JWT_PUBLIC_KEY`. Tabela completa em [Variáveis de ambiente](/miggoai/configuracao).
   </Step>
 
   <Step title="Migrar e carregar os prompts">
@@ -95,7 +95,7 @@ python manage.py generate_daily_contents --client-id 7 --limit 1
     A imagem do post usa o grid 3x3 do brandkit do cliente como referência. Cliente sem grid no `backend-miggo` não gera imagem, e a rodada diária pula o cliente.
   </Accordion>
   <Accordion title="401 no painel de IA local">
-    O token da plataforma é validado com `MIGGO_JWT_PUBLIC_KEY`. Ela precisa ser a pública do par da `JWT_PRIVATE_KEY` do `backend-miggo` que emitiu o token.
+    O token da Plataforma é validado com `MIGGO_JWT_PUBLIC_KEY`. Ela precisa ser a pública do par da `JWT_PRIVATE_KEY` do `backend-miggo` que emitiu o token.
   </Accordion>
   <Accordion title="Banco de imagens da Miggo nunca é usado">
     Sem `ACERVO_SERVICE_TOKEN` o banco é ignorado (com `WARNING` no log) e a geração segue só com a galeria do cliente.

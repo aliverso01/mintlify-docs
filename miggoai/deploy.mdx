@@ -66,11 +66,8 @@ O timeout longo existe porque parte da geração roda dentro do request; com o p
 | `FLOWER_BASIC_AUTH` | Credencial do Flower; ausente, o Flower não sobe |
 | `GRID_ASYNC`, `FILA_ASYNC`, `PERFIL_ASYNC` | Ligam grid, rodada/entrega e peças de perfil em fila; só valem com `REDIS_URL` |
 
-Lista completa e defaults: `backend/.env.example` e `docs/celery.md` no repositório. Veja também [Configuração](/miggoai/configuracao).
+Lista completa e defaults em [Variáveis de ambiente do MiggoAI](/miggoai/configuracao).
 
-<Note>
-  `MIGGO_JWT_PUBLIC_KEY` não aparece no `backend/.env.example` da `main`; a obrigatoriedade vem do `config('MIGGO_JWT_PUBLIC_KEY')` nas settings.
-</Note>
 
 ## Agendamentos no Dokploy
 
@@ -86,7 +83,7 @@ A geração de um card pode passar de 5 minutos: não use timeout curto na taref
 
 ## Ordem de deploy
 
-1. Mudança de contrato com a plataforma (nova resposta, flag de fila nova): `backend-miggo` primeiro, depois o MiggoAI.
+1. Mudança de contrato com a Plataforma (nova resposta, flag de fila nova): `backend-miggo` primeiro, depois o MiggoAI.
 2. Migrations rodam sozinhas no start do web (`ROLE=web`); o worker não migra, então suba o web antes do worker.
 3. Confira `curl https://backend-ai.miggomkt.com.br/health/` depois da troca.
 
@@ -94,6 +91,6 @@ A geração de um card pode passar de 5 minutos: não use timeout curto na taref
 
 <Columns cols={3}>
   <Card title="Variáveis de ambiente" icon="sliders-horizontal" href="/miggoai/configuracao" />
-  <Card title="Deploy da plataforma" icon="server" href="/plataforma/deploy" />
-  <Card title="Ambientes" icon="layers" href="/arquitetura/ambientes" />
+  <Card title="Deploy da Plataforma" icon="server" href="/plataforma/deploy" />
+  <Card title="Ambientes" icon="globe" href="/arquitetura/ambientes" />
 </Columns>

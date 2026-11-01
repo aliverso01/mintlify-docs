@@ -37,13 +37,7 @@ Os repositórios têm histórico de **mojibake** (`Ã§`, `Ã£` no lugar de `ç
 
 ## Frontend (React 19 + TypeScript)
 
-| Regra | Detalhe |
-| --- | --- |
-| TypeScript estrito | Nenhum `any` novo. Tipos explícitos em props, retornos de hooks e respostas de API. |
-| Lint obrigatório | `npm run lint` sem erros antes de concluir. |
-| Build verifica tipos | `npm run build` roda `tsc -b` antes do Vite — um build verde é a garantia de tipagem. |
-| Componentes | Funcionais com hooks. Reaproveite os componentes existentes antes de criar novos. |
-| Rotas por papel | Respeite a separação `/app` (cliente) e `/admin` (equipe). Veja [Roteamento](/web/roteamento). |
+TypeScript estrito (nenhum `any` novo), `npm run lint` e `npm run build` (`tsc -b`) sem erros. As convenções do Web app (rotas por área, chamadas à API, componentes, tokens de cor) estão em [Qualidade e verificação do Web app](/web/qualidade).
 
 ## Como abrir um PR
 

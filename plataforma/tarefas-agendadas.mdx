@@ -1,5 +1,5 @@
 ---
-title: "Tarefas agendadas"
+title: "Tarefas agendadas da Plataforma"
 description: "O que roda periodicamente no backend-miggo, quem dispara cada rotina e como diagnosticar uma que não rodou."
 icon: "clock"
 ---
@@ -44,7 +44,7 @@ Todas as rotinas são **idempotentes** e terminam com um resumo no log: rodar de
 
 ### Cobrança: webhook e rotina se complementam
 
-O webhook reage em tempo real ao que o gateway avisa ([Webhooks](/plataforma/guias/webhooks)). As rotinas cuidam do que o gateway não avisa — o teste grátis local, sem cartão, não existe na Stripe — e servem de rede de segurança para evento perdido. Detalhes de regras em [Subscription](/plataforma/apps/subscription).
+O webhook reage em tempo real ao que o gateway avisa ([Webhooks](/plataforma/guias/webhooks)). As rotinas cuidam do que o gateway não avisa — o teste grátis local, sem cartão, não existe na Stripe — e servem de rede de segurança para evento perdido. Detalhes de regras em [Assinaturas e cobrança](/plataforma/apps/subscription).
 
 ## Rodar localmente
 
@@ -70,7 +70,7 @@ python run_cron.py
     Com a flag `_ASYNC` ligada, o log do schedule só diz que a rotina foi enfileirada; o resultado está no log do worker. Disparo que ficou parado na fila além do `expires` é descartado.
   </Step>
   <Step title="Olhe a tabela Integration">
-    As rotinas registram chamadas externas e respostas lá — tela `/admin/logs` ou [Integration](/plataforma/apps/integration).
+    As rotinas registram chamadas externas e respostas lá — tela `/admin/logs` ou [Log de integrações](/plataforma/apps/integration).
   </Step>
   <Step title="Confira o schedule no Dokploy">
     Comando, cron, ambiente e as variáveis do schedule.
