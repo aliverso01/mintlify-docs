@@ -117,7 +117,10 @@ PERFIS = {
                 "emitido em /api/v1/account/token/."
             ),
         },
-        "servers": [{"url": "https://api.miggomkt.com.br", "description": "Produção"}],
+        "servers": [
+            {"url": "https://api.miggomkt.com.br", "description": "Produção"},
+            {"url": "https://test-api.miggomkt.com.br", "description": "Homologação"},
+        ],
     },
     "miggoai": {
         "info": {

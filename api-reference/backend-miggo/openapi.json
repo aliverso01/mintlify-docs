@@ -20118,6 +20118,10 @@
     {
       "url": "https://api.miggomkt.com.br",
       "description": "Produção"
+    },
+    {
+      "url": "https://test-api.miggomkt.com.br",
+      "description": "Homologação"
     }
   ],
   "tags": [
