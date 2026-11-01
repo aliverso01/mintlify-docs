@@ -59,7 +59,7 @@ Não agende estes comandos.
 | `sync_conversations` | — | Cria a `Conversation` de todo cliente com WhatsApp já conectado. Rode uma vez depois de um banco novo; depois disso o signal cria sozinho |
 | `backfill_post_status_events` | `--dry-run` | Reconstrói `PostStatusEvent` a partir do `History` |
 | `repair_platform_integrations` | `--client`, `--apply` | Realinha `PlatformIntegration` com as contas realmente conectadas no Zernio |
-| `sanear_galeria` | `--client-id`, `--amostra`, `--aplicar` | Reclassifica a galeria pela regra atual do acervo: mídia avulsa volta ao acervo e artes de post saem dele (prévia por padrão). Rode antes de uma análise em massa com `analyze_media_library` |
+| `sanear_galeria` | `--client-id`, `--amostra`, `--aplicar` | Reclassifica a galeria do cliente: mídia avulsa (ou anexada a post, mas vinda da galeria) volta a ficar disponível, e artes de post saem dela. Prévia por padrão; `--aplicar` grava. Rode antes de uma análise em massa com `analyze_media_library` |
 | `merge_client_accounts` | `--origem`, `--destino`, `--apply`, `--backup-dir`, `--manter-origem-ativa`, `--conexao-origem-prevalece` | Migra os dados de uma conta duplicada para a oficial e bloqueia a duplicada |
 | `fix_active_onboarding` | `--apply`, `--email`, `--client-id`, `--created-before`, `--with-subscription`, `--mark-skipped`, `--batch-size` | Marca o onboarding como concluído para clientes `active=True` |
 | `backfill_billing_identities` | `--apply` | Grava a identidade de cobrança que o banco já conhece |
@@ -69,7 +69,7 @@ Não agende estes comandos.
 | `purge_non_client_history` | `--dry-run`, `--yes`, `--batch-size` | Apaga do `History` o que não é ação de cliente. **Destrutivo e sem volta** |
 
 <Warning>
-  `check_trials` (`app/client`) é **legado**: aplica uma regra de bloqueio de 7 dias que não vale mais. Quem encerra testes hoje é `expire_trials`.
+  Não agende `check_trials` (`app/client`): a regra de bloqueio de 7 dias não vale mais. Quem encerra testes é `expire_trials`.
 </Warning>
 
 ## Ferramentas de diagnóstico e teste
@@ -81,10 +81,10 @@ Não agende estes comandos.
 
 ```bash
 # o cliente escreve no WhatsApp
-python manage.py trigger_manychat_webhook --subscriber-id 36064711 --text "quero ajustar a legenda"
+python manage.py trigger_manychat_webhook --subscriber-id 123 --text "quero ajustar a legenda"
 
 # o cliente toca num botão do flow casca
-python manage.py trigger_manychat_webhook --subscriber-id 36064711 --continue --option aprovar
+python manage.py trigger_manychat_webhook --subscriber-id 123 --continue --option aprovar
 ```
 
 ## Comandos do Django

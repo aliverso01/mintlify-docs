@@ -63,7 +63,7 @@ O cliente aprova ou pede ajuste no conteúdo por WhatsApp, através do ManyChat.
 | Webhook de entrada | `POST /webhooks/manychat/` |
 | Continuação do Dynamic Block | `POST /webhooks/manychat/dynamic-block/continue/` |
 | Flows configurados | `CONTENT_APPROVATION_FLOW_ID` (rede não conectada), `CONTENT_APPROVATION_CONNECTED_FLOW_ID` (rede conectada), `GRID_APPROVAL_FLOW_ID`, `DYNAMIC_FLOW_STARTER_FLOW_ID`, `TRIAL_ENDED_FLOW_ID` (fim do período de teste, disparado pelo cron `expire_trials`) |
-| Escolha do flow de aprovação | `app.post.services.approval_flow_ns` — pela integração ativa da rede do post (antes era uma tag no ManyChat) |
+| Escolha do flow de aprovação | `app.post.services.approval_flow_ns` — pela integração ativa da rede do post |
 | Reenvio e tolerância a falha | `WHATSAPP_FLOW_RETRY_ATTEMPTS`, `WHATSAPP_FLOW_RETRY_BACKOFF`, `WHATSAPP_SEND_FLOW_DELAY`, `GRID_APPROVAL_MAX_REMINDERS` |
 
 Revisões agendadas são despachadas pelo cron `app.post.cron.send_scheduled_reviews`, que roda a cada minuto.
@@ -91,13 +91,13 @@ flowchart TD
     CK --> WH["POST /webhooks/ (Stripe)"]
     WH --> SUB["Subscription atualizada"]
     SUB --> LIM["Limites por plano aplicados<br/>posts, mídia, recursos"]
-    CRON["Cron a cada 30s<br/>SubscriptionCron / InvoiceCron"] --> SUB
+    CRON["Rotinas diárias<br/>check_subscriptions / check_invoices"] --> SUB
 ```
 
 - Gateways: `app/subscription/` (Stripe) e `app/subscription/asaas_gateway.py` (Asaas).
 - Período de teste e carência: `STRIPE_TRIAL_DAYS`, `BILLING_GRACE_DAYS`.
 - Limites durante o teste: `TRIAL_MEDIA_MAX_FILES`, além dos limites por plano.
-- Verificação periódica: `app.subscription.cron.SubscriptionCron.check_subscriptions` e `app.subscription.cron.InvoiceCron.check_invoices`, ambos a cada 30 segundos no runner local.
+- Verificação periódica: as rotinas diárias `check_subscriptions` e `check_invoices`, agendadas no Dokploy.
 
 Detalhes em [Subscription](/plataforma/apps/subscription) e [Tarefas agendadas](/plataforma/tarefas-agendadas).
 

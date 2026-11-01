@@ -26,7 +26,7 @@ Os dois `Bearer` não se confundem: o algoritmo no cabeçalho do JWT decide. `RS
       -d '{"email": "gestao@exemplo.com", "password": "***"}'
     ```
 
-    O access vem no corpo; o refresh fica em cookie httpOnly. Detalhes em [Autenticação da plataforma](/plataforma/autenticacao).
+    A resposta traz `access` e `refresh` no corpo (o cookie httpOnly é do `/login/`, usado pelo navegador). Detalhes em [Autenticação da plataforma](/plataforma/autenticacao).
   </Step>
   <Step title="Chamar o MiggoAI com o mesmo token">
     ```bash

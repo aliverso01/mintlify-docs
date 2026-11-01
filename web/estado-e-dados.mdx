@@ -41,7 +41,7 @@ main.tsx
 
 Carrega a marca com `fetchMarca()` (`src/utils/marca.ts`) antes de renderizar as rotas, com uma tela neutra enquanto isso, e de novo a cada troca de usuário (login, logout, troca de conta). A Plataforma resolve a marca pelo usuário logado ou, sem sessão, pelo host (`X-Miggo-Host`). `applyMarca`/`clearMarca` aplicam a paleta. O Google Analytics só carrega no host Miggo. O logo da marca vem do componente `MarcaLogo` (`src/components/common/MarcaLogo.tsx`).
 
-O antigo `PreviewContext` ("visualizar como cliente") foi removido; o `main.tsx` apaga a chave `miggo_preview_mode` que ele deixava no navegador.
+O `main.tsx` apaga a chave legada `miggo_preview_mode` do navegador.
 
 ## Hooks de dados
 

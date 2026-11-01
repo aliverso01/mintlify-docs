@@ -86,13 +86,13 @@ Passos internos:
 | `IDENTIDADE VISUAL` | `visual_style`, `typography`, `visual_references` |
 | `OUTRAS INFORMAÇÕES` | `brand_knowledge` (rótulo "Materiais da marca"), `extra`, `referer` |
 
-- `fullname`, `email` e `nickname` **saíram do prompt**: dado pessoal que a copy não usa e que ia para a OpenAI à toa.
+- Dados pessoais (`fullname`, `email`, `nickname`) não entram no prompt.
 - `brand_knowledge` e `extra` vão numa linha só (quebra de linha não forja campo novo); `extra` é truncado em `BRIEFING_EXTRA_MAX_CARACTERES = 600`.
 - `calendario_cta` vazio vira `CTA_PADRAO` ("a ação dos CTAs do briefing"), para o prompt não montar "direcionada ao ,".
 
 ### `output_contract.py` — contrato de saída fixo
 
-Ver detalhes em <a href="/miggoai/prompts">Prompts</a>. Define 4 contratos (`TITULO_TEXTO`, `TITULO_CARDS`, `LEGENDA`, `HASHTAGS`), cada um com um `schema` JSON (`json_schema`, `strict: True`) e uma `instruction` textual anexada ao prompt renderizado. `apply(key, rendered_prompt) -> (prompt_final, schema)`.
+Ver detalhes em [Prompts](/miggoai/prompts). Define 4 contratos (`TITULO_TEXTO`, `TITULO_CARDS`, `LEGENDA`, `HASHTAGS`), cada um com um `schema` JSON (`json_schema`, `strict: True`) e uma `instruction` textual anexada ao prompt renderizado. `apply(key, rendered_prompt) -> (prompt_final, schema)`.
 
 ### `title_workflow.run(context, variable_overrides=None, on_stage=None) -> dict`
 
@@ -101,13 +101,13 @@ Ver detalhes em <a href="/miggoai/prompts">Prompts</a>. Define 4 contratos (`TIT
 1. Resolve `format_key` (de `variable_overrides` ou `context`) e o `slug` do prompt (`titulo-story`/`titulo-feed`/`titulo-carrossel`).
 2. Busca o `PromptDefinition` ativo, renderiza com `context + variable_overrides`, aplica o contrato de saída.
 3. Chama `openai_service.chat_json` (structured output).
-4. `_extrair_microangles` — normaliza a resposta (suporta formato antigo de 3 blocos `abertura/desenvolvimento/fecho`, retrocompatível).
+4. `_extrair_microangles` — normaliza a resposta.
 5. Para carrossel, corta cards acima de `CARDS_MAX = 8` (`_limitar_cards`) — teto reforçado no código porque `strict: True` não aceita `maxItems` no schema.
 6. Se não for carrossel, chama `_select_best_microangle` — um **agente interno** com prompt fixo (não editável no CMS) que escolhe o melhor dos 3 microângulos gerados.
 
 **Retorna**: `{prompt_slug, prompt_version_used, format_key, formato_motivo, microangles, selected_microangle, selection_reason, selection_score}`.
 
-O schema de cards traz `direcao_visual` por card (usada no prompt da imagem) e o resultado passa adiante o nome do formato e a referência de copy usados, que a imagem e a legenda herdam (`runner._referencia_do_titulo`; gerações antigas sem esses campos seguem como antes). O texto passa pela guarda `texto_limpo` (ver abaixo).
+O schema de cards traz `direcao_visual` por card (usada no prompt da imagem) e o resultado passa adiante o nome do formato e a referência de copy usados, que a imagem e a legenda herdam (`runner._referencia_do_titulo`). O texto passa pela guarda `texto_limpo` (ver abaixo).
 
 **Erros**: `RuntimeError` se a OpenAI devolver erro ou nenhum microângulo.
 
@@ -118,7 +118,7 @@ O schema de cards traz `direcao_visual` por card (usada no prompt da imagem) e o
 1. Resolve tamanho (`IMAGE_FORMAT_SIZES`/`IMAGE_GEN_SIZES` de `openai_service`) pelo `format_key`.
 2. Exige `grid_url` no contexto — `RuntimeError` se ausente.
 3. Exige `texto_imagem` (`str` ou `list[str]`, 1 item por card no carrossel) — `RuntimeError` se ausente.
-4. **Predefinição `usage` do cliente** (`usar_midia_cliente = bool(media_id_forcado) or _deve_consultar_galeria(usage)`) decide se a galeria é CONSULTADA nesta geração: `always` sim, `never` não, `alternate` sorteio 50/50 (não qual foto — isso é decidido depois).
+4. **Predefinição `usage` do cliente** (`usar_midia_cliente = bool(media_id_forcado) or _deve_consultar_galeria(usage)`) decide se a galeria é **consultada** nesta geração: `always` sim, `never` não, `alternate` sorteio 50/50 (não qual foto — isso é decidido depois).
 5. Se consultada: busca `get_client_media_library`, e por card roda `media_matcher.rankear` (peneira léxica) seguido de `media_classifier.selecionar` (julgamento por IA da descrição). Toda a trilha de decisão (candidatos, score, motivo) é registrada em `midia_cliente` no resultado, para auditoria.
    - **Banco de imagens da Miggo**: se a preferência do cliente tem `use_stock=True`, o pool do banco é **unido ao da galeria** e segue o mesmo funil — `_deve_consultar_banco` é irmã de `_deve_consultar_galeria` e roda depois dela, então o banco só entra quando esta geração já ia usar foto real. Detalhe em [Banco de imagens no funil](#banco-de-imagens-no-funil).
 6. `_resolver_marca` decide logo/assinatura: por padrão consulta a preferência salva no backend-miggo (`get_signature_preference`); `variable_overrides` com `marca_modo`/`assinatura_tipo`/`assinatura_texto` sobrescrevem pontualmente sem persistir.

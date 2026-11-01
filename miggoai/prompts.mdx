@@ -4,21 +4,15 @@ description: "Como os prompts são armazenados, versionados, renderizados e edit
 icon: "file-code"
 ---
 
-O app `apps.prompts` é o CMS que guarda o **conteúdo editável** dos prompts de IA — nome do cliente, briefing, regras de tom de voz, tarefa. A **forma da resposta** (JSON, quais chaves) nunca passa por aqui: é fixa no código (`apps.generations.services.output_contract`, ver <a href="/miggoai/workflows">Workflows</a>).
+O app `apps.prompts` é o CMS que guarda o **conteúdo editável** dos prompts de IA — nome do cliente, briefing, regras de tom de voz, tarefa. A **forma da resposta** (JSON, quais chaves) nunca passa por aqui: é fixa no código (`apps.generations.services.output_contract`, ver [Workflows](/miggoai/workflows)).
 
-## Por que a divisão conteúdo/forma
-
-Do cabeçalho de `backend/apps/generations/services/output_contract.py`:
-
-> A divisão é deliberada: o `PromptDefinition` editável no CMS cuida do CONTEÚDO e do CONTEXTO (quem é o cliente, o que dizer, tom de voz, limites editoriais). A FORMA da resposta — "devolva JSON", quais chaves existem, que tipo tem cada uma — nunca passa pelo CMS.
-
-Dois motivos:
-1. Quem edita o prompt não deve conseguir quebrar o parsing da geração (um "devolva em JSON" apagado sem querer derrubava o workflow inteiro).
-2. Um exemplo de JSON escrito dentro do prompt enviesava o ESTILO do texto gerado, não só a forma.
+<Note>
+A forma da resposta é fixa no código; o CMS só edita conteúdo. Não escreva formato de saída nem exemplo de JSON no prompt.
+</Note>
 
 ## Estrutura de dados
 
-Ver models completos em <a href="/miggoai/modelo-de-dados">Modelo de dados</a>. Resumo funcional:
+Ver models completos em [Modelo de dados](/miggoai/modelo-de-dados). Resumo funcional:
 
 - **`Workflow`** — um tipo de geração: `title`, `image`, `caption`, `hashtags`, `banner`, `destaques`, `grid`, `bio`. Tem uma `WorkflowConfig` (modelo de IA, temperatura, `max_tokens`).
 - **`PromptDefinition`** — o template em si, identificado por `slug` único. Um workflow pode ter mais de um prompt (o de `title` tem 3: `titulo-story`, `titulo-feed`, `titulo-carrossel`).
@@ -46,7 +40,7 @@ Fonte: `backend/apps/prompts/data/seed_prompts.json`, aplicado por `python manag
   `instagram_handle`, `format_key`, `formato_motivo`, `grid_url`, `cta_required` são preenchidas automaticamente
   pelo `context_builder` a partir dos dados do cliente/post no backend-miggo — o operador só precisa preencher o que
   o contexto automático não cobrir. `titulo_selecionado` e `texto_imagem` vêm do encadeamento entre workflows
-  (`_CHAIN_ONLY_KEYS`, ver <a href="/miggoai/arquitetura">Arquitetura</a>).
+  (`_CHAIN_ONLY_KEYS`, ver [Workflows](/miggoai/workflows)).
 </Note>
 
 ## Renderização (`apps/prompts/services/rendering.py`)
@@ -99,7 +93,7 @@ CONTRACT_BY_SLUG = {
 }
 ```
 
-`imagem-post` e `banner-linkedin-arte` não têm contrato — a resposta da OpenAI para imagem não é JSON. `output_contract.apply(key, rendered_prompt)` concatena o `content` renderizado do CMS com o bloco de instrução fixo e devolve também o `schema` JSON usado como `response_format` na chamada à OpenAI (structured output, `strict: True`). Ver detalhes em <a href="/miggoai/workflows">Workflows</a>.
+`imagem-post` e `banner-linkedin-arte` não têm contrato — a resposta da OpenAI para imagem não é JSON. `output_contract.apply(key, rendered_prompt)` concatena o `content` renderizado do CMS com o bloco de instrução fixo e devolve também o `schema` JSON usado como `response_format` na chamada à OpenAI (structured output, `strict: True`). Ver detalhes em [Workflows](/miggoai/workflows).
 
 ## Como editar um prompt
 

@@ -34,7 +34,7 @@ icon: "clock"
 | `analyze_media_library` | a cada 15 min | Descreve por IA as imagens da galeria ainda sem descrição — é isso que torna a foto encontrável pelo MiggoAI |
 | `send_grid_approval_reminders` | a cada 5 min | Cobra no WhatsApp a aprovação do grid pendente, respeitando o intervalo entre lembretes e o teto `GRID_APPROVAL_MAX_REMINDERS` |
 | `generate_pending_grids` | a cada 5 min | Gera o grid personalizado das sessões de onboarding com estilo aprovado e geração pendente |
-| `reconcile_zernio_posts` | sugerido a cada 10 min | Fecha as publicações presas em `sending`/`pending` perguntando o desfecho ao Zernio — rede de segurança do webhook de status |
+| `reconcile_zernio_posts` | a cada 10 min (`*/10`); hoje não está cadastrado no Dokploy | Fecha as publicações presas em `sending`/`pending` perguntando o desfecho ao Zernio — rede de segurança do webhook de status |
 | `sync_jira_ticket_status` | periódico | Atualiza o status dos tickets de suporte pela coluna do issue no Jira |
 | `send_scheduled_reviews` | a cada minuto (`CRONJOBS`) | Envia ao ManyChat as revisões de post agendadas (`ScheduledReview`) cuja hora chegou |
 

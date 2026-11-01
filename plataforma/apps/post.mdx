@@ -35,7 +35,7 @@ Os status usados no fluxo são `pending`, `processing`, `sent`, `in_review`, `ap
 |---|---|
 | `pending` → `scheduled` | O MiggoAI, ao entregar título, legenda e arte. |
 | → `sent` | Envio para aprovação por WhatsApp. |
-| `sent` → `approved` / `in_review` / `rejected` | Resposta do cliente (WhatsApp ou app). |
+| `sent` → `approved` / `in_review` / `rejected` | Resposta do cliente. Pedido de ajuste: `in_review` quando o cliente move o post no app, `rejected` quando reprova com motivo (app ou WhatsApp). |
 | → `scheduled` / `holding` | Publicação ou agendamento enviado ao Zernio. |
 | → `published` / `error` | Desfecho confirmado pelo Zernio. |
 
@@ -58,7 +58,7 @@ O flow muda conforme a rede do post estar conectada (`CONTENT_APPROVATION_CONNEC
 - Sem integração com a rede, mas com WhatsApp ativo, o post é aprovado e o cliente recebe o aviso "pode postar".
 - A publicação responde `202` e roda em segundo plano (task `post.publicar_na_rede` na fila `integracoes` com `ZERNIO_ASYNC=1`): upload das mídias, `POST /v1/posts` e gravação do id externo. O agendamento fica no Zernio, que publica na hora marcada.
 - **Timeout não é falha.** As chamadas usam `ZERNIO_PUBLISH_TIMEOUT` (120 s por padrão). Se estourar, a publicação fica `sending` ("enviado, desfecho desconhecido") e o post vai para `holding`.
-- **Confirmação do desfecho** (`status_sync.py`), com três chamadores e a mesma regra: o webhook `/webhooks/zernio/status/`, o comando `reconcile_zernio_posts` (a cada 10 minutos) e o botão "Verificar status" (limite de uma checagem a cada 30 s por publicação). Nenhum deles marca falha só por não encontrar o post no Zernio.
+- **Confirmação do desfecho** (`status_sync.py`), com três chamadores e a mesma regra: o webhook `/webhooks/zernio/status/`, o comando `reconcile_zernio_posts` ([Tarefas agendadas](/plataforma/tarefas-agendadas)) e o botão "Verificar status" (limite de uma checagem a cada 30 s por publicação). Nenhum deles marca falha só por não encontrar o post no Zernio.
 - **Cancelamento** apaga o post no Zernio e marca a publicação como `canceled`. Quando a assinatura expira, `scheduling.py` cancela os agendamentos futuros do cliente.
 
 <Warning>
@@ -83,7 +83,7 @@ O flow muda conforme a rede do post estar conectada (`CONTENT_APPROVATION_CONNEC
 
 | Comando | Para quê |
 |---|---|
-| `reconcile_zernio_posts` | Fecha publicações em `sending`/`scheduled` consultando o Zernio. |
+| `reconcile_zernio_posts` | Fecha publicações presas em `sending`/`pending` consultando o Zernio. |
 | `repair_platform_integrations [--apply] [--client <id>]` | Realinha `PlatformIntegration` com as contas conectadas no Zernio. |
 | `backfill_post_status_events [--dry-run]` | Reconstrói o histórico de status a partir do `History`. |
 

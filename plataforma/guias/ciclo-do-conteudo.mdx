@@ -71,7 +71,8 @@ O conteúdo vai para o cliente aprovar, no app ou no WhatsApp.
 | Status | Significado |
 |---|---|
 | `sent` | Enviado para o cliente aprovar |
-| `in_review` | O cliente pediu ajuste |
+| `in_review` | O cliente pediu ajuste movendo o post no app (movido pela equipe, é envio para revisão) |
+| `rejected` | O cliente reprovou com motivo (`correction_description`), pelo app ou pela ação `pedir_ajuste_post` do WhatsApp |
 | `approved` | Aprovado |
 
 - **Pelo WhatsApp:** `POST /api/v1/post/send-post-whatsapp/` dispara o flow de aprovação no ManyChat e leva o post a `sent` depois do envio. O flow depende da rede: `CONTENT_APPROVATION_CONNECTED_FLOW_ID` quando a rede do post está conectada (a Miggo publica) e `CONTENT_APPROVATION_FLOW_ID` quando não está (o cliente publica). As respostas do cliente voltam pelo webhook do ManyChat ([Webhooks](/plataforma/guias/webhooks#manychat)).

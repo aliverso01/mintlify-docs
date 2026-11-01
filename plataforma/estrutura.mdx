@@ -84,5 +84,5 @@ Nem todo app tem todos os arquivos. O padrão é:
 | `webhooks` | `/webhooks/` (fora de `/api/v1/`) | Recepção dos webhooks de Stripe, Asaas e Zernio — ver [Webhooks](/plataforma/guias/webhooks) |
 
 <Note>
-  O app `webhooks` não tem `urls.py` nem models próprios: as views são registradas direto em `core/urls.py`, e o que elas gravam fica em models de `subscription`, `post` e `integration`. Os webhooks do ManyChat moram em `app/conversation/webhooks.py`.
+  O app `webhooks` não tem `urls.py` nem models próprios: as views são registradas direto em `core/urls.py`, e o que elas gravam fica em models de `subscription`, `post` e `conversation`, com o log em `integration`. Os webhooks do ManyChat moram em `app/conversation/webhooks.py`.
 </Note>

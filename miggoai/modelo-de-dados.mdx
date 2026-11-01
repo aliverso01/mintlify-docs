@@ -6,7 +6,7 @@ icon: "database"
 
 <Note>
   O MiggoAI não tem model local de `Client` nem `Post` — esses dados vivem só no `backend-miggo` e são consumidos ao
-  vivo (ver <a href="/miggoai/arquitetura">Arquitetura</a>). Os models abaixo cobrem apenas o que o MiggoAI persiste
+  vivo (ver [Arquitetura](/miggoai/arquitetura)). Os models abaixo cobrem apenas o que o MiggoAI persiste
   localmente: preferências de variável, retrato de histórico, prompts/workflows, o registro das gerações e os custos.
 </Note>
 
@@ -223,7 +223,7 @@ Fonte: `backend/apps/generations/models.py`.
 
 ### `Generation`
 
-Registro de auditoria de cada execução de workflow — criado como `RUNNING` e sempre fechado como `SUCCESS`/`FAILED` pelo `runner` (ver <a href="/miggoai/workflows">Workflows</a>).
+Registro de auditoria de cada execução de workflow — criado como `RUNNING` e sempre fechado como `SUCCESS`/`FAILED` pelo `runner` (ver [Workflows](/miggoai/workflows)).
 
 | Campo | Tipo | Detalhe |
 |---|---|---|
@@ -238,7 +238,7 @@ Registro de auditoria de cada execução de workflow — criado como `RUNNING` e
 | `idempotency_key` | `CharField(64)` | `null=True, blank=True`, **`unique=True`** — chave da geração lógica, enviada pelo backend-miggo no grid e nas peças de perfil. O `unique` impede a segunda peça paga quando o chamador repete o pedido. |
 | `stage` | `CharField(255)` | Estágio textual atualizado ao vivo durante a execução (ex.: "Gerando imagem 2/3"), para o polling do painel. |
 | `variables_used` | `JSONField` | `default=dict` — overrides enviados na chamada. |
-| `result` | `JSONField` | `null=True, blank=True` — saída do workflow (estrutura varia por tipo, ver <a href="/miggoai/workflows">Workflows</a>). |
+| `result` | `JSONField` | `null=True, blank=True` — saída do workflow (estrutura varia por tipo, ver [Workflows](/miggoai/workflows)). |
 | `image_paths` | `JSONField` | `default=list` — caminhos relativos em `MEDIA_ROOT`. |
 | `error` | `TextField` | Mensagem de erro se `FAILED`. |
 | `created_by` | `ForeignKey(AUTH_USER_MODEL)` | `null=True, blank=True`, `on_delete=SET_NULL`, `related_name='+'`. |

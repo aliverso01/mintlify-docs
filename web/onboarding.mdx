@@ -6,9 +6,6 @@ icon: "footprints"
 
 O onboarding é a rota pública `/onboarding`, servida por `src/pages/Onboarding/OnboardingShell.tsx`. A etapa 1 cria a própria conta: quem chega sem sessão vê o cadastro (`SignupStep`) direto. O lado do servidor está em [Onboarding na Plataforma](/plataforma/apps/onboarding). Todas as chamadas abaixo passam por `onboardingApi` (`src/services/onboardingApi.ts`) e têm o prefixo `/api/v1`.
 
-<Note>
-`Steps/ContentStep.tsx` e `Steps/CreatingStep.tsx` não são usados pelo shell: as etapas `creating` e `content` saíram da esteira, e sessões antigas paradas nelas são tratadas como `done`.
-</Note>
 
 ## O shell — `OnboardingShell.tsx`
 
@@ -21,7 +18,7 @@ Container único de todas as etapas. Responsabilidades:
    - Sem nenhum dos dois, no **primeiro load**, se `resume_step !== current_step` e `resume_step` está pendente, chama `resumeOnboarding(resume_step)` — cobre o caso de uma etapa anterior ter ficado pendente (ex.: identidade visual adiada) enquanto `current_step` já avançou.
 3. **Renderiza a etapa** via `switch(step)` — ver tabela abaixo.
 4. **Navegação para trás** (`viewStep`): permite revisitar uma etapa concluída sem alterar o estado no servidor — só as etapas em `NAVIGABLE` (`brand`, `identity`, `review`, `plan`, `source`, `strategy`, `calendar`, `media`, `grid`); as telas de espera (polling) e cadastro/verificação/conclusão não entram.
-5. **Barra de progresso** — `stepNumber / steps.length`, usando `session.steps` (vindo do backend) ou `FALLBACK_STEPS` (hardcoded no componente) se o backend ainda não enviou a lista.
+5. **Barra de progresso** — `stepNumber / steps.length`, usando `session.steps` (vindo do backend) ou `FALLBACK_STEPS` (fixo no componente) se o backend ainda não enviou a lista.
 
 ### Máquina de passos
 
@@ -48,7 +45,7 @@ flowchart TD
 ```
 
 <Note>
-O diagrama reflete a ordem do `switch` em `OnboardingShell.tsx` e o `FALLBACK_STEPS`. A ordem real por sessão vem de `session.steps`, calculada pelo backend — pode variar (ex.: sessões antigas paradas em `creating`/`content`, tratadas como sinônimo de `done` pelo shell).
+O diagrama reflete a ordem do `switch` em `OnboardingShell.tsx` e o `FALLBACK_STEPS`. A ordem real por sessão vem de `session.steps`, calculada pelo backend; `creating` e `content` são tratadas como `done`.
 </Note>
 
 ## Passos, na ordem
@@ -77,7 +74,7 @@ O diagrama reflete a ordem do `switch` em `OnboardingShell.tsx` e o `FALLBACK_ST
 
 Cadastro da conta. Dois modos, decididos por `user` (do `useAuth`):
 
-- **Sem sessão:** formulário completo (nome, sobrenome, WhatsApp com máscara `(11) 99999-9999`, e-mail, senha + confirmação). Validação client-side de senha (mín. 8 caracteres, 1 maiúscula, 1 número — espelha a regra do backend) e indicador de força. Também oferece login Google (`GoogleLogin`, habilitado se `VITE_GOOGLE_CLIENT_ID` estiver setado) via `loginWithGoogle` do `AuthContext`.
+- **Sem sessão:** formulário completo (nome, sobrenome, WhatsApp com máscara `(11) 99999-9999`, e-mail, senha + confirmação). Validação client-side de senha (mín. 8 caracteres, 1 maiúscula, 1 número — espelha a regra do backend) e indicador de força. Também oferece login Google (`GoogleLogin`, habilitado se `VITE_GOOGLE_CLIENT_ID` estiver definido) via `loginWithGoogle` do `AuthContext`.
   - Envia: `onboardingApi.signup({ name, email, password, confirmPassword, whatsapp })` → `POST /onboarding/signup/`. Se a resposta trouxer `access`, salva tokens (`saveTokensFromResponse`) e recarrega a página (`window.location.reload()`) em vez de chamar `onNext` — o reload reidrata `useAuth` com a nova sessão.
 - **Com sessão mas sem Client** (ex.: acabou de logar via Google): pede só nome/sobrenome/WhatsApp.
   - Envia: `onboardingApi.completeSocial({ whatsapp, name })` → `POST /onboarding/signup/complete-social/`.
@@ -247,7 +244,7 @@ Campos principais de `OnboardingStatus`:
 | `onboarding_current_step` | Etapa onde a pessoa parou (`'publish'`, `'done'`, `null` para clientes sem sessão). **Não confundir** com `is_onboarding_complete`. |
 | `pending_steps` | Etapas sem preenchimento efetivo, na ordem do fluxo — alimenta os "chips" do dashboard. |
 | `grid_reference_chosen` | Se a referência de grid já foi escolhida (separa escolha, no onboarding, de aprovação do mosaico, na `GridApprovalPage`). |
-| `onboarding_skipped` | Setado por `skipOnboarding` (o "Configurar Depois" do `BrandSourceStep`). |
+| `onboarding_skipped` | Definido por `skipOnboarding` (o "Configurar Depois" do `BrandSourceStep`). |
 
 Deriva `isInOnboardingFlow = !!onboarding_current_step && onboarding_current_step !== 'done'` — usado (ex.: em `InstagramSuccess.tsx`) para decidir se o retorno de um OAuth deve emendar de volta no onboarding ou seguir para a plataforma normal. `clearOnboardingCache()` é exportado e chamado sempre que uma ação pode ter mudado o status (aprovação de grid, conclusão, conexão social) para forçar releitura.
 
@@ -256,7 +253,7 @@ Deriva `isInOnboardingFlow = !!onboarding_current_step && onboarding_current_ste
 Dois caminhos distintos, ambos em `onboardingApi.resumeOnboarding(step?)` → `POST /onboarding/resume/`:
 
 1. **Chip do dashboard** (`/onboarding?step=<id>`): reabre exatamente aquela etapa; ao concluí-la, `resumeMode` faz o shell chamar `completeOnboarding()` e voltar para `/` — não empurra pelo resto da esteira.
-2. **Entrada crua em `/onboarding`** (sem `step`, sem `?continuar=1`, só no primeiro load): segue `resume_step` do servidor quando ele difere de `current_step` e está em `pending_steps` — cobre etapa que ficou pra trás (ex.: confirmação de briefing adiada) sem reiniciar o fluxo a cada avanço subsequente.
+2. **Entrada crua em `/onboarding`** (sem `step`, sem `?continuar=1`, só no primeiro load): segue `resume_step` do servidor quando ele difere de `current_step` e está em `pending_steps` — cobre etapa que ficou para trás (ex.: confirmação de briefing adiada) sem reiniciar o fluxo a cada avanço subsequente.
 
 Tentar retomar uma etapa **já concluída** (via chip) devolve 400 do backend — não é uma porta para reescrever o que já foi aprovado.
 

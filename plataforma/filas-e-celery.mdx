@@ -13,15 +13,15 @@ flowchart TD
     A["Código chama o fluxo"] --> B{"REDIS_URL definida?"}
     B -- não --> E["Eager: roda no próprio processo"]
     B -- sim --> C{"Flag do fluxo = 1?"}
-    C -- não --> F["Caminho anterior: thread ou inline"]
+    C -- não --> F["Caminho síncrono: thread ou inline"]
     C -- sim --> D{"Broker respondeu ao enfileirar?"}
     D -- não --> F
     D -- sim --> G["Task na fila; o worker executa"]
 ```
 
 - **Sem `REDIS_URL`** o Celery roda em modo *eager*: a task executa no processo que a chamou, e nenhum worker é necessário.
-- **Com `REDIS_URL`**, cada fluxo ainda exige a própria flag `=1`. Sem ela, segue pelo caminho de antes.
-- **Broker fora do ar na hora de enfileirar** também cai no caminho de antes, em vez de perder o trabalho.
+- **Com `REDIS_URL`**, cada fluxo ainda exige a própria flag `=1`. Sem ela, segue pelo caminho síncrono (thread ou inline).
+- **Broker fora do ar na hora de enfileirar** também cai no caminho síncrono, em vez de perder o trabalho.
 
 ## Peças
 

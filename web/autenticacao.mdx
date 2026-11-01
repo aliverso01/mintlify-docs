@@ -17,9 +17,7 @@ O web app autentica sempre por **JWT** emitido pela Plataforma. Como o token é 
 
 Ao carregar a página, o `AuthProvider` lê o `user` salvo e chama `restoreSession()`, que troca o cookie por um access novo. Se não der, limpa tudo e o usuário volta para o login. O logout de outra aba apaga o marcador e derruba o access desta aba também.
 
-<Note>
-Sessões antigas guardavam os tokens no `localStorage` (`miggo_access_token`, `miggo_refresh_token`). O refresh antigo é usado uma única vez para migrar a sessão para o cookie; depois as chaves são apagadas.
-</Note>
+Um refresh legado em `localStorage` (`miggo_refresh_token`) é trocado uma vez pelo cookie e apagado (`src/services/jwtAuth.ts`).
 
 ## O interceptor de `fetch`
 

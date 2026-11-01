@@ -79,7 +79,7 @@ Passos podem ter blocos `type='action'`, executados antes da mensagem. O catálo
 |---|---|
 | `enviar_post_whatsapp` | Envia o post para aprovação no WhatsApp. |
 | `aprovar_post` | `Post.status` → `approved`. |
-| `pedir_ajuste_post` | `Post.status` → `rejected` com o motivo, e avisa os admins. |
+| `pedir_ajuste_post` | `Post.status` → `rejected` com o motivo em `correction_description`, e avisa os admins. |
 | `avisar_equipe` | Notifica os admins sem falar com o cliente. |
 
 Textos aceitam interpolação `{{nome}}`, `{{primeiro_nome}}`, `{{cliente}}`, `{{telefone}}`, `{{email}}` e custom fields do ManyChat como `{{cf.<nome>}}`.
@@ -89,7 +89,7 @@ Textos aceitam interpolação `{{nome}}`, `{{primeiro_nome}}`, `{{cliente}}`, `{
 | Com | Como |
 |---|---|
 | ManyChat | `sendContent`, `sendFlow` e Dynamic Block. Cada chamada grava um `Integration` de auditoria. |
-| [`integration`](/plataforma/apps/integration) | `post_save` de `PlatformIntegration` do WhatsApp cria a `Conversation` do cliente (`signals.py`). |
+| [`post`](/plataforma/apps/post) | `post_save` de `PlatformIntegration` do WhatsApp cria a `Conversation` do cliente (`signals.py`). |
 | [`post`](/plataforma/apps/post) | Ações de aprovação e envio de post. |
 | Outros módulos | `services.log_automation` registra na thread disparos feitos fora daqui (ex.: aviso de fim de teste do app `subscription`). |
 

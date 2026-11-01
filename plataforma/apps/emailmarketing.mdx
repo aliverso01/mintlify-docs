@@ -44,7 +44,7 @@ Filtros aceitos no modo `filters` (`audience.py`): `subscription` (`trial`, `tri
 - remetente `"<sender_name>" <EMAIL_HOST_USER>`, com reply-to fixo;
 - falha de um e-mail grava `FAILED` com o erro e não interrompe o lote.
 
-`send_time` só é respeitado se o comando rodar mais de uma vez por dia; rodando uma vez, o e-mail sai no primeiro run depois do horário.
+O comando é agendado de hora em hora ([Tarefas agendadas](/plataforma/tarefas-agendadas)), e é isso que faz o `send_time` valer: o e-mail sai no primeiro run depois do horário.
 
 ## Rastreio de clique
 
@@ -57,7 +57,7 @@ Sem `BACKEND_URL` configurado, os e-mails saem **sem rastreio**, com apenas um a
 ## Comandos
 
 ```bash
-python manage.py send_marketing_emails              # todas as campanhas ativas, 1x/dia
+python manage.py send_marketing_emails              # todas as campanhas ativas
 python manage.py send_marketing_emails --dry-run    # só conta os elegíveis
 python manage.py send_marketing_emails --campaign 3 # uma campanha, com as mesmas regras
 python manage.py seed_marketing_emails              # cria/atualiza as campanhas padrão da régua de trial (idempotente, por nome)
