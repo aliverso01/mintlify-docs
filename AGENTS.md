@@ -67,9 +67,9 @@ Página nova **só é alcançável se entrar na navegação**. As abas são *Vis
 - Mudar tema, cores, nome do site, domínio ou reordenar abas: **só por pedido
   explícito.** Um erro ali derruba a navegação de todo o site.
 
-**Pendência conhecida (verificada em 08/10/2026):** a navegação lista 58 páginas,
-mas **três não têm arquivo** — `arquitetura/glossario`, `miggoai/frontend` e
-`miggoai/deploy`. São links quebrados no site. Ou crie a página, ou remova a
+**Pendência conhecida (verificada em 08/10/2026; `miggoai/deploy` criada em 01/11/2026):**
+**duas** entradas da navegação não têm arquivo — `arquitetura/glossario` e
+`miggoai/frontend`. São links quebrados no site. Ou crie a página, ou remova a
 entrada; não deixe como está. Nenhum `.mdx` do repo está fora da navegação, então
 o inverso (página órfã) não é um problema hoje — mantenha assim.
 
