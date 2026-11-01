@@ -1,20 +1,20 @@
 ---
-title: "Changelog técnico"
-description: "Histórico detalhado de deploys, migrações de banco, contratos de API e infraestrutura entre os repositórios"
-icon: "clock-rotate-left"
+title: "Changelog"
+description: "O que mudou em cada release da plataforma: migrations, variáveis, contratos de API e mudanças entregues."
+icon: "history"
 ---
 
 <Note>
-**Versão atual da plataforma:** `v2.3.0` (número proposto pela regra de cadência de [Proposta de versionamento](/releases/proposta-versionamento), ainda sem aprovação; `frontend-miggo/package.json` segue em `2.1.0`) · Release de 01/11/2026.
+**Versão atual:** `v2.3.0`, publicada em 01/11/2026. Como as versões são numeradas: [Versionamento](/releases/versionamento).
 </Note>
 
 <Update label="01/11/2026" description="v2.3.0">
 
 ## Release v2.3.0 (01/11/2026)
 
-Consolida 43 cards a partir do código da `main` dos três repositórios (`backend-miggo` `15f359c`, `frontend-miggo` `cc43807`, `miggoai_v2` `10dc1af`): Celery em todos os fluxos longos (desligado por padrão, atrás de flags), JWT RS256 compartilhado com o MiggoAI, painel de IA dentro do `/admin`, agências (app `agencia`), escopo central de clientes, permissões por módulo e imagens publicadas no ECR. Três cards são investigação ou spike, sem código. Fora da release: **MIG-502**, entregue só em parte (o commit `66cd674` do front, que tira a `VITE_MIGGO_API_KEY` e valida `next`/redirects, está na `main`, mas o card não fecha nesta release).
+Consolida 43 cards a partir do código da `main` dos três repositórios (`backend-miggo` `15f359c`, `frontend-miggo` `cc43807`, `miggoai_v2` `10dc1af`): Celery em todos os fluxos longos (desligado por padrão, atrás de flags), JWT RS256 compartilhado com o MiggoAI, painel de IA dentro do `/admin`, agências (app `agencia`), escopo central de clientes, permissões por módulo e imagens publicadas no ECR.
 
-### 🗄️ Migrações de banco de dados
+### Migrações de banco de dados
 
 - **`backend-miggo`**:
   - `app/account`: `0016_usermeta_created_at` (MIG-498, validade de 15 min do código de reset), `0017_customuser_agencia` (MIG-513), `0018_usuariomodulo` e `0019_modulos_dos_existentes` (MIG-518; a `0019` é de dados e dá os módulos a quem já existe).
@@ -28,7 +28,7 @@ Consolida 43 cards a partir do código da `main` dos três repositórios (`backe
   - `apps.common` (app nova): `0001_usuario_plataforma` (MIG-506).
   - `apps.generations`: `0012_generation_entregue_em` (MIG-473, entrega idempotente).
 
-### ⚙️ Variáveis de ambiente novas
+### Variáveis de ambiente novas
 
 | Variável | Serviço | Para quê |
 | :--- | :--- | :--- |
@@ -73,16 +73,16 @@ Removida do front: `VITE_MIGGO_API_KEY` (commit `66cd674`, do MIG-502); o bundle
 **Agências (MIG-516/517):** os domínios de agência entram pelo router catch-all do Traefik no `docker-compose.yml` do front (`HostRegexp`, prioridade 1, TLS terminando na Cloudflare). O fallback origin do Cloudflare for SaaS é passo manual.
 </Warning>
 
-### 🔌 Contratos de API e integrações
+### Contratos de API e integrações
 
 - **Autenticação (MIG-498, 506, 512):** `POST /api/v1/account/token/` passa por `SafeTokenObtainPairView` e emite JWT RS256 com audiência `miggo` e `miggoai` e claims `is_management`, `is_superuser` e `email`; o MiggoAI aceita esse token. `role` deixou de ser gravável pelo serializer comum, `UserMeta`/`ClientMeta` só para equipe ou dono em allowlist, reset de senha com 5 tentativas e código válido por 15 min. `app/account/escopo.py` (`clientes_visiveis`, `cliente_visivel`, `EscopoClienteMixin`) restringe os clientes por quem pede; `history` e `integration` viram só equipe.
 - **Permissões por módulo (MIG-518):** `GET /api/v1/account/modules/` (catálogo) e `/api/v1/account/team/<pk>/modules/`; no front, `ModuloRoute` e `src/routes/modulos.ts`.
-- **Agência (MIG-513 a 517):** `/api/v1/agency/` (CRUD do Admin Miggo, `<pk>/users/`, `<pk>/clients/link/`, `<pk>/domains/` e `verify/`, `<pk>/brand/`), `me/` (`members/`, `brand/`, `clients/`), `subscription/` (`checkout/`, `portal/`), `plans/`, `context/`, `meta-tags/` (incluído por SSI no `index.html`) e `manifest.webmanifest`. Ver [app `agencia`](/backend/apps/agencia).
+- **Agência (MIG-513 a 517):** `/api/v1/agency/` (CRUD do Admin Miggo, `<pk>/users/`, `<pk>/clients/link/`, `<pk>/domains/` e `verify/`, `<pk>/brand/`), `me/` (`members/`, `brand/`, `clients/`), `subscription/` (`checkout/`, `portal/`), `plans/`, `context/`, `meta-tags/` (incluído por SSI no `index.html`) e `manifest.webmanifest`. Ver [app `agencia`](/plataforma/apps/agencia).
 - **Filas (MIG-461, 473 a 482):** com as flags, `202 {job_id, status}` em transmute-por-URL, import-website e `instagram-scrape/`, consultados em `GET /api/v1/brandkit/ingestion-job/<id>/`; correção de peça de perfil por job em `GET /api/v1/post/platform-profile-config/<pk>/correction/<job_id>/`. No MiggoAI, `POST /api/generations/grid/` e `perfil/{bio,banner,destaques}/` respondem `202` e o resultado sai de `grid/by-key/<chave>/` e `perfil/by-key/<chave>/`; o backend aceita `200` e `202`.
 - **MiggoAI no `/admin` (MIG-506 a 508):** `GET /api/generations/` passa a ser paginado (`page`, `page_size` até 200) e devolve `{count, page, total_pages, results}` em vez da lista sem envelope; `GET /api/generations/resumo/`, custos (`precos/`, `cotacoes/`, `chamadas/`), `prompts/workflows/<pk>/`, restauração de versão de prompt e variáveis por cliente (`clients/<id>/variables/<key>/`). O front chama o MiggoAI direto, com o JWT da plataforma, em `/admin/miggoai/*`.
 - **Outros:** `GET /api/v1/media/limits/` e erros `413`/`415` estruturados no upload (MIG-386); `/api/v1/subscription/billing-identities/` e o command `backfill_billing_identities` (MIG-390); `/api/v1/brandkit/reference-import/` com captura por Playwright no servidor (MIG-371); `trials/sales-funnel/channels/` (MIG-385); filtro `account_type` (`trial`/`paid`/`all`) no Kanban admin (MIG-370); tipo de notificação `cancellation_requested` (MIG-344).
 
-### 📋 Cards entregues na release
+### Cards entregues na release
 
 | Card | Repositórios | Tipo | Resumo técnico |
 | :--- | :--- | :--- | :--- |
@@ -136,9 +136,9 @@ Removida do front: `VITE_MIGGO_API_KEY` (commit `66cd674`, do MIG-502); o bundle
 
 ## Release v2.2.0 (17/10/2026)
 
-Consolida 20 cards de produto entregues na sprint, a partir do código da `main` dos três repositórios. Fora da release: MIG-293, MIG-458 e MIG-460 (sem código na `main`) e o retorno do MIG-467 (PR do `miggoai_v2` ainda não mergeado).
+Consolida 20 cards de produto entregues na sprint, a partir do código da `main` dos três repositórios.
 
-### 🗄️ Migrações de banco de dados
+### Migrações de banco de dados
 
 - **`backend-miggo`**:
   - `app/client`: `0021_brandmaterial` (MIG-396), `0021_niche_client_niche` e `0022_seed_niche_nao_informado` (MIG-456), `0023_clientmediapreference_use_stock` (MIG-457) e `0024_merge_20261015_2043` (une as duas folhas `0021`).
@@ -150,7 +150,7 @@ Consolida 20 cards de produto entregues na sprint, a partir do código da `main`
 **Ordem de deploy (MIG-358):** o `backend-miggo` com a migration `0039` precisa estar no ar **antes** do `miggoai_v2`. O MiggoAI deixou de truncar o título em 2000 caracteres; contra o `Post.title` antigo, o `PATCH` de entrega de um carrossel longo volta `400`.
 </Warning>
 
-### ⚙️ Variáveis de ambiente novas
+### Variáveis de ambiente novas
 
 | Variável | Serviço | Para quê |
 | :--- | :--- | :--- |
@@ -159,7 +159,7 @@ Consolida 20 cards de produto entregues na sprint, a partir do código da `main`
 | `TRIAL_ENDED_FLOW_ID` | `backend-miggo` | Flow do ManyChat de "seu teste terminou". Vazia, o aviso não sai (MIG-453). |
 | `ACERVO_SERVICE_TOKEN` | `backend-miggo` e `miggoai_v2` | Credencial de serviço do acervo. **A mesma string nos dois `.env`**; ausente, o MiggoAI gera só com a galeria do cliente (MIG-457). |
 
-### 🔌 Contratos de API e integrações
+### Contratos de API e integrações
 
 - **Grid (MIG-427, 463, 467):** `idempotency_key` no `POST /api/generations/grid/` e `GET /grid/by-key/<chave>/`; geração `PENDING`/`RUNNING` parada há mais de 15 min expira como `FAILED`; recusa do filtro de segurança da OpenAI volta `422 content_policy` e o backend não retenta; repetir a mesma `idempotency_key` já recusada devolve o mesmo `422` sem chamar a OpenAI, e só chave nova gera de novo (MIG-466 leva categoria e Request ID ao aviso da equipe).
 - **Disparo imediato (MIG-379):** `gerar-agora/` e `gerar-card/` respondem `202` com `status` `aceito` ou `na_fila`; "imediato" só sai com `aceito`.
@@ -168,7 +168,7 @@ Consolida 20 cards de produto entregues na sprint, a partir do código da `main`
 - **Custos (MIG-412, 468):** `GET /api/custos/dashboard/`, comando `estimar_custo_historico`, custo por geração na tela de Gerações, polling de 5 s.
 - **Assinatura (MIG-387, 399, 453):** `app/subscription/access.py` (direito de entrega e de pagante), esteira do MiggoAI só com clientes elegíveis, aviso à equipe de trial expirado e aviso de fim de teste pelo WhatsApp.
 
-### 📋 Cards entregues na release
+### Cards entregues na release
 
 | Card | Repositórios | Tipo | Resumo técnico |
 | :--- | :--- | :--- | :--- |
@@ -201,7 +201,7 @@ Consolida 20 cards de produto entregues na sprint, a partir do código da `main`
 
 Primeira release formal sob versionamento unificado, consolidando 17 cards de produto, infraestrutura e sustentabilidade operacional entregues na madrugada de 11 de outubro de 2026.
 
-### 📦 Repositórios e PRs em produção
+### Repositórios e PRs em produção
 
 | Repositório | PRs de Produção | Branch Status | Versão Declarada |
 | :--- | :--- | :--- | :--- |
@@ -211,7 +211,7 @@ Primeira release formal sob versionamento unificado, consolidando 17 cards de pr
 
 ---
 
-### 🗄️ Migrações de banco de dados (Migrations)
+### Migrações de banco de dados (Migrations)
 
 - **`miggoai-2.0/miggoai_v2`**:
   - `backend/apps/custos/migrations/0002_chamadaia_sem_preco.py` (**MIG-441**):
@@ -222,7 +222,7 @@ Primeira release formal sob versionamento unificado, consolidando 17 cards de pr
 
 ---
 
-### 🔌 Contratos de API e Integrações entre Repositórios
+### Contratos de API e Integrações entre Repositórios
 
 #### Refinamento incremental de peças (MIG-439)
 - **MiggoAI (`apps.generations`)**:
@@ -238,7 +238,7 @@ Primeira release formal sob versionamento unificado, consolidando 17 cards de pr
 
 ---
 
-### ⚙️ Infraestrutura e Operação
+### Infraestrutura e Operação
 
 #### Auto-recuperação de contêineres na VPS (MIG-431)
 - Criado endpoint `/health/` nos serviços `backend-miggo` e `miggoai_v2` para suporte ao healthcheck automatizado do Dokploy.
@@ -259,7 +259,7 @@ Primeira release formal sob versionamento unificado, consolidando 17 cards de pr
 
 ---
 
-### 📋 Cards entregues na release (17 cards)
+### Cards entregues na release (17 cards)
 
 | Card | Repositórios | Tipo | Resumo Técnico da Mudança |
 | :--- | :--- | :--- | :--- |
@@ -281,10 +281,5 @@ Primeira release formal sob versionamento unificado, consolidando 17 cards de pr
 | **MIG-346** | Backend | Resiliência | Fallback gracioso na análise de logotipo via GPT Vision (Etapa 7), prevenindo erro HTTP 400 da OpenAI em imagens atípicas. |
 | **MIG-247** | MiggoAI | Refactor | Roteamento em camadas para solicitações de alteração na arte do banner do LinkedIn em Minha marca. |
 
----
-
-### ⚠️ Nota de controle de escopo
-
-- **MIG-428** (*Infraestrutura / Limites de produção*): **Não entrou nesta release**. O card segue no fluxo de homologação ("Enviado pra teste") aguardando definição de limites de capacidade na infraestrutura de produção.
 
 </Update>
