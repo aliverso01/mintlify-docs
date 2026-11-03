@@ -72,7 +72,7 @@ Algumas views próprias respondem com `message` ou `error` em vez de `detail`. T
 
 ## Limites de taxa
 
-Não há throttling global. Só dois `POST` que chamam serviços pagos têm limite por usuário: a raspagem do Instagram (`instagram_scrape`) e os materiais da marca (`brand_materials`), **20 por hora** cada. Api-Key de serviço e equipe Miggo ficam fora do limite.
+Não há throttling global. As rotas de autenticação (login, token, cadastro e reset de senha) têm limite por IP, `AUTH_THROTTLE_RATE` (padrão **20 por minuto**), e respondem `429` acima dele. Dois `POST` que chamam serviços pagos têm limite por usuário: a raspagem do Instagram (`instagram_scrape`) e os materiais da marca (`brand_materials`), **20 por hora** cada. Api-Key de serviço e equipe Miggo ficam fora desse limite.
 
 ## Respostas assíncronas
 
@@ -86,4 +86,4 @@ Algumas operações longas respondem **`202 Accepted`** com um identificador de 
 | `GET /api/schema/swagger-ui/` | Swagger UI do ambiente |
 | `GET /api/schema/redoc/` | Redoc do ambiente |
 
-Os endpoints abaixo, na navegação, vêm desse mesmo schema.
+As três rotas exigem usuário logado (JWT). Os endpoints abaixo, na navegação, vêm desse mesmo schema.

@@ -15,9 +15,9 @@ O backend lê a configuração do ambiente com `python-decouple` (`config(...)`)
 | Variável | Obrigatória | Padrão | Efeito |
 |---|---|---|---|
 | `DEBUG` | sim | — | Modo debug. Com `False` liga cookies seguros, `SECURE_PROXY_SSL_HEADER` e o redirecionamento HTTPS |
-| `SECRET_KEY` | não | chave insegura embutida | Troque em qualquer ambiente compartilhado |
+| `SECRET_KEY` | sim | — | Chave do Django. Vazia ou ausente, as settings não carregam |
 | `ALLOWED_HOSTS` | não | vazio | Lista CSV de hosts aceitos |
-| `CORS_ALLOWED_ORIGINS` | não | `*` | CSV. Só `*` libera todas as origens; outra lista restringe a ela |
+| `CORS_ALLOWED_ORIGINS` | fora do `DEBUG` | vazio | CSV das origens do front. `*` libera todas e só é aceito com `DEBUG=True`; fora do debug, vazia ou `*` impede as settings de carregar. Com `DEBUG` e vazia, nenhuma origem é liberada |
 | `CSRF_TRUSTED_ORIGINS` | não | `http://localhost:5173` | CSV. Origem sem esquema ganha `https://`; `localhost` ganha também a variante `http://` |
 | `CSRF_COOKIE_DOMAIN` | não | `None` | Domínio do cookie CSRF |
 | `SECURE_SSL_REDIRECT` | não | `True` (só com `DEBUG=False`) | `/health/` fica fora do redirecionamento para o healthcheck do Dokploy |
@@ -51,6 +51,7 @@ O backend lê a configuração do ambiente com `python-decouple` (`config(...)`)
 | `MIGGO_API_KEY` | sim | — | Chave da integração máquina-a-máquina com o MiggoAI |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | não | vazio | Login com Google. Sem o client ID, `/api/v1/account/google/` responde `503` |
 | `GOOGLE_AUTH_CLOCK_SKEW` | não | `10` | Tolerância de relógio, em segundos, ao validar o ID token do Google |
+| `AUTH_THROTTLE_RATE` | não | `20/min` | Limite por rota e por IP (`CF-Connecting-IP` atrás da Cloudflare) em login, token, cadastro e reset de senha. Acima dele, `429` |
 
 Uso e fluxo dos tokens: [Autenticação](/plataforma/autenticacao).
 
@@ -73,6 +74,7 @@ Uso e fluxo dos tokens: [Autenticação](/plataforma/autenticacao).
 | `FILE_UPLOAD_MAX_MEMORY_SIZE`, `DATA_UPLOAD_MAX_MEMORY_SIZE` | não | `104857600` (100 MB) | Limites do Django por requisição |
 | `TRIAL_MEDIA_MAX_FILES` | não | `5` | Arquivos de mídia permitidos durante o teste grátis |
 | `UPLOAD_MAX_IMAGE_SIZE_MB`, `UPLOAD_MAX_VIDEO_SIZE_MB` | não | `10` / `50` | Tamanho máximo de imagem e vídeo no teste grátis |
+| `UPLOAD_TETO_MB` | não | `512` | Teto de qualquer upload de mídia, para todo cliente, inclusive a mídia baixada por URL |
 
 ## Cobrança
 
@@ -113,7 +115,8 @@ Uso e fluxo dos tokens: [Autenticação](/plataforma/autenticacao).
 |---|---|---|---|
 | `LATE_API_KEY` | nos pontos de uso | — | Chave do Zernio. Lida sem padrão: ausente, publicação e métricas levantam `UndefinedValueError`. **Homologação nunca usa a chave de produção**: ela publica de verdade na conta do cliente |
 | `ZERNIO_PUBLISH_TIMEOUT` | não | `120` s | Espera nas chamadas de publicação (presign e `POST /v1/posts`) |
-| `ZERNIO_WEBHOOK_TOKEN` | não | vazio | Token do header `Zernio-Webhook-Token` em `/webhooks/zernio/status/`. Vazio, o webhook responde `503` |
+| `ZERNIO_WEBHOOK_TOKEN` | não | vazio | Token do header `Zernio-Webhook-Token` (ou `X-Webhook-Token`) nos webhooks do Zernio. Vazio, `/webhooks/zernio/status/` responde `503`; nos outros três, evento que traz token responde `503` |
+| `ZERNIO_WEBHOOK_STRICT` | não | `False` | Em `/webhooks/zernio/account/`, `webhook-update-post/` e `webhook-account-connected/`: com `1`, evento sem token responde `401`; desligada, só gera aviso no log. Token errado é `401` nos dois modos |
 
 ## WhatsApp e ManyChat
 
@@ -138,7 +141,12 @@ Uso e fluxo dos tokens: [Autenticação](/plataforma/autenticacao).
 | `ONBOARDING_IG_MIN_POSTS` | não | `3` | Mínimo de posts para analisar o perfil |
 | `ONBOARDING_WEBSITE_BUDGET` | não | `180` s | Orçamento de leitura do site do cliente |
 | `ONBOARDING_ANALYSIS_STALL` | não | `900` s | Tempo sem progresso que marca a análise como travada |
-| `ONBOARDING_GRID_*` | não | por variável | Backoff, heartbeat, retentativas e alertas da geração do grid do onboarding |
+| `ONBOARDING_GRID_STALL` | não | `900` s | Tempo sem progresso que marca a geração do grid como travada |
+| `ONBOARDING_GRID_BACKOFF_1`, `_2`, `_3` | não | `300` / `900` / `3600` s | Espera antes da 2ª, 3ª e 4ª tentativa de gerar o grid |
+| `ONBOARDING_GRID_RETRY_AFTER_GIVEUP`, `ONBOARDING_GRID_RETRY_GIVEUP_MAX` | não | `3600` s / `6` | De quanto em quanto tempo o cron reabre um grid que esgotou as tentativas, e quantas vezes |
+| `ONBOARDING_GRID_PAID_MAX` | não | `15` | Teto de imagens pagas por grid. Só o botão de regerar do admin zera a contagem |
+| `ONBOARDING_GRID_HEARTBEAT` | não | `60` s | Intervalo em que a geração em andamento renova o carimbo, para o cron não a tomar por travada |
+| `ONBOARDING_GRID_PENDING_ALERT` | não | `7200` s | Tempo em `pending` a partir do qual o grid vira aviso para a equipe |
 
 ## Suporte e Jira
 
@@ -168,6 +176,11 @@ Todas opcionais: **sem `REDIS_URL` o Celery roda em modo eager** e nada conecta.
 | `CACHE_REDIS_DB` | `3` | DB do cache compartilhado, usado só com `APIFY_ASYNC=1` |
 | `*_ASYNC` | vazio | Uma flag por fluxo e uma por command agendado |
 | `*_TASK_TIME_LIMIT`, `*_TASK_SOFT_TIME_LIMIT` | por fluxo | Limites de cada task, validados na carga |
+| `INGESTAO_JOB_ORFAO_MINUTOS`, `PERFIL_JOB_ORFAO_MINUTOS`, `SYNCJOB_JOB_ORFAO_MINUTOS` | `25` / `25` / `120` min | Job `PENDING`/`RUNNING` sem atividade além disso vira `FAILED` (`IngestionJob`, `ProfileCorrectionJob`, `SyncJob`). Mantenha acima do time limit da task |
+| `BRANDKNOWLEDGE_CLAIM_JANELA` | `300` s | Claim em voo além disso é tratado como worker morto, e a próxima execução do `brand_knowledge` assume |
+| `BRANDKNOWLEDGE_RETRY_MAX`, `BRANDKNOWLEDGE_RETRY_INTERVALO` | `5` / `15` s | Retentativas da task quando outra execução está em voo, e a espera entre elas |
+| `BRANDKNOWLEDGE_THREAD_ESPERAS_MAX` | `5` | O mesmo, no caminho sem fila (thread) |
+| `BRANDKNOWLEDGE_REENFILEIRAMENTOS_MAX` | `3` | Quantas vezes a task se reenfileira quando chega material novo durante a execução |
 
 ## Logging
 

@@ -79,7 +79,7 @@ Toda requisição com chave válida roda como o usuário de serviço `backend-mi
 
 ## Token local
 
-`POST /api/token/` e `POST /api/token/refresh/` (SimpleJWT) continuam no ar para usuários do Django do MiggoAI. Access de 30 minutos, refresh de 7 dias com rotação.
+`POST /api/token/` e `POST /api/token/refresh/` (SimpleJWT) continuam no ar para usuários do Django do MiggoAI. Access de 30 minutos, refresh de 7 dias com rotação: o refresh usado entra na blacklist (`token_blacklist`) e não vale de novo. As duas rotas têm limite por IP, `THROTTLE_TOKEN` (padrão 10 por minuto).
 
 ```bash
 curl -X POST http://localhost:8010/api/token/ \

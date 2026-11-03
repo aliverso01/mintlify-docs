@@ -20,6 +20,9 @@ As variáveis vêm do `.env` (dev) ou do serviço no Dokploy (homologação e pr
 | `CORS_ALLOWED_ORIGINS` | Não | vazio | Origens do navegador que chamam a API. Precisa incluir a origem do `frontend-miggo` (o painel de IA chama o MiggoAI direto do navegador). |
 | `CSRF_TRUSTED_ORIGINS` | Não | vazio | Origens confiáveis para o Django admin. |
 | `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT` | Sim | — | PostgreSQL. Homologação e produção têm bancos separados. |
+| `THROTTLE_ANON` | Não | `60/min` | Limite do DRF para requisição anônima, por IP. |
+| `THROTTLE_USER` | Não | `600/min` | Limite por usuário autenticado. A Api-Key do `backend-miggo` fica fora dele. |
+| `THROTTLE_TOKEN` | Não | `10/min` | Limite por IP em `/api/token/` e `/api/token/refresh/`. |
 
 ## Integração com a Plataforma
 
@@ -45,6 +48,8 @@ Modelo, temperatura e `max_tokens` não são variáveis: ficam na `WorkflowConfi
 ## Armazenamento (S3)
 
 Com `USE_S3` as imagens geradas vão para o bucket; sem ele, para `backend/media/` no disco. O código sempre grava e lê pelo `default_storage`, então `Generation.image_paths` vale nos dois casos.
+
+Ao ligar o `USE_S3` num ambiente que já gravava no disco, rode `python manage.py enviar_imagens_bucket` no container que ainda tem a pasta `media/` antiga, antes de um redeploy apagá-la. Sem flag é prévia (só conta o que enviaria); `--aplicar` envia cada imagem com o mesmo caminho relativo, então `image_paths` não muda. Com `USE_S3` desligado o comando recusa rodar.
 
 | Variável | Obrigatória | Padrão | Efeito |
 |---|---|---|---|

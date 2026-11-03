@@ -11,7 +11,7 @@ Os webhooks ficam **fora** de `/api/v1/`, registrados direto em `core/urls.py`. 
 | `POST /webhooks/` | Stripe | Assinatura HMAC do header `Stripe-Signature` | `STRIPE_WEBHOOK_SECRET` |
 | `POST /webhooks/asas/` (alias `/webhooks/asaas/`) | Asaas | Token no header `asaas-access-token` | `ASAAS_WEBHOOK_TOKEN` |
 | `POST /webhooks/zernio/status/` | Zernio | Token no header `Zernio-Webhook-Token` (ou `X-Webhook-Token`) | `ZERNIO_WEBHOOK_TOKEN` |
-| `POST /webhooks/zernio/account/` | Zernio | **Nenhuma** | — |
+| `POST /webhooks/zernio/account/` | Zernio | Mesmo token do anterior; **sem token ainda é aceito** (com aviso no log) até `ZERNIO_WEBHOOK_STRICT=1` | `ZERNIO_WEBHOOK_TOKEN`, `ZERNIO_WEBHOOK_STRICT` |
 | `POST /webhooks/manychat/` | ManyChat | Token no header `X-Miggo-Token` (ou `Authorization: Bearer`) | `MANYCHAT_WEBHOOK_TOKEN` |
 | `POST /webhooks/manychat/dynamic-block/continue/` | ManyChat | Mesmo token do anterior | `MANYCHAT_WEBHOOK_TOKEN` |
 | `POST /api/v1/account/support/jira-webhook/` | Jira | Token no header `X-Miggo-Token` (ou `Authorization: Bearer`) | `JIRA_WEBHOOK_TOKEN` |

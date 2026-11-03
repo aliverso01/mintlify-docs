@@ -66,6 +66,7 @@ Não agende estes comandos.
 | `reconcile_invoice_amounts` | `--dry-run` | Preenche o valor recebido das faturas relendo Stripe e Asaas |
 | `sync_stripe_refunds` | `--dry-run`, `--limit` | Reaplica na base os estornos e notas de crédito da Stripe |
 | `end_stripe_trials` | `--apply`, `--limit` | Lista e, com `--apply`, encerra as assinaturas em trial na Stripe |
+| `restore_lost_trials` | `--dry-run` | Recria as 6 assinaturas de trial apagadas no incidente de 26 para 27/08/2026, com as datas originais. Dados fixos no código. **Grava por padrão**: rode antes com `--dry-run`. Idempotente (pula cliente que já tem assinatura); uso único |
 | `purge_non_client_history` | `--dry-run`, `--yes`, `--batch-size` | Apaga do `History` o que não é ação de cliente. **Destrutivo e sem volta** |
 
 <Warning>

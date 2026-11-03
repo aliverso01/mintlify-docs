@@ -10,7 +10,7 @@ icon: "history"
 
 <Update label="2026-11-01" description="v2.3.0">
 
-Consolida 43 cards a partir do código da `main` dos três repositórios: Celery em todos os fluxos longos (desligado por padrão, atrás de flags), JWT RS256 compartilhado com o MiggoAI, painel de IA dentro do `/admin`, agências (app `agencia`), escopo central de clientes, permissões por módulo e imagens publicadas no ECR.
+Consolida 47 cards a partir do código da `main` dos três repositórios: Celery em todos os fluxos longos (desligado por padrão, atrás de flags), JWT RS256 compartilhado com o MiggoAI, painel de IA dentro do `/admin`, agências (app `agencia`), escopo central de clientes, permissões por módulo e imagens publicadas no ECR. No mesmo dia subiram mais três releases, incluídas aqui: o endurecimento de segurança (MIG-499, 501 e 502) e o estado da geração no card do Kanban (MIG-520).
 
 ### Migrações de banco de dados
 
@@ -20,11 +20,12 @@ Consolida 43 cards a partir do código da `main` dos três repositórios: Celery
   - `app/brandkit`: `0011_ingestionjob` (MIG-476), `0011_importar_referencia_por_link` (MIG-371), `0012_ingestionjob_kind_instagram` (MIG-477) e `0013_merge_20261022_2106` (une as duas folhas `0011`).
   - `app/client`: `0025_client_agencia` (MIG-513).
   - `app/notification`: `0007_alter_notification_type_cancellation_requested` (MIG-344).
-  - `app/post`: `0040_profilecorrectionjob` (MIG-474).
+  - `app/post`: `0040_profilecorrectionjob` (MIG-474); `0041_post_geracao_status`, `0042_pauta_sugerida_nao_gerada` e `0043_pending_nao_gerado` (MIG-520; a `0041` cria os campos e marca como `gerado` o post com título ou legenda, a `0042` e a `0043` são de dados e devolvem a `nao_gerado` todo post `pending`).
   - `app/subscription`: `0027_billingidentity` (MIG-390) e `0028_mig515_faturamento_agencia` (MIG-515).
 - **`miggoai-2.0/miggoai_v2`**:
   - `apps.common` (app nova): `0001_usuario_plataforma` (MIG-506).
   - `apps.generations`: `0012_generation_entregue_em` (MIG-473, entrega idempotente).
+  - `token_blacklist` do SimpleJWT (MIG-502): o app entrou no `INSTALLED_APPS` e traz as migrations dele; o `migrate` do container web as aplica.
 
 ### Variáveis de ambiente novas
 
@@ -53,6 +54,13 @@ Consolida 43 cards a partir do código da `main` dos três repositórios: Celery
 | `VITE_MIGGOAI_API_URL` | `frontend-miggo` (build) | URL da API do MiggoAI chamada pelo painel de IA do `/admin`; o token da plataforma só sai para essa origem (MIG-507). |
 | `VITE_CLARITY_PROJECT_ID` | `frontend-miggo` (build) | Projeto do Microsoft Clarity no onboarding, só em produção e com consentimento; vazio, o script não carrega (MIG-470). |
 
+| `AUTH_THROTTLE_RATE` | `backend-miggo` | Limite por IP (`CF-Connecting-IP` atrás da Cloudflare) nas rotas de login, cadastro e reset de senha; padrão `20/min` (MIG-502). |
+| `ZERNIO_WEBHOOK_STRICT` | `backend-miggo` | Com `1`, webhook do Zernio **sem** token responde `401`. Desligada (padrão), só loga aviso; token enviado e errado é `401` nos dois modos (MIG-501). |
+| `UPLOAD_TETO_MB` | `backend-miggo` | Teto de todo upload de mídia, também fora do teste grátis; padrão `512` (MIG-501). |
+| `THROTTLE_ANON`, `THROTTLE_USER`, `THROTTLE_TOKEN` | `miggoai_v2` | Limites do DRF: anônimo (`60/min`), usuário com JWT (`600/min`, a Api-Key do backend fica fora) e `/api/token/` e `/api/token/refresh/` por IP (`10/min`) (MIG-502). |
+
+Alteradas no `backend-miggo` (MIG-502): `SECRET_KEY` passou a ser **obrigatória** (sem o valor padrão inseguro) e `CORS_ALLOWED_ORIGINS` não tem mais padrão `*`: fora do `DEBUG` é obrigatória e não aceita `*`.
+
 Removida do front: `VITE_MIGGO_API_KEY` (MIG-502); o bundle não leva mais a API key.
 
 <Warning>
@@ -68,6 +76,10 @@ Removida do front: `VITE_MIGGO_API_KEY` (MIG-502); o bundle não leva mais a API
 </Warning>
 
 <Warning>
+**Segurança (MIG-501/502):** sem `SECRET_KEY` ou, fora do `DEBUG`, sem `CORS_ALLOWED_ORIGINS` (ou com `*`), o backend não sobe. Os webhooks `/webhooks/zernio/account/`, `/api/v1/post/webhook-update-post/` e `/api/v1/post/webhook-account-connected/` passaram a conferir o `ZERNIO_WEBHOOK_TOKEN`; só ligue `ZERNIO_WEBHOOK_STRICT=1` depois de o Zernio mandar o token nos três.
+</Warning>
+
+<Warning>
 **Agências (MIG-516/517):** os domínios de agência entram pelo router catch-all do Traefik no `docker-compose.yml` do front (`HostRegexp`, prioridade 1, TLS terminando na Cloudflare). O fallback origin do Cloudflare for SaaS é passo manual.
 </Warning>
 
@@ -78,6 +90,8 @@ Removida do front: `VITE_MIGGO_API_KEY` (MIG-502); o bundle não leva mais a API
 - **Agência (MIG-513 a 517):** `/api/v1/agency/` (CRUD do Admin Miggo, `<pk>/users/`, `<pk>/clients/link/`, `<pk>/domains/` e `verify/`, `<pk>/brand/`), `me/` (`members/`, `brand/`, `clients/`), `subscription/` (`checkout/`, `portal/`), `plans/`, `context/`, `meta-tags/` (incluído por SSI no `index.html`) e `manifest.webmanifest`. Ver [app `agencia`](/plataforma/apps/agencia).
 - **Filas (MIG-461, 473 a 482):** com as flags, `202 {job_id, status}` em transmute-por-URL, import-website e `instagram-scrape/`, consultados em `GET /api/v1/brandkit/ingestion-job/<id>/`; correção de peça de perfil por job em `GET /api/v1/post/platform-profile-config/<pk>/correction/<job_id>/`. No MiggoAI, `POST /api/generations/grid/` e `perfil/{bio,banner,destaques}/` respondem `202` e o resultado sai de `grid/by-key/<chave>/` e `perfil/by-key/<chave>/`; o backend aceita `200` e `202`.
 - **MiggoAI no `/admin` (MIG-506 a 508):** `GET /api/generations/` passa a ser paginado (`page`, `page_size` até 200) e devolve `{count, page, total_pages, results}` em vez da lista sem envelope; `GET /api/generations/resumo/`, custos (`precos/`, `cotacoes/`, `chamadas/`), `prompts/workflows/<pk>/`, restauração de versão de prompt e variáveis por cliente (`clients/<id>/variables/<key>/`). O front chama o MiggoAI direto, com o JWT da plataforma, em `/admin/miggoai/*`.
+- **Segurança (MIG-499, 501, 502):** escrita de assinatura e fatura só para a equipe financeira (`create-subscription` incluído); o cliente troca só o plano do trial local, para plano público de cliente, e lê só o que é dele. Uploads de imagem passam por `utils/upload_seguro.py` (extensão, content-type e magic bytes têm de concordar); busca de URL externa por `utils/ssrf.py`, que recusa IP não global; com `USE_S3` a rota `/media/` não existe, e sem S3 ela sai com `nosniff` e CSP `sandbox`. `/api/schema/` exige login. No MiggoAI, o refresh entra na blacklist ao rotacionar (`BLACKLIST_AFTER_ROTATION`).
+- **Estado da geração (MIG-520):** `Post.geracao_status` (`nao_gerado`, `gerando`, `gerado`, `falhou`) e `geracao_erro`, gravados só pela chave de serviço; o MiggoAI marca `gerando` ao reservar, `gerado` na entrega e `falhou` com o motivo em texto de produto. `POST /api/v1/post/miggoai/generate/` (`{post_id}`, equipe e agência, escopado) responde `202` com `aceito` ou `na_fila`, `409` se o card já está gerando.
 - **Outros:** `GET /api/v1/media/limits/` e erros `413`/`415` estruturados no upload (MIG-386); `/api/v1/subscription/billing-identities/` e o command `backfill_billing_identities` (MIG-390); `/api/v1/brandkit/reference-import/` com captura por Playwright no servidor (MIG-371); `trials/sales-funnel/channels/` (MIG-385); filtro `account_type` (`trial`/`paid`/`all`) no Kanban admin (MIG-370); tipo de notificação `cancellation_requested` (MIG-344).
 
 ### Cards entregues na release
@@ -113,6 +127,9 @@ Removida do front: `VITE_MIGGO_API_KEY` (MIG-502); o bundle não leva mais a API
 | **MIG-485** | Frontend | UX | Indicador do onboarding com 12 etapas. |
 | **MIG-494** | Backend, Frontend, MiggoAI | CI | Workflow que publica as imagens no ECR a partir da `main`. O deploy no Dokploy segue manual. |
 | **MIG-498** | Backend | Segurança | Fim da escalada de papel e da tomada de conta por meta e por reset de senha. |
+| **MIG-499** | Backend | Segurança | Assinatura e fatura: escrita só da equipe, leitura escopada ao cliente. |
+| **MIG-501** | Backend | Segurança | Token nos webhooks do Zernio, guarda de SSRF, validação de upload e `/media/` fechada com S3. |
+| **MIG-502** | Backend, Frontend, MiggoAI | Segurança | `SECRET_KEY` obrigatória, CORS fechado, limite na autenticação, schema só com login; no MiggoAI, throttle e blacklist do refresh. |
 | **MIG-503** | Backend, Frontend, MiggoAI | Infra | `ROLE` no entrypoint sobe web ou worker com a mesma imagem; `.env.example` sem valores. |
 | **MIG-505** | Backend, MiggoAI | Tarefa | Orquestrador: dedupe de foto no carrossel, referência de design, variação de grid e guarda de texto. |
 | **MIG-506** | Backend, MiggoAI | Segurança | JWT RS256 com claims para o MiggoAI; MiggoAI aceita o token e pagina gerações. |
@@ -127,6 +144,7 @@ Removida do front: `VITE_MIGGO_API_KEY` (MIG-502); o bundle não leva mais a API
 | **MIG-516** | Backend, Frontend | Feature | Domínio próprio da agência via Cloudflare e reconhecimento pelo host. |
 | **MIG-517** | Backend, Frontend | Feature | Marca própria da agência: logo, favicon, PWA, meta-tags e paleta. |
 | **MIG-518** | Backend, Frontend | Feature | Permissões por módulo para membro Miggo e membro da agência. |
+| **MIG-520** | Backend, Frontend, MiggoAI | Feature | Estado da geração no card do Kanban, botão "Gerar conteúdo", falha com motivo, atualização automática e card aberto na URL. |
 
 </Update>
 

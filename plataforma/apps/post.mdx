@@ -41,6 +41,12 @@ Os status usados no fluxo são `pending`, `processing`, `sent`, `in_review`, `ap
 
 Mudanças de status geram notificações in-app (`in_review`, `published`, `rejected`) e e-mail de post publicado.
 
+### Estado da geração
+
+Além do status, `Post.geracao_status` diz em que pé está a geração pelo MiggoAI: `nao_gerado` (padrão), `gerando`, `gerado` ou `falhou`, com o motivo em `geracao_erro` (texto de produto, nunca o erro técnico). Só a Api-Key de serviço grava esses campos: o MiggoAI marca `gerando` ao reservar o card, `gerado` na entrega e, na falha, devolve o post a `pending` com `falhou`.
+
+`POST /api/v1/post/miggoai/generate/` com `{"post_id": ...}` pede a geração de um card (equipe e agência, com o módulo `conteudo`, escopado aos clientes visíveis). Responde `202` com `status` `aceito` (o card passa a `gerando`) ou `na_fila` (havia rodada em andamento; o card entra na próxima), `409` se ele já está gerando e `403` se já foi publicado.
+
 ## Aprovação por WhatsApp
 
 `services.send_post_for_approval(post)` é a regra única, usada pela view e pelos flows de conversa:
@@ -62,7 +68,7 @@ O flow muda conforme a rede do post estar conectada (`CONTENT_APPROVATION_CONNEC
 - **Cancelamento** apaga o post no Zernio e marca a publicação como `canceled`. Quando a assinatura expira, `scheduling.py` cancela os agendamentos futuros do cliente.
 
 <Warning>
-`/api/v1/post/webhook-update-post/` e `/api/v1/post/webhook-account-connected/` são os webhooks antigos do Zernio e não validam token. O webhook de desfecho `/webhooks/zernio/status/` exige `ZERNIO_WEBHOOK_TOKEN`. Veja [Webhooks](/plataforma/guias/webhooks).
+`/api/v1/post/webhook-update-post/` e `/api/v1/post/webhook-account-connected/` são os webhooks antigos do Zernio. Token enviado é conferido com `ZERNIO_WEBHOOK_TOKEN`, mas evento **sem** token ainda passa (só gera aviso no log) até `ZERNIO_WEBHOOK_STRICT=1`. O webhook de desfecho `/webhooks/zernio/status/` exige o token sempre. Veja [Webhooks](/plataforma/guias/webhooks).
 </Warning>
 
 ## Conexão das redes
