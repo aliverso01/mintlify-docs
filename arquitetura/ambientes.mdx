@@ -43,6 +43,30 @@ Homologação é uma cópia completa: banco próprio para cada serviço, mesmas 
 
 A lista completa de variáveis está em [Variáveis da Plataforma](/plataforma/configuracao), [Variáveis do MiggoAI](/miggoai/configuracao) e [Rodar o Web app](/web/rodar-localmente).
 
+## Gerar o par de chaves do JWT
+
+Cada ambiente tem o seu par RSA: a Plataforma assina o token com a privada e deriva a pública dela sozinha; o MiggoAI só recebe a pública. Gere numa pasta fora dos repos (Git Bash ou no servidor):
+
+```bash
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out jwt.pem
+openssl pkey -in jwt.pem -pubout -out jwt_publica.pem
+
+# cada chave numa linha só, com \n literal (os settings trocam \n por quebra de linha)
+awk 'NF {sub(/\r/,""); printf "%s\\n",$0}' jwt.pem; echo
+awk 'NF {sub(/\r/,""); printf "%s\\n",$0}' jwt_publica.pem; echo
+```
+
+| Saída | Variável | Serviço |
+| --- | --- | --- |
+| `jwt.pem` | `JWT_PRIVATE_KEY` | Plataforma (API e worker) |
+| `jwt_publica.pem` | `MIGGO_JWT_PUBLIC_KEY` | MiggoAI (API e worker) |
+
+Cole sem aspas, reinicie os serviços e apague os arquivos: `rm jwt.pem jwt_publica.pem`.
+
+- Nunca reaproveite o par de outro ambiente: o MiggoAI de homologação aceitaria token de produção.
+- Trocar a privada invalida as sessões abertas; quem estiver logado entra de novo.
+- Par trocado entre os serviços: todo acesso do painel de IA volta `401`.
+
 ## Hospedagem
 
 Os três softwares rodam em containers gerenciados pelo **Dokploy**. Cada repo tem o workflow `.github/workflows/docker-ecr.yml`, que no push da `main` constrói a imagem e publica no **Amazon ECR** com as tags `:<sha>` e `:latest`. A `develop` não gera imagem. A atualização do container no Dokploy é manual.
