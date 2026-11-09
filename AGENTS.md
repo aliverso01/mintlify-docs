@@ -12,8 +12,7 @@
 - Site em [Mintlify](https://mintlify.com). Páginas são arquivos MDX com
   frontmatter YAML; a configuração e a navegação ficam em `docs.json`.
 - Todo o conteúdo é em **português do Brasil**.
-- Preview local: `npx -y mint dev --port 3002` (já roda no terminal `Docs Interna`
-  do canvas Maestri). A `miggo-docs` usa a 3001 — não confunda as duas.
+- Preview local: `npx -y mint dev --port 3002`. A `miggo-docs` usa a 3001 — não confunda as duas.
 
 ## Não confunda com a doc pública
 
