@@ -59,6 +59,12 @@ Não agende estes comandos.
 | `sync_conversations` | — | Cria a `Conversation` de todo cliente com WhatsApp já conectado. Rode uma vez depois de um banco novo; depois disso o signal cria sozinho |
 | `backfill_post_status_events` | `--dry-run` | Reconstrói `PostStatusEvent` a partir do `History` |
 | `repair_platform_integrations` | `--client`, `--apply` | Realinha `PlatformIntegration` com as contas realmente conectadas no Zernio |
+| `analisar_acervo` | `--limit` | Analisa por IA as fotos ativas do acervo sem título nem descrição e grava descrição e palavras-chave. Grava direto, sem simulação |
+| `normalizar_horario_trials` | `--apply` | Põe 08:00 no calendário e nos posts pendentes de hoje em diante dos clientes em teste. Sem `--apply` só lista |
+| `cancelar_posts_pos_trial` | `--apply`, `--dry-run` | Cancela posts não publicados com data depois do fim do teste. Sem `--apply` só lista |
+| `marcar_tom_fundo_referencias` | `--apply` | Calcula o tom do fundo (claro ou escuro) das referências de design que ainda não têm. Sem `--apply` só lista |
+| `extrair_diagramacao_referencias` | `--apply`, `--refazer-reprovadas` | Pede ao MiggoAI a diagramação das referências de post sem diagramação ou cuja extração falhou. Sem `--apply` só imprime a situação (sem diagramação, com erro, reprovadas, aprovadas, ainda não analisadas). Roda no próprio processo, uma referência por vez, com 2 a 6 chamadas de visão cada |
+| `extrair_grids_aprovados` | `--apply`, `--refazer`, `--client-id` | Extrai as referências de post do grid de cada cliente: o MiggoAI mede os quadros e recria cada post em alta (uma chamada de visão e uma geração de imagem por post). Sem `--apply` só lista; `--refazer` reextrai o grid já extraído |
 | `sanear_galeria` | `--client-id`, `--amostra`, `--aplicar` | Reclassifica a galeria do cliente: mídia avulsa (ou anexada a post, mas vinda da galeria) volta a ficar disponível, e artes de post saem dela. Prévia por padrão; `--aplicar` grava. Rode antes de uma análise em massa com `analyze_media_library` |
 | `merge_client_accounts` | `--origem`, `--destino`, `--apply`, `--backup-dir`, `--manter-origem-ativa`, `--conexao-origem-prevalece` | Migra os dados de uma conta duplicada para a oficial e bloqueia a duplicada |
 | `fix_active_onboarding` | `--apply`, `--email`, `--client-id`, `--created-before`, `--with-subscription`, `--mark-skipped`, `--batch-size` | Marca o onboarding como concluído para clientes `active=True` |

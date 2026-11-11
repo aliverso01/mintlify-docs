@@ -47,6 +47,12 @@ Além do status, `Post.geracao_status` diz em que pé está a geração pelo Mig
 
 `POST /api/v1/post/miggoai/generate/` com `{"post_id": ...}` pede a geração de um card (equipe e agência, com o módulo `conteudo`, escopado aos clientes visíveis). Responde `202` com `status` `aceito` (o card passa a `gerando`) ou `na_fila` (havia rodada em andamento; o card entra na próxima), `409` se ele já está gerando e `403` se já foi publicado.
 
+## Listagem do Kanban
+
+`GET post/list/` pagina quando recebe `page` e filtra no servidor por `post_date`, `status` (nomes ou ids separados por vírgula), `post_format`, `ids`, `somente_ativos` e `client_id`; `enxuto=1` tira `editorial_rules` da resposta. Para a equipe, a lista mostra por padrão só clientes com direito de publicar; `include_inactive=true` mostra todos. O corte não se aplica quando há `client_id`, `ids` ou `stalled_days`.
+
+Cliente em teste grátis não recebe nem cria post com data depois do último dia do teste: `post/create/` e `post/update/` respondem `422` (`app/subscription/access.py::data_fora_do_trial`). O campo `sob_encomenda` do post é `true` quando ele nasceu de uma ideia aprovada do cliente.
+
 ## Aprovação por WhatsApp
 
 `services.send_post_for_approval(post)` é a regra única, usada pela view e pelos flows de conversa:
@@ -71,11 +77,15 @@ O flow muda conforme a rede do post estar conectada (`CONTENT_APPROVATION_CONNEC
 `/api/v1/post/webhook-update-post/` e `/api/v1/post/webhook-account-connected/` são os webhooks antigos do Zernio. Token enviado é conferido com `ZERNIO_WEBHOOK_TOKEN`, mas evento **sem** token ainda passa (só gera aviso no log) até `ZERNIO_WEBHOOK_STRICT=1`. O webhook de desfecho `/webhooks/zernio/status/` exige o token sempre. Veja [Webhooks](/plataforma/guias/webhooks).
 </Warning>
 
+**Formato por rede** (`formatos_publicacao.py`). A matriz de quais formatos cada rede publica é fonte única no backend. `GET post/publication-options/?client=<id>[&post=<id>]` devolve as redes liberadas para o cliente, com os formatos de cada uma e se servem à mídia do card (`compativel`, `motivo`). `POST post/publish/` aceita `publicacoes: [{social_network_id, post_format_id}]` e recusa com `400` formato de outra rede, rede fora da matriz ou mídia incompatível; o formato da primeira rede vira o `post_format` do card. O payload `networks` continua aceito, sem passar pela matriz. Com `ZERNIO_PUBLICACAO_ATIVA=False`, a publicação é marcada como `failed` com mensagem própria e nada vai ao Zernio.
+
 ## Conexão das redes
 
 - O OAuth das redes é feito no Zernio. O webhook `account.connected` ativa a `PlatformIntegration` casando por `(profile_id, platform)`, porque o `profile_id` do Zernio identifica o cliente e é o mesmo para todas as redes dele.
 - `zernio.sync_platform_connections` reconcilia as conexões quando o webhook não chega (chamado pelo status do onboarding). O comando `repair_platform_integrations` realinha integrações gravadas na rede errada.
 - WhatsApp é conectado pelo código de verificação do [Onboarding na Plataforma](/plataforma/apps/onboarding).
+
+Integração pendente (`inactive`) não trava o cliente: criar de novo para a mesma plataforma reaproveita o registro e responde `200` com link novo; só a integração `active` devolve o `400` de duplicada. Excluir uma pendente apaga só o registro, sem chamar o Zernio.
 
 ## Peças de perfil
 

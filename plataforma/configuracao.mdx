@@ -61,6 +61,7 @@ Uso e fluxo dos tokens: [Autenticação](/plataforma/autenticacao).
 |---|---|---|---|
 | `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD` | sim | — | SMTP (`EmailBackend` fixo) |
 | `EMAIL_USE_TLS`, `EMAIL_USE_SSL` | não | `False` | Criptografia da conexão SMTP |
+| `EMAIL_DESTINATARIOS_PERMITIDOS` | não | vazio | CSV de e-mails ou `@dominio`. Preenchida, o backend de e-mail (`core/email_backend.py`) descarta todo destinatário fora da lista; vazia, sem filtro. Use em homologação |
 
 ## Armazenamento e uploads
 
@@ -85,6 +86,7 @@ Uso e fluxo dos tokens: [Autenticação](/plataforma/autenticacao).
 | `STRIPE_WEBHOOK_SECRET` | não | vazio | Valida a assinatura de `/webhooks/`. Vazio, o webhook responde `503` |
 | `STRIPE_TRIAL_DAYS` | não | `7` | Dias de teste grátis |
 | `BILLING_GRACE_DAYS` | não | `5` | Carência antes de cortar o acesso de quem está em atraso |
+| `ASAAS_SUSPENDE_INADIMPLENTE` | não | `False` | Com `True`, `check_subscriptions` suspende o cliente com fatura do Asaas vencida além da carência; desligada, só avisa a equipe |
 | `ASAAS_API_KEY` | não | vazio | Chave do Asaas |
 | `ASAAS_BASE_URL` | não | `https://api.asaas.com/v3` | Base da API do Asaas |
 | `ASAAS_WEBHOOK_TOKEN` | não | vazio | Token do header `asaas-access-token` em `/webhooks/asas/`. Vazio, o webhook responde `503` |
@@ -96,7 +98,6 @@ Uso e fluxo dos tokens: [Autenticação](/plataforma/autenticacao).
 | `OPENAI_API_KEY` | nos pontos de uso | vazio nas settings | Chamadas diretas à OpenAI feitas pelo backend (onboarding, brandkit, mídia, suporte). Os pontos de uso leem a variável sem padrão: ausente, a chamada levanta `UndefinedValueError` |
 | `OPENAI_API_URL` | não | `https://api.openai.com/v1/` | Base da API da OpenAI |
 | `OPENAI_MODEL` | não | `gpt-4o-mini` | Modelo de texto padrão |
-| `OPENAI_MODEL_ESTRATEGIA` | não | o mesmo de `OPENAI_MODEL` | Modelo da estratégia do onboarding |
 | `MEDIA_ANALYSIS_MODEL` | não | `gpt-4o-mini` | Modelo que descreve as imagens da galeria |
 | `COPY_OCR_MODEL` | não | `gpt-4o` | Leitura de texto em referências de copy |
 | `MIGGOAI_V2_API_URL` | não | cai em `MIGGOAI_API_URL` | Base do MiggoAI (`/api/generations/...`). Aponte para o MiggoAI **do mesmo ambiente** |
@@ -114,6 +115,7 @@ Uso e fluxo dos tokens: [Autenticação](/plataforma/autenticacao).
 | Variável | Obrigatória | Padrão | Efeito |
 |---|---|---|---|
 | `LATE_API_KEY` | nos pontos de uso | — | Chave do Zernio. Lida sem padrão: ausente, publicação e métricas levantam `UndefinedValueError`. **Homologação nunca usa a chave de produção**: ela publica de verdade na conta do cliente |
+| `ZERNIO_PUBLICACAO_ATIVA` | não | `True` | Com `False`, a publicação falha com mensagem própria e nada vai ao Zernio; a conexão de conta segue funcionando. Use em homologação |
 | `ZERNIO_PUBLISH_TIMEOUT` | não | `120` s | Espera nas chamadas de publicação (presign e `POST /v1/posts`) |
 | `ZERNIO_WEBHOOK_TOKEN` | não | vazio | Token do header `Zernio-Webhook-Token` (ou `X-Webhook-Token`) nos webhooks do Zernio. Vazio, `/webhooks/zernio/status/` responde `503`; nos outros três, evento que traz token responde `503` |
 | `ZERNIO_WEBHOOK_STRICT` | não | `False` | Em `/webhooks/zernio/account/`, `webhook-update-post/` e `webhook-account-connected/`: com `1`, evento sem token responde `401`; desligada, só gera aviso no log. Token errado é `401` nos dois modos |

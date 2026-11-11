@@ -11,14 +11,15 @@ Toda chamada à OpenAI sai de `backend/apps/generations/services/openai_service.
 | Endpoint | Função | Usado por | Timeout |
 |---|---|---|---|
 | `POST /v1/chat/completions` | `chat_json` | título, legenda, hashtags, bio, seleção de microângulo, classificação de foto, intenção de ajuste do banner | 60 s |
-| `POST /v1/images/edits` | `generate_image` | imagem do post (grid do cliente como referência) | 300 s |
+| `POST /v1/chat/completions` | `visao_json` | diagramação da referência, quadros do grid e guard da arte (imagens em PNG, saída em `json_schema` estrito) | 180 s |
+| `POST /v1/images/edits` | `generate_image` | imagem do post (guia de diagramação, foto e logo como imagens de entrada) e post do grid recriado em alta | 300 s |
 | `POST /v1/images/edits` | `grid_workflow._recriar_referencia` | grid a partir de uma referência ou da peça anterior | 300 s |
-| `POST /v1/images/generations` | `gerar_arte` | arte de fundo do banner do LinkedIn | 300 s |
+| `POST /v1/images/generations` | `gerar_arte` | arte de fundo do banner do LinkedIn e imagem do post sem nenhuma imagem de entrada | 300 s |
 | `POST /v1/images/generations` | `grid_workflow._gerar_do_zero` | grid sem referência | 300 s |
 
 ## Modelos
 
-O modelo de cada workflow não é fixo no código: vem da `WorkflowConfig` (`text_model`, `image_model`, `temperature`, `max_tokens`), editável no [painel de IA](/web/painel-de-ia) por superusuário. Os defaults do model são `gpt-4o-mini` (texto) e `gpt-image-2` (imagem). Chamadas auxiliares com prompt fixo, como o `media_classifier`, usam `gpt-4o-mini`.
+O modelo de cada workflow não é fixo no código: vem da `WorkflowConfig` (`text_model`, `image_model`, `temperature`, `max_tokens`), editável no [painel de IA](/web/painel-de-ia) por superusuário. Os defaults do model são `gpt-6-luna` (texto) e `gpt-image-2.5-flare` (imagem); o seed define o modelo de cada workflow e não sobrescreve a configuração que já existe no banco. Chamadas auxiliares com prompt fixo, como o `media_classifier`, usam `gpt-4o-mini`.
 
 Trocar o modelo para um que não tem `PrecoModelo` cadastrado é permitido; a API devolve o aviso em `modelos_sem_preco` e as chamadas ficam com `sem_preco=True` no custo (ver [Custos de IA](/miggoai/custos)).
 
@@ -47,10 +48,10 @@ Resposta vazia cortada por `finish_reason == "length"` vira erro explícito. JSO
 ## Imagem do post: `generate_image`
 
 ```python
-generate_image(prompt, grid_url, gen_size, model='gpt-image-2', extra_reference_urls=None) -> bytes
+generate_image(prompt, principal_url, gen_size, model='gpt-image-2.5-flare', extra_reference_urls=None) -> bytes
 ```
 
-- **Referências:** o grid do cliente vai sempre em `images[0]`; foto da galeria ou do banco de imagens, logo e referência de design entram como extras.
+- **Imagens de entrada:** `principal_url` vai em `images[0]`: o guia de diagramação (wireframe ou esqueleto) ou, sem ele, a foto. Foto da galeria ou do banco de imagens e logo entram como extras. O grid do cliente não é enviado.
 - **Payload:** `quality: "high"`, `output_format: "png"`, `n: 1`, `size` pelo formato.
 - **Tamanhos**, já na proporção de entrega (sem corte nem reamostragem):
 
@@ -70,17 +71,16 @@ Se a OpenAI recusar mesmo assim:
 | Erro | Reação |
 |---|---|
 | `invalid_image_file` numa referência extra | repete uma vez sem aquela referência |
-| falha ao baixar uma URL (não diz qual) | repete uma vez só com o grid |
-| grid inacessível | falha antes de chamar, sem gastar a chamada |
+| falha ao baixar uma URL (não diz qual) | repete uma vez só com a imagem principal (`images[0]`), sem as de apoio |
 | qualquer outro | `RuntimeError` com mensagem para o usuário |
 
 ## Arte de fundo: `gerar_arte`
 
-`images/generations`, sem referência, `1024x1024`, `quality: "medium"`. Serve ao banner do LinkedIn, que é composto depois em HTML. As capas de destaque não usam IA.
+`images/generations`, sem referência, `1024x1024`. O parâmetro `quality` é `"medium"` por padrão, para a arte de fundo do banner do LinkedIn, que é composto depois em HTML; a imagem do post que sai sem nenhuma imagem de entrada passa `QUALIDADE_IMAGEM_POST` (`"high"`). As capas de destaque não usam IA.
 
 ## Grid do onboarding
 
-`grid_workflow.py`, quadrado `1024x1024`, modelo padrão `gpt-image-2`:
+`grid_workflow.py`, quadrado `1024x1024`, modelo padrão `gpt-image-2.5-flare`:
 
 - **com referência:** `images/edits` recriando o molde com a paleta e o logo do cliente; `input_fidelity: "high"` só para `gpt-image-1` (a família `gpt-image-2` recusa o parâmetro);
 - **modo correção** (`peca_anterior_url` + `feedback`): edita a peça anterior; se a OpenAI recusar a base, cai no modo referência;

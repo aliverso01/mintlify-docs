@@ -16,6 +16,10 @@ Os workflows vivem em `backend/apps/generations/services/`. Cada um é uma chave
 | `bio` | bio de perfil (Instagram ou LinkedIn) | `bio_workflow.py` |
 | `banner` | banner de capa do LinkedIn (arte de IA + composição em HTML) | `banner_workflow.py` + `composicao.py` |
 | `destaques` | capas de destaque do Instagram (template HTML, sem IA) | `destaques_workflow.py` + `composicao.py` |
+| `estrategia` | um item da estratégia inicial por geração (bio, destaques, Sobre e banner) | `estrategia_workflow.py` |
+| `briefing` | briefing preenchido a partir de uma fonte (Instagram, site, dedução ou documento) | `briefing_workflow.py` |
+| `pauta` | ideia do cliente formatada em pauta | `pauta_workflow.py` |
+| `diagramacao` | diagramação de uma referência de design, e quadros e posts de um grid de cliente | `diagramacao_workflow.py` |
 
 ## Núcleo
 
@@ -105,7 +109,12 @@ Ver detalhes em [Prompts](/miggoai/prompts). Define 4 contratos (`TITULO_TEXTO`,
 5. Para carrossel, corta cards acima de `CARDS_MAX = 8` (`_limitar_cards`) — teto reforçado no código porque `strict: True` não aceita `maxItems` no schema.
 6. Se não for carrossel, chama `_select_best_microangle` — um **agente interno** com prompt fixo (não editável no CMS) que escolhe o melhor dos 3 microângulos gerados.
 
-**Retorna**: `{prompt_slug, prompt_version_used, format_key, formato_motivo, microangles, selected_microangle, selection_reason, selection_score}`.
+Dois blocos do sistema são acrescentados ao prompt do CMS quando se aplicam:
+
+- **CTA no story** (`_bloco_cta_do_story`): story não tem legenda; com `cta_required`, o texto da arte fecha com o CTA do calendário.
+- **Estrutura do texto na arte** (`_linha_visual_do_post`): em feed e story, a referência de design que a arte vai seguir é escolhida já aqui. Se ela vai à geração como wireframe, o prompt recebe os blocos de texto da peça, na ordem de leitura, com o papel de cada um e quantos caracteres cabem, para o texto nascer do tamanho deles. A chave da referência sai no resultado (`linha_visual`) e é encadeada para a imagem, que não sorteia outra. Carrossel não recebe o bloco.
+
+**Retorna**: `{prompt_slug, prompt_version_used, format_key, formato_motivo, microangles, selected_microangle, selection_reason, selection_score}`, mais `linha_visual` quando a referência foi escolhida no título.
 
 O schema de cards traz `direcao_visual` por card (usada no prompt da imagem) e o resultado passa adiante o nome do formato e a referência de copy usados, que a imagem e a legenda herdam (`runner._referencia_do_titulo`). O texto passa pela guarda `texto_limpo` (ver abaixo).
 
@@ -116,23 +125,51 @@ O schema de cards traz `direcao_visual` por card (usada no prompt da imagem) e o
 `backend/apps/generations/services/image_workflow.py`. Não encadeia com o título por si só — recebe `texto_imagem` via `variable_overrides` (o chamador decide).
 
 1. Resolve tamanho (`IMAGE_FORMAT_SIZES`/`IMAGE_GEN_SIZES` de `openai_service`) pelo `format_key`.
-2. Exige `grid_url` no contexto — `RuntimeError` se ausente.
-3. Exige `texto_imagem` (`str` ou `list[str]`, 1 item por card no carrossel) — `RuntimeError` se ausente.
-4. **Predefinição `usage` do cliente** (`usar_midia_cliente = bool(media_id_forcado) or _deve_consultar_galeria(usage)`) decide se a galeria é **consultada** nesta geração: `always` sim, `never` não, `alternate` sorteio 50/50 (não qual foto — isso é decidido depois).
-5. Se consultada: busca `get_client_media_library`, e por card roda `media_matcher.rankear` (peneira léxica) seguido de `media_classifier.selecionar` (julgamento por IA da descrição). Toda a trilha de decisão (candidatos, score, motivo) é registrada em `midia_cliente` no resultado, para auditoria.
+2. Exige `texto_imagem` (`str` ou `list[str]`, 1 item por card no carrossel) — `RuntimeError` se ausente.
+3. **Predefinição `usage` do cliente** (`usar_midia_cliente = bool(media_id_forcado) or _deve_consultar_galeria(usage)`) decide se a galeria é **consultada** nesta geração: `always` sim, `never` não, `alternate` sorteio 50/50 (não qual foto — isso é decidido depois).
+4. Se consultada: busca `get_client_media_library`, e por card roda `media_matcher.rankear` (peneira léxica) seguido de `media_classifier.selecionar` (julgamento por IA da descrição). Toda a trilha de decisão (candidatos, score, motivo) é registrada em `midia_cliente` no resultado, para auditoria. Com `always` e todas as fotos dentro da janela de reuso, a escolha volta às usadas há mais tempo, uma por card (`reuso_relaxado`).
    - **Banco de imagens da Miggo**: se a preferência do cliente tem `use_stock=True`, o pool do banco é **unido ao da galeria** e segue o mesmo funil — `_deve_consultar_banco` é irmã de `_deve_consultar_galeria` e roda depois dela, então o banco só entra quando esta geração já ia usar foto real. Detalhe em [Banco de imagens no funil](#banco-de-imagens-no-funil).
-6. `_resolver_marca` decide logo/assinatura: por padrão consulta a preferência salva no backend-miggo (`get_signature_preference`); `variable_overrides` com `marca_modo`/`assinatura_tipo`/`assinatura_texto` sobrescrevem pontualmente sem persistir.
-7. Para cada texto (1 por card), renderiza o prompt `imagem-post`, chama `openai_service.generate_image` passando o grid + foto do cliente (se aprovada) + logo (se aplicável) como referências, e redimensiona (`redimensionar_para_entrega`) — normalmente um no-op porque o tamanho pedido já é o tamanho final.
+5. `_resolver_marca` decide logo/assinatura: por padrão consulta a preferência salva no backend-miggo (`get_signature_preference`); `variable_overrides` com `marca_modo`/`assinatura_tipo`/`assinatura_texto` sobrescrevem pontualmente sem persistir.
+6. Escolhe a referência de design do post (ver [Referência de design](#referência-de-design-wireframe-e-formato)) e, para cada texto (1 por card), renderiza o prompt `imagem-post` com os blocos do sistema: papel de cada imagem enviada, especificação do wireframe, estilo da peça e paleta da marca.
+7. Gera a imagem (`_gerar`): com alguma imagem de entrada, `openai_service.generate_image` (`images/edits`); sem nenhuma, `openai_service.gerar_arte` (`images/generations`). Nos dois casos em qualidade `high` (`QUALIDADE_IMAGEM_POST`).
+8. Confere a arte no [guard](#guard-da-arte) e redimensiona (`redimensionar_para_entrega`) — normalmente um no-op porque o tamanho pedido já é o tamanho final.
 
-**Retorna**: `{prompt_slug: 'imagem-post', prompt_version_used, format_key, formato_motivo, width, height, rendered_prompts, midia_cliente, images}` — `images` é uma lista de objetos `PIL.Image` (o `runner` salva em disco).
+**Retorna**: `{prompt_slug: 'imagem-post', prompt_version_used, format_key, formato_motivo, width, height, rendered_prompts, midia_cliente, variacao, guard, images}` — `images` é uma lista de objetos `PIL.Image` (o `runner` salva em disco).
 
-**Variação visual e referências:**
+**Imagens enviadas ao modelo** (`_ordenar_imagens`), nesta ordem: o guia de diagramação (wireframe ou esqueleto), a foto do cliente ou do banco, o logo. A primeira da lista é `images[0]`. **O grid do cliente não vai à geração de imagem.**
 
-- **Célula do grid e referência de design escolhidas pelo código** (`services/variacao_visual.py`), não pelo modelo. `escolher_celula` sorteia uma das 9 células do mosaico 3x3 evitando as já usadas no post e na janela de `JANELA_DIAS = 30` do cliente. A referência de design (`DesignReference` tipo `post`, do backend-miggo) é sorteada entre as `TOP_REFERENCIAS = 5` mais afins à pauta, com anti-repetição; os slides do mesmo link de origem (`par_id`) formam uma linha visual, um por card. A referência manda em diagramação e tipografia; o grid, em cores e identidade (e é o único insumo quando não há referência). O motivo de cada escolha vai para a auditoria (nós "Referência de copy" e "Variação visual").
+- **Paleta** (`_bloco_da_paleta`): os hex do brandkit entram como regra do sistema; branco e preto são liberados para contraste e as cores da foto do cliente ficam como estão. Cliente sem paleta segue sem o bloco.
+- **Foto real** (`PAPEL_DA_FOTO`): a foto do cliente ou do banco entra literal na peça, sem redesenhar pessoa nem produto. Peça pronta (arquivo `template_*` ou descrição que abre com "Post") não vale como foto real (`media_matcher.e_peca_pronta`).
+- **Tela do produto** (`PAPEL_DA_TELA_DO_PRODUTO`): quando a foto escolhida para o card tem `image_type: tela_do_produto` na análise da galeria, ela entra inteira dentro de um aparelho, sem recorte nem recoloração, e o texto do card fica fora dele. A regra é da foto escolhida, não do cliente.
 - **Carrossel não repete foto** entre os cards da mesma geração: as fotos já usadas saem do pool dos cards seguintes.
-- **Referências conferidas antes da chamada** (`openai_service.referencia_acessivel`): arquivo ausente (404) não é enviado; slide ausente da linha visual é trocado pelo próximo; grid inacessível falha cedo com mensagem própria, sem gastar a chamada. Endereço local/privado que a OpenAI não alcança é baixado e enviado como data URL (só em `DEBUG`; em produção é recusado), com validação de IP a cada redirect e teto de 12 MB. Download de referência recusado na chamada tira as referências acessórias e gera só com o grid.
+- **Referências conferidas antes da chamada** (`openai_service.referencia_acessivel`): arquivo ausente (404) não é enviado; linha visual com slide ausente é trocada pela próxima. Endereço local/privado que a OpenAI não alcança é baixado e enviado como data URL (só em `DEBUG`; em produção é recusado), com validação de IP a cada redirect e teto de 12 MB.
 - **Erro para a tela é frase nossa** (referência, filtro de segurança ou genérica); o corpo da OpenAI fica só no log.
-- Imagem do post em qualidade `high` (`QUALIDADE_IMAGEM_POST`); a arte de fundo de banner e destaques (`gerar_arte`) segue em `medium`.
+
+#### Referência de design: wireframe e formato
+
+A referência de design (`DesignReference` tipo `post`, do backend-miggo) é escolhida pelo código (`services/variacao_visual.py`), não pelo modelo.
+
+- **Só entra no sorteio a referência com diagramação aprovada** (`diagramacao.liberada`: `estado` `aprovado`, pelo juiz ou pela equipe). A referência com dono (`client`) só vale para o cliente dono.
+- **Mesmo formato do post, sem exceção** (`_do_formato`): carrossel usa carrossel de referência (slides do mesmo `par_id`, um por card); story e reel usam peça em pé; feed usa peça de feed. Sem referência do formato, a peça sai sem referência de design. A regra vale também para o link da referência de copy e para a linha escolhida no título.
+- **Sorteio** entre as `TOP_REFERENCIAS = 5` mais afins à pauta, fora da janela de reuso (`JANELA_DIAS = 30`), com a mesma chance entre referências genéricas e as extraídas do grid do cliente, e alternando o tom do fundo em relação ao último post.
+- **Wireframe** (`services/diagramacao.py`): a referência vai ao modelo como o wireframe desenhado pela Plataforma (`wireframe_url`, ou `wireframe_sem_corpo_url` no card sem corpo), acompanhado da especificação: camadas de trás para frente, posição em % da peça, linhas e altura da letra de cada bloco de texto, quem fica na frente de quem e o estilo visual da peça. Os itens vão com nome neutro (`texto 1`, `objeto 1`): o nome original descreve a referência e traria o conteúdo dela para a arte.
+- **Texto pelos blocos** (`trechos_do_card`): no card de um texto só, o texto é dividido pelos blocos da referência. Quem divide é o modelo de texto do workflow `diagramacao`, pelo sentido; o código confere que os trechos, emendados, devolvem o texto palavra por palavra. Sem divisão exata, vale o corte mecânico pela capacidade de cada bloco. A decisão fica no nó `divisao-do-texto`.
+- **Esqueleto** (`referencia_estrutural.py`): quando o arquivo do wireframe está fora do ar, a referência vai como esqueleto em blocos cinza, sem cores nem rosto.
+- **Teste do painel:** `referencia_design_id` em `variable_overrides` força uma referência, mesmo reprovada. É o que o painel de IA usa para testar uma referência antes de aprová-la.
+
+O motivo de cada escolha vai para a auditoria (nós "Referência de copy", "Variação visual" e "Imagem").
+
+#### Guard da arte
+
+`services/guard_da_arte.py`. Depois de gerada, toda arte passa por uma chamada de visão (prompt `diagramacao-guard-da-arte` e modelo de texto do workflow `diagramacao`). O guard recebe a arte inteira, o guia de diagramação quando houve, e a arte em recortes na resolução gerada.
+
+| Defeito | O que é |
+|---|---|
+| `bloco_do_guia` | barra, elipse ou forma vazia desenhada no lugar de um bloco do guia |
+| `figura_pixelada` | pessoa ou área em pixels grandes, mosaico ou tarja |
+| `artefato_de_geracao` | sopa de pixels, letra de contorno tremido ou ilegível, logo ou mão deformados |
+
+Com defeito, a arte é refeita com o defeito descrito no prompt, até `MAX_REGERACOES = 2` vezes; esgotado, a última tentativa é entregue. O resultado vai em `guard.por_card` (`aprovada`: `true`, `false` ou `null` para "não conferida") e no nó `guard` da auditoria. O guard nunca derruba a geração: sem o prompt no CMS ou com a IA fora, a arte segue como não conferida.
 
 **Efeitos colaterais**: chamadas de rede à OpenAI (`images/edits`, timeout 300s por card); nenhuma escrita em disco dentro do próprio workflow (feita pelo `runner`).
 
@@ -169,8 +206,33 @@ A referência de estilo do grid é o mosaico de outra marca (ou um template com 
 ### Peças de perfil: bio, banner e destaques
 
 - **Bio** (`bio_workflow.py`): texto, com formato e teto de caracteres definidos pela Plataforma no pedido (`rede`, `max_caracteres`).
+- Sem cor ou briefing no pedido (geração pelo painel), banner e destaques usam a paleta do brandkit e o briefing do cliente; `paleta=[]` vinda do onboarding é respeitada.
 - **Banner do LinkedIn** (`banner_workflow.py`): a IA gera só a arte de fundo, quadrada, por `openai_service.gerar_arte` (`images/generations`, modelo de imagem da config do workflow); a peça final é composta em HTML e renderizada pelo Chromium do Playwright (`composicao.py`). O banner não leva logo. A arte de fundo é guardada (`result.banner.arte_path`) e reaproveitada no ajuste seguinte quando o pedido não fala da arte.
 - **Capas de destaque** (`destaques_workflow.py`): sem IA. Template HTML determinístico (cúpula, ícone e legenda), renderizado pelo Chromium, para as capas saírem iguais entre si.
+
+### `diagramacao_workflow.py` — diagramação da referência e grid do cliente
+
+Chamado só pela Plataforma, em `POST /api/generations/referencia/diagramacao/` (síncrono). O cliente é opcional: referência global não tem dono.
+
+**Referência de post** (padrão). Até três rodadas, no máximo seis chamadas de visão:
+
+1. **Extração** (`diagramacao-extracao`): a referência vai com uma grade de 10 em 10% e o modelo devolve os itens (tipo, camada, caixa em %, papel do texto) e o estilo da peça (linguagem, tratamento da foto, textura, formas).
+2. **Juiz** (`diagramacao-juiz`): confere item a item, vendo um recorte por item com a caixa contornada.
+3. **Correção** (`diagramacao-correcao`): só dos itens reprovados; os aprovados ficam travados.
+
+No fim (`_fechar`), forma gráfica menor que 0,5% da peça sai do body e são escolhidos os `blocos_do_texto`: o título e os maiores blocos de texto, até três, sem microtexto, na ordem de leitura. O body volta com `estado` `aprovado` ou `reprovado`. Sem bloco de título a geração falha (`DiagramacaoInvalida`) e a rota responde `502`.
+
+**Grid de cliente** (`"tipo": "grid"`). Uma chamada de visão (`diagramacao-quadros-do-grid`) mede a caixa de cada post do mosaico, sem supor 3x3, e cada quadro é recortado e recriado em alta qualidade pelo modelo de imagem (`diagramacao-recriar-quadro`), no tamanho mais próximo da proporção dele (9:16, 4:5 ou 1:1). A resposta traz `quadros`, cada um com a caixa, `imagem_url` e `recriada`; quando a geração de um post falha, ele segue com o recorte. O grid com os quadros numerados e as peças ficam salvos na geração.
+
+### Estratégia inicial, briefing e pauta
+
+Workflows de perfil chamados pela Plataforma, com o schema de saída no próprio módulo.
+
+- **`estrategia`** (`perfil/strategy/`): um item por geração (`ig-bio`, `ig-highlights`, `li-overview`, `li-banner`). Item fora da régua (bio até 150 caracteres, Sobre do LinkedIn entre 1.000 e 2.000, 6 destaques) ou falha transitória da OpenAI vira `EstrategiaReprovada`, e o worker repete.
+- **`briefing`** (`perfil/briefing/`): uma fonte por chamada (`instagram`, `site`, `deducao`, `documento`). O conteúdo coletado entra delimitado e marcado como dado; a coleta continua na Plataforma. O schema da resposta é montado pelos tipos dos campos pedidos (`texto`, `lista`, `cores`).
+- **`pauta`** (`perfil/pauta/`, sempre síncrono): a ideia do cliente (título e descrição) vira `{titulo, tema, formato_id, cta}`. O texto do cliente entra delimitado e o `formato_id` só é aceito entre os ids recebidos.
+
+Com fila ativa e `idempotency_key`, `perfil/strategy/` e `perfil/briefing/` respondem `202` e o resultado sai por `perfil/by-key/`; sem fila são síncronos e respondem `502` na falha.
 
 ### Banco de imagens no funil
 
@@ -194,7 +256,7 @@ Sem chamada de rede/IA — comparação local com `difflib` (stdlib).
 
 ### `media_classifier.py` — julgamento por IA
 
-- `selecionar(pauta, candidatos, model='gpt-4o-mini') -> {'item', 'media_id', 'motivo'}` — envia até `MAX_CANDIDATOS = 5` candidatos (já peneirados pelo `media_matcher`) num prompt fixo pedindo `{"media_id": <id ou null>, "motivo": "..."}`. Qualquer falha (rede, JSON inválido, id inventado/alucinado) resulta em **nenhuma foto** — a geração segue só com o grid, que é considerado o comportamento correto (usar foto é exceção, não caminho crítico).
+- `selecionar(pauta, candidatos, model='gpt-4o-mini') -> {'item', 'media_id', 'motivo'}` — envia até `MAX_CANDIDATOS = 5` candidatos (já peneirados pelo `media_matcher`) num prompt fixo pedindo `{"media_id": <id ou null>, "motivo": "..."}`. Qualquer falha (rede, JSON inválido, id inventado/alucinado) resulta em **nenhuma foto** — a geração segue sem foto do cliente, que é considerado o comportamento correto (usar foto é exceção, não caminho crítico).
 
 ## Exposição via API
 

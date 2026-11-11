@@ -62,6 +62,8 @@ O app não tem `serializers.py`: a sessão é serializada nas views (`_serialize
 - **Obsolescência:** estratégia e calendário guardam o hash do briefing que os gerou; se o briefing mudar depois, eles são marcados como desatualizados.
 - **Calendário:** a composição semanal por plano é imposta por código (story às terças e quintas no Instagram; no LinkedIn seg/qua/sex e no máximo um carrossel por semana). Tags e CTAs são travados no catálogo do [calendário editorial](/plataforma/apps/editorial-calendar). A aprovação cria os `EditorialCalendar` do cliente.
 
+A estratégia inicial e o preenchimento automático do briefing são gerados no MiggoAI (workflows `estrategia` e `briefing`); a coleta do Instagram e do site continua na Plataforma. O calendário editorial é materializado sempre às 08:00, qualquer que seja o horário do slot.
+
 ## Grid (estilo visual)
 
 - O cliente escolhe entre três `DesignReference` do tipo `grid`, sorteadas sem repetir as já mostradas.

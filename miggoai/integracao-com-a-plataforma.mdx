@@ -23,7 +23,7 @@ Nada é sincronizado nem copiado: cada geração busca ao vivo. A exceção é o
 
 | Recurso no `backend-miggo` | Endpoint | Função no MiggoAI |
 |---|---|---|
-| Clientes | `client/list/` | `apps.clients.services.list_clients`, `get_client_detail` |
+| Clientes | `client/list/` | `apps.clients.services.list_clients`, `get_client_detail` (lê também `trial_expires_at`, que corta a janela da rodada no último dia do teste) |
 | Clientes com o workflow ligado | `client/list/?miggoai_workflow_enabled=true` | `list_workflow_enabled_clients` (já vem filtrado por elegibilidade: trial vencido e inadimplente fora da carência não entram) |
 | Briefing (client-meta) | `client/client-meta/list/` | `get_briefing` |
 | Grid 3x3 do brandkit | `brandkit/grid/list/` | `get_client_grid` |
@@ -33,7 +33,8 @@ Nada é sincronizado nem copiado: cada geração busca ao vivo. A exceção é o
 | Predefinição de foto real | `client/media-preference/<id>/` | `get_client_media_preference` (`usage`, `reuse_days`, `use_stock`) |
 | Dias de postagem | `editorial-calendar/list/?client_id=` | `get_posting_weekdays` |
 | Intervalo mínimo entre formatos | `subscription/format-intervals/?client_id=` | `get_format_intervals` |
-| Referências de design | `brandkit/design-reference/list/?reference_type=post` | `get_design_references` |
+| Referências de design | `brandkit/design-reference/list/?reference_type=post&client_id=` | `get_design_references` (as globais e as do cliente; lê `diagramacao`, `wireframe_url`, `wireframe_sem_corpo_url`, `tom_fundo` e `par_id`) |
+| Paleta da marca | `brandkit/list/?client_id=` | `get_brand_palette` |
 | Banco de imagens elegível | `media/acervo/elegiveis/?client_id=&fadiga=1` | `get_acervo_elegiveis` (token do acervo) |
 | Posts | `post/list/`, `post/detail/<id>/` | `apps.posts.services.list_posts`, `get_post_detail` |
 | Formatos e status de post | `post/format/list/`, `post/status/list/` | `get_post_formats`, `get_post_statuses` |
@@ -73,6 +74,9 @@ Sob a fila, a entrega roda na task `generations.entregar` com `acks_late`, que p
 | `POST /api/generations/regenerate/` e `GET regenerate/status/` | regenerar título, imagem, legenda ou hashtags de um card |
 | `POST /api/generations/grid/` e `GET grid/by-key/` | grid do onboarding |
 | `POST /api/generations/perfil/{bio,banner,destaques}/` e `GET perfil/by-key/` | peças de perfil do onboarding |
+| `POST /api/generations/perfil/strategy/` e `perfil/briefing/` | estratégia inicial e preenchimento automático do briefing no onboarding |
+| `POST /api/generations/perfil/pauta/` | ideia do cliente formatada em pauta (`agenda/format-ai/`) |
+| `POST /api/generations/referencia/diagramacao/` | diagramação de uma referência de design e, com `tipo: grid`, quadros e posts recriados do grid do cliente |
 
 O cliente desse lado vive em `app/onboarding/miggoai.py` do `backend-miggo`. Contratos de cada chamada em [Gerar conteúdo](/miggoai/guias/gerar-conteudo).
 

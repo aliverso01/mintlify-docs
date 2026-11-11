@@ -84,6 +84,8 @@ Todas em `app/subscription/cron.py`, expostas como management commands e idempot
 | `sync_stripe_refunds`, `reconcile_invoice_amounts` | Reaplicam estornos e o valor recebido das faturas (`--dry-run` disponível). |
 | `backfill_billing_identities`, `end_stripe_trials` | Manutenção pontual; só gravam com `--apply`. |
 
+**Inadimplência do Asaas.** `check_subscriptions` olha as faturas do Asaas vencidas além de `BILLING_GRACE_DAYS` e confirmadas em aberto no gateway. Com `ASAAS_SUSPENDE_INADIMPLENTE=True` suspende o cliente (assinatura `EXPIRED`, agendados cancelados, cliente notificado); desligada, só avisa a equipe, uma vez por cliente por dia. Clientes de agência ficam fora. `sync_asaas_billing` não reativa assinatura expirada que ainda tem fatura vencida.
+
 ## Integrações
 
 | Com | Como |

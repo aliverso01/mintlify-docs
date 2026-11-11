@@ -6,7 +6,7 @@ icon: "tag"
 
 ## A versão é da plataforma, não do repo
 
-Uma release leva para a `main` dos três repositórios, de uma vez, as mudanças validadas em homologação. O número de versão (`v2.1.0`, `v2.2.0`, `v2.3.0`…) identifica essa entrega conjunta da plataforma, e cada release aparece no [Changelog](/releases) com a data em que foi publicada.
+Uma release leva para a `main` dos três repositórios, de uma vez, as mudanças validadas em homologação. O número de versão (`v2.2.0`, `v2.3.0`, `v2.3.1`…) identifica essa entrega conjunta da plataforma, e cada release aparece no [Changelog](/releases) com a data em que foi publicada.
 
 | Onde a versão aparece | Valor |
 | --- | --- |
@@ -15,6 +15,18 @@ Uma release leva para a `main` dos três repositórios, de uma vez, as mudanças
 | `info.version` dos specs OpenAPI (`api-reference/*/openapi.json`) | versão da release em que o spec foi gerado |
 
 Os repositórios não carregam esse número no código. O `version` do `package.json` do `frontend-miggo` não acompanha as releases.
+
+## Como o número sobe
+
+O formato é `vMAIOR.MENOR.CORREÇÃO`.
+
+| Dígito | Quando sobe | Exemplo |
+| --- | --- | --- |
+| Terceiro (correção) | A cada release: é o passo padrão | `v2.3.0` → `v2.3.1` |
+| Segundo (menor) | Só por decisão explícita, quando a release marca uma fase nova da plataforma | `v2.3.x` → `v2.4.0` |
+| Primeiro (maior) | Mudança de geração da plataforma | `v2.x` → `v3.0.0` |
+
+Releases anteriores à `v2.3.1` subiram o segundo dígito a cada entrega; essas entradas ficam como foram publicadas.
 
 ## O que cada release registra
 

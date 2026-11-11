@@ -38,6 +38,8 @@ O app `client` guarda o `Client`, dono de tudo que os outros apps referenciam (b
 
 **Suspensão por fim de trial** é um filtro de leitura, não um campo: `app.subscription.access.com_direito_de_publicacao` exclui quem não pode publicar (trial vencido, inadimplente fora da carência, sem assinatura). O cliente volta sozinho quando assina.
 
+O cliente em teste expõe `trial_expires_at` no serializer; a Plataforma e o MiggoAI usam o campo para não criar nem gerar post depois do último dia do teste.
+
 ## Geração automática pelo MiggoAI
 
 - `miggoai_workflow_enabled` liga a rodada diária. Este backend não chama o MiggoAI ao ligar: o MiggoAI lê a carteira por `GET /api/v1/client/list/?miggoai_workflow_enabled=true`.
@@ -47,6 +49,8 @@ O app `client` guarda o `Client`, dono de tudo que os outros apps referenciam (b
 <Note>
 Ligar o workflow não reativa um cliente suspenso por trial. Ele só volta a receber geração automática ao assinar ou ter o teste estendido.
 </Note>
+
+**Primeira geração.** Na primeira conclusão do onboarding, `Client.generation_release_at` marca quando a esteira pode gerar: na hora, se a conclusão foi antes das 12:00; senão, no próximo dia útil às 07:30. Até lá o cliente não aparece para a esteira do MiggoAI; o "Criar agora" do admin ignora a espera. O fim do teste é reposicionado para a liberação mais 7 dias.
 
 ## Predefinições de criação
 
@@ -65,6 +69,8 @@ Throttles: análise de Instagram e envio de materiais limitados a 20 requisiçõ
 <Warning>
 A chave do Apify (`APIFY_TOKEN`) nunca vai em URL, log ou mensagem de erro. Com `APIFY_ASYNC=1` e fila ativa, o veredito do `@` roda em task; `APIFY_JOBS_ASYNC=1` faz a análise responder `202` com job, e só pode ser ligada com o front preparado para tratar o `202`.
 </Warning>
+
+O arquivo original de cada material da marca fica em storage privado (`storage.py::BrandMaterialS3Storage`) e sai por `GET client/brand-materials/<id>/download/`, só para a equipe e a agência do cliente. A listagem informa `has_file`.
 
 ## Comandos
 

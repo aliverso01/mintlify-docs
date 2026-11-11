@@ -31,6 +31,12 @@ Fonte: `backend/apps/prompts/data/seed_prompts.json`, aplicado por `python manag
 | `imagem-post` | `image` | `largura`\*, `altura`\*, `texto_imagem`\*, `instrucao_marca` |
 | `legenda-post` | `caption` | `cliente_nome`\*, `briefing_texto`\*, `calendario_assunto`, `calendario_tags`, `titulo_selecionado`\*, `texto_imagem`, `legendas_recentes`, `calendario_objetivo`, `calendario_macro_objetivo`, `cta_guard` |
 | `hashtags-post` | `hashtags` | `cliente_nome`\*, `negocio`, `diferenciais`, `publico_alvo`, `calendario_assunto`, `calendario_tags`, `legenda_post`\*, `hashtags_recentes` |
+| `estrategia-bio-instagram`, `estrategia-linkedin-empresa`, `estrategia-linkedin-pessoal`, `estrategia-destaques`, `estrategia-banner` | `estrategia` | — (o briefing rotulado e o pedido entram pelo código) |
+| `briefing-instagram`, `briefing-site`, `briefing-deducao`, `briefing-documento` | `briefing` | — |
+| `pauta-ideia` | `pauta` | — |
+| `diagramacao-extracao`, `diagramacao-juiz`, `diagramacao-correcao` | `diagramacao` | — (prompts de visão: a imagem e os dados entram pelo código) |
+| `diagramacao-quadros-do-grid`, `diagramacao-recriar-quadro` | `diagramacao` | — |
+| `diagramacao-guard-da-arte` | `diagramacao` | — (usado pelo workflow `image`, com o modelo de texto do `diagramacao`) |
 | `banner-linkedin-arte` | `banner` | `cliente_nome`\*, `negocio`, `publico_alvo`, `cor_primaria`, `cor_secundaria`, `banner_titulo`, `banner_assunto` |
 
 \* = `required: true`. Os workflows `destaques`, `grid` e `bio` não têm prompt no CMS: destaques é template HTML, e grid e bio montam o prompt no código (`grid_workflow.py`, `bio_workflow.py`).

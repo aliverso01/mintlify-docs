@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "MiggoAI (backend)",
-    "version": "2.3.0",
+    "version": "2.3.1",
     "description": "API do serviço de IA da Miggo. Aceita o JWT da Plataforma (RS256) para a gestão Miggo e Api-Key para chamadas entre serviços."
   },
   "paths": {
@@ -770,6 +770,29 @@
         "summary": "Gerar bio do perfil"
       }
     },
+    "/api/generations/perfil/briefing/": {
+      "post": {
+        "operationId": "generations_perfil_briefing_create",
+        "description": "Preenche o briefing a partir\nde UMA fonte. Body: { \"client_id\": <int>, \"fonte\": \"instagram\" | \"site\" |\n\"deducao\" | \"documento\", \"conteudo\": \"<texto já coletado>\", \"campos\": [{\"chave\",\n\"descricao\", \"tipo\": \"texto\" | \"lista\" | \"cores\"}], \"briefing_atual\": {...},\n\"idempotency_key\": \"...\" }.\n\nResposta: { \"fonte\", \"briefing\": {chave: valor}, \"generation_id\" }. A\nnormalização e a gravação no briefing são de quem chama. Com fila e chave: 202\ne o resultado sai por `perfil/by-key/`. Sem fila: síncrono, 502 se falhar.",
+        "tags": [
+          "Gerações - Grid e perfil"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          },
+          {
+            "apiKeyAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        },
+        "summary": "Criar briefing"
+      }
+    },
     "/api/generations/perfil/by-key/{idempotency_key}/": {
       "get": {
         "operationId": "generations_perfil_by_key_retrieve",
@@ -826,6 +849,52 @@
         "summary": "Gerar capas de destaques"
       }
     },
+    "/api/generations/perfil/pauta/": {
+      "post": {
+        "operationId": "generations_perfil_pauta_create",
+        "description": "Transforma a ideia do cliente em\npauta. Body: { \"client_id\": <int>, \"titulo\": \"...\", \"descricao\": \"...\",\n\"formatos\": [{\"id\": <int>, \"nome\": \"...\"}] } — os formatos são os permitidos do\ncliente e a única escolha possível para o `formato_id` da resposta.\n\nResposta: { \"pauta\": {titulo, tema, formato_id, cta}, \"generation_id\" }. SÍNCRONA;\n502 quando a IA não devolve uma pauta válida. Só o backend-miggo chama (Api-Key),\ndepois de checar que quem pediu é da equipe com acesso ao cliente: a autorização\né de lá, e nada daqui grava na plataforma.",
+        "tags": [
+          "Gerações - Grid e perfil"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          },
+          {
+            "apiKeyAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        },
+        "summary": "Criar pauta"
+      }
+    },
+    "/api/generations/perfil/strategy/": {
+      "post": {
+        "operationId": "generations_perfil_strategy_create",
+        "description": "Gera UM item da estratégia\ninicial do onboarding. Body: { \"client_id\": <int>, \"item\": \"ig-bio\" |\n\"ig-highlights\" | \"li-overview\" | \"li-banner\", \"briefing\": {...},\n\"paleta\": [{\"nome\": \"primary\", \"hex\": \"#...\"}], \"tipo_perfil\": \"business\" |\n\"personal\", \"conteudo_anterior\": \"...\", \"feedback\": \"...\",\n\"idempotency_key\": \"...\" }.\n\nResposta: { \"item\", \"conteudo\", \"generation_id\" } — `conteudo` é texto (bio,\nSobre), lista de {icone, texto} (destaques) ou {content, subject} (banner).\nCom fila e chave: 202 e o resultado sai por `perfil/by-key/`; o item fora\nda régua é gerado de novo pelo worker. Sem fila: síncrono, 502 se falhar.",
+        "tags": [
+          "Gerações - Grid e perfil"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          },
+          {
+            "apiKeyAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        },
+        "summary": "Criar estratégia"
+      }
+    },
     "/api/generations/production/": {
       "post": {
         "operationId": "generations_production_create",
@@ -868,6 +937,29 @@
           }
         },
         "summary": "Gerar post completo (produção)"
+      }
+    },
+    "/api/generations/referencia/diagramacao/": {
+      "post": {
+        "operationId": "generations_referencia_diagramacao_create",
+        "description": "Extrai a diagramação de uma referência de\ndesign. Body: { \"image_url\": \"...\", \"reference_id\": <int>, \"client_id\": <int | null> } —\n`client_id` só existe na referência extraída do grid de um cliente. Com `\"tipo\": \"grid\"` a\nimagem é o grid (mosaico de posts) e a resposta traz `quadros`: a caixa de cada post, em %,\ncom `imagem_url` (o post recriado em alta a partir do recorte) e `recriada`.\n\nResposta: { \"diagramacao\": <body>, \"generation_id\" }. SÍNCRONA (até 6 chamadas de visão);\n502 quando a referência não rende diagramação. Só o backend-miggo chama (Api-Key): nada\ndaqui grava na plataforma.",
+        "tags": [
+          "Gerações"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          },
+          {
+            "apiKeyAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        },
+        "summary": "Criar diagramacao"
       }
     },
     "/api/generations/regenerate/": {

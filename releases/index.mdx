@@ -5,8 +5,96 @@ icon: "history"
 ---
 
 <Note>
-**Versão atual:** `v2.3.0`, publicada em 2026-11-01. Como as versões são numeradas: [Versionamento](/releases/versionamento).
+**Versão atual:** `v2.3.1`, publicada em 2026-11-10. Como as versões são numeradas: [Versionamento](/releases/versionamento).
 </Note>
+
+<Update label="2026-11-10" description="v2.3.1">
+
+Consolida o que entrou na `main` dos três repositórios desde a `v2.3.0`: a referência de design passa a ir à geração como wireframe da diagramação, com guard da arte antes da entrega; o grid do cliente é medido e recriado em alta para virar referência; estratégia inicial, briefing automático e pauta da ideia rodam no MiggoAI; publicação com formato por rede; Kanban paginado por coluna; regras do teste grátis e da primeira geração; e inadimplência do Asaas pela fatura vencida.
+
+### Migrações de banco de dados
+
+- **`backend-miggo`**:
+  - `app/agenda`: `0007_ideia_sobrescreve_card` (MIG-491; guarda a pauta anterior do card que a ideia sobrescreveu).
+  - `app/brandkit`: `0014_designreference_extraida_do_grid_client` e `0015_designreference_tom_fundo` (MIG-487); `0016_designreference_diagramacao` (campos `diagramacao`, `wireframe` e `wireframe_sem_corpo`).
+  - `app/client`: `0026_alter_brandmaterial_file` (MIG-504), `0026_generation_release_at` (MIG-528) e `0027_merge_material_e_liberacao` (une as duas folhas `0026`).
+  - `app/emailmarketing`: `0009_regua_trial_sem_limite_de_ignorados` (MIG-523; de dados, marca `bypass_limits` nas campanhas da régua do trial).
+- **`miggoai-2.0/miggoai_v2`**:
+  - `apps.generations`: `0013_miniaturas` (MIG-400; `Generation.thumb_paths`).
+  - `apps.prompts`: `0005_estrategia_e_modelo_de_texto` (MIG-400; o padrão de `WorkflowConfig.text_model` passa a `gpt-6-luna`), `0006_briefing_automatico` (MIG-400), `0007_pauta_da_ideia` (MIG-554), `0007_pecas_de_perfil_na_gpt_image_2` (MIG-247; de dados) e `0008_merge_pecas_de_perfil_e_pauta`; `0009_workflow_diagramacao` e `0010_modelo_de_imagem_padrao_flare` (o padrão de `WorkflowConfig.image_model` passa a `gpt-image-2.5-flare`).
+
+### Variáveis de ambiente novas
+
+| Variável | Serviço | Para quê |
+| :--- | :--- | :--- |
+| `ASAAS_SUSPENDE_INADIMPLENTE` | `backend-miggo` | Com `True`, `check_subscriptions` suspende quem tem fatura do Asaas vencida além da carência; desligada (padrão), só avisa a equipe (MIG-489). |
+| `EMAIL_DESTINATARIOS_PERMITIDOS` | `backend-miggo` | CSV de e-mails ou `@dominio`. Preenchida, todo e-mail para destinatário fora da lista é descartado; vazia (padrão), sem filtro. Para homologação (MIG-429). |
+| `ZERNIO_PUBLICACAO_ATIVA` | `backend-miggo` | Padrão `True`. Com `False`, a publicação falha com mensagem própria e nada vai ao Zernio; a conexão de conta não é afetada. Para homologação (MIG-429). |
+| `VITE_JWT_REFRESH_URL`, `VITE_GOOGLE_CLIENT_ID`, `VITE_HELP_CENTER_URL`, `VITE_CLARITY_PROJECT_ID`, `VITE_MIGGOAI_API_URL` | `frontend-miggo` (build) | Passam a ser aceitas também como `ARG` do `dockerfile`, para o build de homologação direto do repositório. |
+
+`OPENAI_MODEL_ESTRATEGIA` saiu do `backend-miggo`: a estratégia inicial é gerada no MiggoAI, com o modelo da `WorkflowConfig` do workflow `estrategia`.
+
+### Contratos de API e integrações
+
+- **Kanban (MIG-521, 496):** `GET /api/v1/post/list/` pagina com `page` e filtra no servidor por `post_date`, `status`, `post_format`, `ids`, `somente_ativos` e `client_id`; `enxuto=1` tira `editorial_rules` da resposta. Para a equipe, a lista mostra por padrão só clientes com direito de publicar; `include_inactive=true` mostra todos. `client/list/?include_inactive=false` filtra do mesmo jeito.
+- **Publicação (MIG-469):** `GET /api/v1/post/publication-options/?client=<id>[&post=<id>]` devolve as redes do cliente com os formatos que cada uma publica e se servem à mídia do card. `POST post/publish/` aceita `publicacoes: [{social_network_id, post_format_id}]` e responde `400` para formato de outra rede ou mídia incompatível; o payload `networks` continua aceito. PDF vai ao Zernio como `document`.
+- **Conexão de rede (MIG-539):** criar integração com uma `inactive` da mesma plataforma reaproveita o registro e responde `200` com link novo; só a `active` devolve o `400` de duplicada.
+- **Ideias (MIG-491, 492, 554):** `GET /api/v1/agenda/minimum-date/` (`{min_date, lead_days}`); sugestão do cliente antes do prazo responde `422` `MINIMUM_LEAD_TIME_REQUIRED`; só equipe e agência mudam o `status` (`403` para o cliente). `POST /api/v1/agenda/format-ai/<id>/` devolve a pauta proposta pela IA sem gravar (`502` se a IA falha). `Post` ganha `sob_encomenda`.
+- **Teste grátis (MIG-493):** `Client` ganha `trial_expires_at`; `post/create/` e `post/update/` respondem `422` para data depois do fim do teste. O MiggoAI corta a janela da rodada no último dia do teste.
+- **Material da marca (MIG-504):** `GET /api/v1/client/brand-materials/<id>/download/` (equipe e agência do cliente; `403` para o cliente) e campo `has_file` na listagem.
+- **Referências de design (MIG-487):** `POST /api/v1/brandkit/grid/<client_id>/extract-references/` (`202`), `PATCH brandkit/design-reference/update/<id>/` (só `tom_fundo`) e campos `extraida_do_grid`, `client`, `client_name`, `tom_fundo`, `origem` e `formato` na referência. `design-reference/list/` aceita `client_id` (globais e as daquele cliente) e os filtros `formato`, `origem`, `dono_id`, `tom_fundo` e `diagramacao`. A resposta de `extract-references/` não traz mais a contagem: a quantidade depende dos quadros medidos no grid.
+- **Diagramação:** `POST brandkit/design-reference/diagramacao/<id>/` (refaz, `202`) e `.../revisao/` (`{aprovado}`); a referência ganha `diagramacao`, `wireframe_url` e `wireframe_sem_corpo_url`. No MiggoAI, `POST /api/generations/referencia/diagramacao/` devolve o body da diagramação ou, com `tipo: grid`, os `quadros` do grid com a imagem recriada de cada post.
+- **MiggoAI, peças de perfil (MIG-400, 554):** `POST /api/generations/perfil/strategy/`, `perfil/briefing/` e `perfil/pauta/`. As duas primeiras respondem `202` com fila e `idempotency_key`; `perfil/pauta/` é sempre síncrona. As execuções ganham `thumb_urls` e `peca`.
+- **Geração de imagem (MIG-552, 553):** o grid do cliente deixou de ir à geração. `openai_service.generate_image(prompt, principal_url, ...)` recebe como imagem principal o guia de diagramação; sem nenhuma imagem de entrada a peça sai por `images/generations`. O resultado do workflow `image` ganha `variacao` e `guard`.
+- **Análise da galeria:** a resposta da visão ganha `image_type`; `tela_do_produto` marca a captura de tela do produto digital do cliente.
+
+### Ao subir
+
+- `migrate` nos dois backends e `seed_prompts` no MiggoAI (workflows `estrategia`, `briefing`, `pauta` e `diagramacao` e os prompts novos). O seed não sobrescreve configuração nem prompt existentes: o modelo de imagem dos workflows já criados só muda no painel, e o prompt `imagem-post` só com `--overwrite --slug imagem-post`.
+- `gerar_miniaturas` no MiggoAI, uma vez (MIG-400).
+- Na Plataforma, com o MiggoAI no ar: `extrair_diagramacao_referencias --apply`. **Sem referência com diagramação aprovada, a peça sai sem referência de design.** Depois, `extrair_grids_aprovados --apply --refazer` para refazer os grids cortados pela matriz 3x3.
+- Fotos já analisadas só ganham `image_type` ao serem relidas (`analyze_media_library --client-id <id> --force`).
+
+### Cards entregues na release
+
+| Card | Repositórios | Tipo | Resumo técnico |
+| :--- | :--- | :--- | :--- |
+| **MIG-247** | Backend, MiggoAI, Frontend | Ajuste | Ajuste por camada no banner e por item nos destaques; banner e destaques em `gpt-image-2`; peças de perfil pelo painel usam a paleta do brandkit e o briefing do cliente. |
+| **MIG-400** | Backend, MiggoAI, Frontend | Feature | Estratégia inicial e briefing automático gerados no MiggoAI (workflows `estrategia` e `briefing`); miniaturas WebP das imagens geradas; nome da peça nas execuções do painel. |
+| **MIG-429** | Backend | Infra | Homologação sem efeito externo: allowlist de destinatários de e-mail e chave que desliga a publicação no Zernio. |
+| **MIG-469** | Backend, Frontend | Feature | Seletor único de redes com formato por rede, validado contra a mídia do card (`formatos_publicacao.py`). |
+| **MIG-485** | Frontend | Ajuste | Indicador do onboarding em percentual concluído, no lugar de "Etapa X de 12". |
+| **MIG-487** | Backend, MiggoAI, Frontend | Feature | Grid aprovado do cliente vira referência de post dele; `tom_fundo` nas referências, com alternância de fundo entre posts. |
+| **MIG-489** | Backend | Feature | Inadimplência do Asaas pela fatura vencida além da carência, atrás de `ASAAS_SUSPENDE_INADIMPLENTE`. |
+| **MIG-491** | Backend, Frontend | Feature | Ideia aprovada sobrescreve o card do dia e entra na esteira; recusar ou excluir restaura a pauta anterior; selo "Sob Encomenda". |
+| **MIG-492** | Backend, Frontend | Feature | Antecedência mínima de 2 dias de postagem na sugestão do cliente. |
+| **MIG-493** | Backend, MiggoAI, Frontend | Feature | Cliente em teste não recebe nem cria post com data depois do fim do teste; command `cancelar_posts_pos_trial`. |
+| **MIG-496** | Backend, Frontend | Ajuste | Kanban da equipe sem contas inativas por padrão. |
+| **MIG-504** | Backend, Frontend | Feature | Arquivo original do material da marca guardado em storage privado, com download para equipe e agência. |
+| **MIG-508** | Frontend | Ajuste | Listas de execuções do painel de IA com miniatura e detalhe de peça só de texto. |
+| **MIG-521** | Backend, Frontend | Performance | Kanban carrega cada coluna aos pedaços, com filtros no servidor. |
+| **MIG-522** | Backend, Frontend | Ajuste | Calendário do onboarding sempre às 08:00; command `normalizar_horario_trials`. |
+| **MIG-523** | Backend | Correção | Régua de e-mails do trial ignora o limite de ignorados (`bypass_limits`). |
+| **MIG-524** | Backend, MiggoAI | Feature | Foto real entra literal na peça; foto do acervo sem texto é analisada por IA (`analisar_acervo`); com "Sempre", a janela de reuso volta à foto usada há mais tempo. |
+| **MIG-526** | MiggoAI | Correção | Print do app do próprio cliente vale como produto no classificador de foto. |
+| **MIG-528** | Backend | Feature | Primeira geração liberada pelo horário de conclusão do onboarding (`generation_release_at`), com o fim do teste alinhado à liberação. |
+| **MIG-529** | Frontend | Infra | Script de análise de uso só no domínio de produção. |
+| **MIG-539** | Backend, Frontend | Correção | Conexão de rede pendente pode ser retomada ou cancelada; tela de falha do OAuth. |
+| **MIG-549** | MiggoAI | Correção | Papel de cada imagem de referência fixado pelo sistema no prompt da imagem. |
+| **MIG-550** | MiggoAI | Correção | Story com CTA obrigatório leva o CTA no texto da arte. |
+| **MIG-551** | MiggoAI | Correção | No máximo 5 hashtags, garantido no código. |
+| **MIG-552** | MiggoAI | Feature | Paleta do brandkit como regra do sistema no prompt da imagem. |
+| **MIG-553** | MiggoAI | Feature | Referência de design vai como esqueleto sem cor nem rosto; o grid sai da geração de imagem. |
+| **MIG-554** | Backend, MiggoAI, Frontend | Feature | Ideia do cliente formatada em pauta pela IA (workflow `pauta`), revisada antes de aprovar. |
+| Sem card | Backend, MiggoAI, Frontend | Feature | Diagramação da referência de design (workflow `diagramacao`): body por item, wireframe enviado à geração, revisão da equipe e teste pelo painel de IA. |
+| Sem card | MiggoAI | Feature | Título de feed e story escrito para os blocos de texto do wireframe; texto do card dividido pelos blocos, conferido palavra por palavra. |
+| Sem card | Backend, MiggoAI | Correção | Sorteio só entre referências com diagramação aprovada e do mesmo formato do post (carrossel, story ou feed). |
+| Sem card | MiggoAI | Feature | Guard da arte antes da entrega (bloco do guia, figura pixelada, artefato de geração), com até duas novas tentativas; toda peça de post em qualidade `high`; `gpt-image-2.5-flare` como modelo de imagem padrão. |
+| Sem card | Backend, MiggoAI, Frontend | Feature | Grid do cliente medido por visão (sem supor 3x3) e cada post recriado em alta como referência, em coleção por grid; `extrair_grids_aprovados` com `--refazer` e `--client-id`. |
+| Sem card | Backend, MiggoAI | Correção | Captura de tela do produto digital do cliente aceita na análise da galeria e mostrada inteira num aparelho na arte; releitura de foto já analisada destravada. |
+| Sem card | Backend, Frontend | Feature | Painel de referências em abas (design, grids de clientes, grids de referência) com filtros no servidor; command `extrair_diagramacao_referencias`. |
+
+</Update>
 
 <Update label="2026-11-01" description="v2.3.0">
 

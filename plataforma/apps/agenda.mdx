@@ -52,6 +52,12 @@ A validação de cota e calendário roda **só na criação**. Editar formato ou
 
 **Post gerado.** O `Post` criado na aprovação recebe `subject`, `content`, `post_date` e `post_format` da sugestão, com `post_time` fixo em `09:00:00`.
 
+**Antecedência mínima.** O cliente não pode sugerir data anterior ao 2º dia de postagem depois de hoje (`services.py::data_minima_da_sugestao`, pelos dias ativos do calendário; sem calendário, todo dia conta). `GET agenda/minimum-date/` devolve `{min_date, lead_days}`; fora do prazo, criar ou remarcar responde `422` `MINIMUM_LEAD_TIME_REQUIRED`. Equipe e agência não têm o limite.
+
+**Ideia na esteira.** A sugestão aprovada sobrescreve o card do dia (o de mesmo formato; senão, o primeiro) e o deixa pendente e não gerado, para a esteira gerar; sem card no dia, cria um. Cards publicados, em geração, cancelados, com publicação em curso ou já ocupados por outra ideia não são tocados. Recusar ou excluir a ideia depois de aprovada restaura a pauta anterior. Só equipe e agência mudam o `status` da sugestão (`403` para o cliente).
+
+**Pauta com IA.** `POST agenda/format-ai/<id>/` pede ao MiggoAI (workflow `pauta`) que transforme a ideia em `{titulo, tema, formato_id, cta}`, entre os formatos do calendário do cliente. Nada é gravado: a aprovação segue o fluxo normal. Falha da IA responde `502`.
+
 ## Integrações
 
 | Com | Como |

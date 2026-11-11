@@ -16,7 +16,7 @@ O app `brandkit` (na interface, "Minha marca") guarda a identidade visual de cad
 | `BrandTypography` | Fonte da marca. |
 | `BrandAsset` | Arquivo complementar (`pattern`, `illustration`, `icon_set`, `background`, `logo`, `favicon`, `banner`, `photo`…), com `origin` (upload ou site) e `content_hash` para não duplicar. |
 | `SocialNetworkGrid` | Mosaico 3x3 do perfil do cliente; `generated=True` quando veio do pipeline de grid. |
-| `DesignReference` | Referência visual global, do tipo `grid` ou `post`, com descrição técnica gerada por visão. |
+| `DesignReference` | Referência visual do tipo `grid` ou `post`, com descrição técnica gerada por visão. Global (sem `client`) ou extraída do grid de um cliente (`extraida_do_grid`, com `client` dono). A de `post` guarda a `diagramacao` (JSON por item) e os arquivos `wireframe` e `wireframe_sem_corpo`. |
 | `CopyReference` | Referência de texto por formato (`story`, `feed`, `carrossel`, `reel`) e `style_tag`, decomposta em um `framework` de etapas. |
 | `IngestionJob` | Job assíncrono de ingestão: `copy_url`, `website` ou `instagram`, com status `PENDING` → `RUNNING` → `SUCCESS`/`FAILED`. |
 | `ReferenceImportJob` / `ReferenceImportImagem` | Captura de um post do Instagram ou pin do Pinterest por link, e as imagens capturadas. |
@@ -39,6 +39,24 @@ O app `brandkit` (na interface, "Minha marca") guarda a identidade visual de cad
 **Referências**
 
 - `DesignReference` de tipo `grid` alimenta a escolha de estilo do [Onboarding na Plataforma](/plataforma/apps/onboarding); as de tipo `post` orientam a arte. A descrição técnica é gerada por visão em segundo plano.
+- Referência com dono (`client`) só vale para ele; a listagem com `client_id` devolve as globais e as daquele cliente, e a chamada de serviço sem `client_id` só recebe as globais.
+- A listagem (`design-reference/list/`) devolve o `formato` de cada referência de post e filtra por `reference_type`, `formato`, `origem` (`globais`, `grid`), `dono_id`, `tom_fundo` (`claro`, `escuro`, `sem_tom`) e `diagramacao` (`aprovada`, `reprovada`, `pendente`, `erro`). Valor fora da lista responde `400`.
+
+**Diagramação da referência de post** (`diagramacao.py`)
+
+- Ao fim da análise de uma referência de post, a Plataforma pede ao MiggoAI a diagramação dela (workflow `diagramacao`): um body com um item por elemento (texto, foto, forma, selo), cada um com a caixa em % da peça, a camada e o próprio estado, mais o estilo visual da peça e os blocos que recebem o texto do card (`blocos_do_texto`). Toda a IA roda no MiggoAI.
+- Do body a Plataforma desenha dois wireframes em tons de cinza, com e sem o bloco de corpo. São eles que vão ao modelo de imagem, no lugar do print da referência.
+- O `estado` do body é o parecer do juiz do MiggoAI (`aprovado` ou `reprovado`). A equipe pode decidir por cima em `design-reference/diagramacao/<id>/revisao/`; refazer a extração (`design-reference/diagramacao/<id>/`) zera a revisão.
+- **Só a referência com diagramação aprovada entra no sorteio da geração.** Sem diagramação, com erro ou reprovada, ela fica fora até ser refeita ou aprovada pela equipe.
+- `formato` (`diagramacao.formato`): `carrossel` para o slide de um link com mais de um slide (`par_id`); senão `story` quando a peça é em pé (largura/altura abaixo de `PROPORCAO_MAXIMA_DO_VERTICAL`) e `feed` nos demais casos. `None` para grid e para o post ainda sem diagramação.
+- Falha do MiggoAI não levanta erro: a referência fica com `{"erro": ...}` e é retomada pelo comando `extrair_diagramacao_referencias`.
+
+**Referências extraídas do grid do cliente** (`grid_extraction.py`)
+
+- O grid aprovado vira referências de post do próprio cliente (`extraida_do_grid`), disparadas na aprovação, pelo botão da equipe (`grid/<client_id>/extract-references/`) ou pelo comando `extrair_grids_aprovados`.
+- O grid nem sempre é 3x3. O MiggoAI mede os quadros na imagem, um por post, e recria cada post em alta qualidade a partir do recorte; a Plataforma guarda a imagem recriada (ou o recorte, se a recriação daquele post não veio). Sem a medição nada é extraído e as referências atuais do cliente ficam como estão.
+- As referências de um mesmo grid formam a coleção dele: compartilham `origem_url` (a imagem do grid) e levam em `ordem` a posição do post no mosaico. Grid já extraído não é refeito, a não ser a pedido (`refazer`); grid diferente substitui a coleção anterior.
+- Cada referência criada segue para a análise e a diagramação, como qualquer referência nova.
 - `CopyReference` é criada a partir de texto colado, de um link ou de prints. A ordem dos slides é a ordem de upload, e cada print é transcrito separadamente. O `style_tag` é validado contra a taxonomia de estilos por formato.
 - **Importar por link** (Instagram ou Pinterest): o servidor abre o post num navegador, sem conta logada, e captura o elemento do post (várias imagens só em carrossel). Uma captura por vez por processo. O resultado pode virar referência visual, de copy ou as duas, ligadas por `par_id`.
 
@@ -54,7 +72,7 @@ As views de grid (regerar, status, aprovar, pedir ajuste) delegam a `app.onboard
 
 Com a fila ativa, duas flags independentes movem trabalho para a fila `interativo`:
 
-- `INGESTAO_ASYNC=1`: a análise de referência de design roda em task, sem mudar o contrato da API.
+- `INGESTAO_ASYNC=1`: a análise de referência de design, a diagramação (`brandkit.extrair_diagramacao`) e a extração do grid do cliente (`brandkit.extrair_grid_do_cliente`) rodam em task, sem mudar o contrato da API. As duas últimas usam o limite de tempo longo (`DIAGRAMACAO`), porque esperam várias chamadas de visão e de imagem no MiggoAI.
 - `INGESTAO_JOBS_ASYNC=1`: copy por URL e importar site passam a responder `202` com um `IngestionJob` para polling. Só ligue com o front preparado para o `202`.
 
 Sem fila, a mesma função roda dentro da requisição. As tasks recebem só ids, não fazem retry (raspagem e LLM custam) e transformam estouro de tempo em erro com mensagem fixa. Veja [Filas e Celery](/plataforma/filas-e-celery).
@@ -69,6 +87,8 @@ Sem fila, a mesma função roda dentro da requisição. As tasks recebem só ids
 | `app/brandkit/logo_svg.py`, `logo_vision.py` | Conversão de logo para PNG e para a visão |
 | `app/brandkit/copy_ingest.py` | Texto de copy a partir de link e prints |
 | `app/brandkit/ingestao.py`, `tasks.py` | Ingestão longa (inline ou em fila) |
+| `app/brandkit/diagramacao.py` | Body da diagramação, wireframes, formato da referência e revisão da equipe |
+| `app/brandkit/grid_extraction.py` | Referências de post extraídas do grid do cliente |
 | `app/brandkit/import_views.py`, `reference_import.py`, `social_capture.py` | Importação de referência por link |
 
 Endpoints: veja a [Referência de API](/plataforma/api-referencia).

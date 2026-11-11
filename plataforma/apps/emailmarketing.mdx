@@ -46,6 +46,8 @@ Filtros aceitos no modo `filters` (`audience.py`): `subscription` (`trial`, `tri
 
 O comando é agendado de hora em hora ([Tarefas agendadas](/plataforma/tarefas-agendadas)), e é isso que faz o `send_time` valer: o e-mail sai no primeiro run depois do horário.
 
+As campanhas da régua do trial têm `bypass_limits=True`: o limite de e-mails ignorados não as segura. Envio que o backend de e-mail devolve como zero (destinatário fora de `EMAIL_DESTINATARIOS_PERMITIDOS`, por exemplo) conta como erro, não como enviado.
+
 ## Rastreio de clique
 
 Todo `href` absoluto do corpo vira `{BACKEND_URL}/api/v1/email-marketing/click/<token>/?to=<destino>&s=<assinatura>`. A assinatura é um HMAC-SHA256 do destino com a `SECRET_KEY`; sem ela a rota seria um redirecionador aberto no domínio da Miggo.

@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "Plataforma Miggo (backend-miggo)",
-    "version": "2.3.0",
+    "version": "2.3.1",
     "description": "API REST da Plataforma Miggo. Autenticação por JWT (Bearer) emitido em /api/v1/account/token/; chamadas entre serviços usam Api-Key."
   },
   "paths": {
@@ -2413,6 +2413,39 @@
         "summary": "Obter evento da agenda"
       }
     },
+    "/api/v1/agenda/format-ai/{id}/": {
+      "post": {
+        "operationId": "api_v1_agenda_format_ai_create",
+        "description": "A IA (MiggoAI) transforma o pedido do cliente em pauta: `{pauta: {titulo, tema, formato_id, cta},\nformatos: [{id, nome}]}` — `formatos` são os do cliente, para o admin trocar na revisão.\nSó equipe/agência com acesso ao cliente. Não grava nada: o admin revisa, edita e confirma\npelo fluxo de aprovação. Falha da IA devolve 502 com mensagem amigável.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "integer"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Agenda"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          },
+          {
+            "apiKeyAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        },
+        "summary": "Criar format ai"
+      }
+    },
     "/api/v1/agenda/limits/": {
       "get": {
         "operationId": "api_v1_agenda_limits_retrieve",
@@ -2486,6 +2519,29 @@
           }
         },
         "summary": "Listar eventos da agenda"
+      }
+    },
+    "/api/v1/agenda/minimum-date/": {
+      "get": {
+        "operationId": "api_v1_agenda_minimum_date_retrieve",
+        "description": "Primeira data que o cliente logado pode sugerir. Equipe e agência não têm trava (`min_date` nulo).",
+        "tags": [
+          "Agenda"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          },
+          {
+            "apiKeyAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        },
+        "summary": "Listar minimum date"
       }
     },
     "/api/v1/agenda/update/{id}/": {
@@ -4352,6 +4408,93 @@
         "summary": "Remover referência visual"
       }
     },
+    "/api/v1/brandkit/design-reference/diagramacao/{id}/": {
+      "post": {
+        "operationId": "api_v1_brandkit_design_reference_diagramacao_create",
+        "description": "Refaz a diagramação (body e wireframe).",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "integer"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Brandkit - Referência visual"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          },
+          {
+            "apiKeyAuth": []
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "No response body"
+          }
+        },
+        "summary": "Criar diagramacao"
+      }
+    },
+    "/api/v1/brandkit/design-reference/diagramacao/{id}/revisao/": {
+      "post": {
+        "operationId": "api_v1_brandkit_design_reference_diagramacao_revisao_create",
+        "description": "A equipe aprova ou reprova a\ndiagramação. Só a aprovada vai à geração como wireframe.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "integer"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Brandkit - Referência visual"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "aprovado": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "jwtAuth": []
+          },
+          {
+            "apiKeyAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DesignReference"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "summary": "Criar revisao"
+      }
+    },
     "/api/v1/brandkit/design-reference/list/": {
       "get": {
         "operationId": "api_v1_brandkit_design_reference_list_list",
@@ -4434,6 +4577,65 @@
           }
         },
         "summary": "Reanalisar referência visual"
+      }
+    },
+    "/api/v1/brandkit/design-reference/update/{id}/": {
+      "patch": {
+        "operationId": "api_v1_brandkit_design_reference_update_partial_update",
+        "description": "A equipe corrige o tom do fundo.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "integer"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Brandkit - Referência visual"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchedDesignReferenceTom"
+              }
+            },
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchedDesignReferenceTom"
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchedDesignReferenceTom"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "jwtAuth": []
+          },
+          {
+            "apiKeyAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DesignReferenceTom"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "summary": "Atualizar referência visual"
       }
     },
     "/api/v1/brandkit/design-reference/upload/": {
@@ -4525,6 +4727,39 @@
           }
         },
         "summary": "Obter brandkit"
+      }
+    },
+    "/api/v1/brandkit/grid/{client_id}/extract-references/": {
+      "post": {
+        "operationId": "api_v1_brandkit_grid_extract_references_create",
+        "description": "Botão \"Gerar referências de post a partir do grid\" da aba Grid: recorta o grid\nATUAL do cliente (o que a geração usa) em 9 referências de post dele. Roda em\nbackground e responde 202 com quantas serão geradas; 400 se o cliente não tem grid.\nEquipe e agência (só dos clientes dela, via `cliente_visivel`).",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "client_id",
+            "schema": {
+              "type": "integer"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Brandkit - Grid"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          },
+          {
+            "apiKeyAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        },
+        "summary": "Criar extract references"
       }
     },
     "/api/v1/brandkit/grid/approval/": {
@@ -5893,6 +6128,39 @@
           }
         },
         "summary": "Remover material da marca"
+      }
+    },
+    "/api/v1/client/brand-materials/{id}/download/": {
+      "get": {
+        "operationId": "api_v1_client_brand_materials_download_retrieve",
+        "description": "→ arquivo original (attachment).\n\nSó equipe Miggo e agência do cliente baixam; o cliente comum não (403). O\narquivo é lido do storage pelo backend, sem URL pública, e sai sempre como\n`application/octet-stream` para o navegador nunca renderizar o conteúdo.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "schema": {
+              "type": "integer"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Clientes - Materiais da marca"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          },
+          {
+            "apiKeyAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        },
+        "summary": "Baixar mídia por link público"
       }
     },
     "/api/v1/client/briefing/apply/": {
@@ -12355,6 +12623,29 @@
         "summary": "Listar metadados de post"
       }
     },
+    "/api/v1/post/miggoai/generate/": {
+      "post": {
+        "operationId": "api_v1_post_miggoai_generate_create",
+        "description": "Pede ao MiggoAI a geração\ncompleta de UM card (título → imagem → legenda → hashtags). Body: { \"post_id\": 5409 }.\n\n202 com `status`: 'aceito' (o card passa a `gerando`; o MiggoAI grava `gerado`\nou `falhou` ao terminar) ou 'na_fila' (havia uma rodada em andamento; o card\nentra na próxima passada do cron e o estado não muda aqui).",
+        "tags": [
+          "Posts"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          },
+          {
+            "apiKeyAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        },
+        "summary": "Criar generate"
+      }
+    },
     "/api/v1/post/miggoai/regenerate/": {
       "post": {
         "operationId": "api_v1_post_miggoai_regenerate_create",
@@ -13084,6 +13375,29 @@
           }
         },
         "summary": "Atualizar configuração de perfil"
+      }
+    },
+    "/api/v1/post/publication-options/": {
+      "get": {
+        "operationId": "api_v1_post_publication_options_retrieve",
+        "description": "as redes de publicação do cliente e, em cada uma, os formatos com a\ncompatibilidade já calculada (`compativel` + `motivo`). Com `post`, a mídia\ndo card entra na conta; sem ele (card ainda não criado) vale só a matriz.\nA regra mora em `formatos_publicacao`: o front só exibe o que vem daqui.",
+        "tags": [
+          "Posts"
+        ],
+        "security": [
+          {
+            "jwtAuth": []
+          },
+          {
+            "apiKeyAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "No response body"
+          }
+        },
+        "summary": "Listar publication options"
       }
     },
     "/api/v1/post/publication/{id}/check-status/": {
@@ -13949,6 +14263,7 @@
     "/api/v1/subscription/create-subscription/": {
       "post": {
         "operationId": "api_v1_subscription_create_subscription_create",
+        "description": "Cria o cliente na Stripe e deixa a assinatura local PENDING até o pagamento.\n\nSó a equipe financeira: a view apaga a assinatura anterior do cliente (e as\nfaturas em cascata). `status`, `trial` e as datas são definidos aqui, nunca\npelo corpo: ativação é do webhook e trial é do `start-trial/`.",
         "tags": [
           "Assinaturas"
         ],
@@ -15084,7 +15399,6 @@
     "/api/v1/subscription/plan-price/board/": {
       "get": {
         "operationId": "api_v1_subscription_plan_price_board_retrieve",
-        "description": "Board de gestão de planos (drag-and-drop).\n\nRetorna cada PlanPrice visível como uma \"coluna\", com a lista de clientes/\nassinaturas vinculados (todas as assinaturas exceto CANCELLED). Assinaturas\nEXPIRED de clientes que têm outra vigente ficam de fora — são histórico, e\nnão o vínculo atual do cliente. Colunas sem clientes também são retornadas\n(para serem alvo de drop).\n\nQuery params:\ninclude_hidden=1 — inclui também os PlanPrice ocultos (visible=False).",
         "tags": [
           "Planos - Preços"
         ],
@@ -15895,7 +16209,6 @@
     "/api/v1/subscription/sync-subscription-status-invoices/async/": {
       "post": {
         "operationId": "api_v1_subscription_sync_subscription_status_invoices_async_create",
-        "description": "Dispara a sincronização de assinaturas/faturas em background.\n\nRetorna imediatamente um job_id (HTTP 202). O frontend acompanha a conclusão\nvia polling em /subscription/sync-subscription-status-invoices/status/<job_id>/.",
         "tags": [
           "Assinaturas - Conciliação"
         ],
@@ -15918,7 +16231,6 @@
     "/api/v1/subscription/sync-subscription-status-invoices/status/{job_id}/": {
       "get": {
         "operationId": "api_v1_subscription_sync_subscription_status_invoices_status_retrieve",
-        "description": "Retorna o status atual de um SyncJob para polling do frontend.\nEnquanto status for PENDING/RUNNING, o front deve continuar consultando.\nQuando for DONE (ou FAILED), pode parar e ler `result`/`error`.",
         "parameters": [
           {
             "in": "path",
@@ -15973,6 +16285,7 @@
     "/api/v1/subscription/update/{id}/": {
       "put": {
         "operationId": "api_v1_subscription_update_update",
+        "description": "Equipe edita tudo. O cliente só troca o plano do PRÓPRIO trial local (tela de\nplanos), para um plano à venda — `status`, `trial` e datas nunca saem da mão\ndele. Trial da Stripe (`subscription_id` preenchido) não muda por aqui: a\nStripe seguiria cobrando o preço antigo.",
         "parameters": [
           {
             "in": "path",
@@ -16030,6 +16343,7 @@
       },
       "patch": {
         "operationId": "api_v1_subscription_update_partial_update",
+        "description": "Equipe edita tudo. O cliente só troca o plano do PRÓPRIO trial local (tela de\nplanos), para um plano à venda — `status`, `trial` e datas nunca saem da mão\ndele. Trial da Stripe (`subscription_id` preenchido) não muda por aqui: a\nStripe seguiria cobrando o preço antigo.",
         "parameters": [
           {
             "in": "path",
@@ -17318,6 +17632,10 @@
           "agencia_nome": {
             "type": "string",
             "readOnly": true
+          },
+          "trial_expires_at": {
+            "type": "string",
+            "readOnly": true
           }
         },
         "required": [
@@ -17338,6 +17656,7 @@
           "onboarding",
           "subscription",
           "suspenso_por_trial",
+          "trial_expires_at",
           "user"
         ]
       },
@@ -17645,6 +17964,10 @@
             "type": "string",
             "readOnly": true
           },
+          "formato": {
+            "type": "string",
+            "readOnly": true
+          },
           "origem_url": {
             "type": "string",
             "format": "uri",
@@ -17666,6 +17989,47 @@
             "readOnly": true,
             "nullable": true
           },
+          "extraida_do_grid": {
+            "type": "boolean",
+            "readOnly": true
+          },
+          "tom_fundo": {
+            "readOnly": true,
+            "nullable": true,
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TomFundoEnum"
+              },
+              {
+                "$ref": "#/components/schemas/NullEnum"
+              }
+            ]
+          },
+          "origem": {
+            "type": "string",
+            "readOnly": true
+          },
+          "client": {
+            "type": "integer",
+            "readOnly": true,
+            "nullable": true
+          },
+          "client_name": {
+            "type": "string",
+            "readOnly": true
+          },
+          "diagramacao": {
+            "readOnly": true,
+            "nullable": true
+          },
+          "wireframe_url": {
+            "type": "string",
+            "readOnly": true
+          },
+          "wireframe_sem_corpo_url": {
+            "type": "string",
+            "readOnly": true
+          },
           "created_at": {
             "type": "string",
             "format": "date-time",
@@ -17681,14 +18045,50 @@
           "ai_raw_analysis",
           "ai_technical_description",
           "analyzed",
+          "client",
+          "client_name",
           "created_at",
+          "diagramacao",
+          "extraida_do_grid",
+          "formato",
           "id",
           "image_url",
           "ordem",
+          "origem",
           "origem_autor",
           "origem_url",
           "par_id",
-          "updated_at"
+          "tom_fundo",
+          "updated_at",
+          "wireframe_sem_corpo_url",
+          "wireframe_url"
+        ]
+      },
+      "DesignReferenceTom": {
+        "type": "object",
+        "description": "correção manual do tom do fundo — o único campo editável da referência.",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "readOnly": true
+          },
+          "tom_fundo": {
+            "nullable": true,
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TomFundoEnum"
+              },
+              {
+                "$ref": "#/components/schemas/BlankEnum"
+              },
+              {
+                "$ref": "#/components/schemas/NullEnum"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id"
         ]
       },
       "EditorialCalendar": {
@@ -18245,6 +18645,16 @@
           "suggested_cta_category_slug",
           "suggested_ctas"
         ]
+      },
+      "GeracaoStatusEnum": {
+        "enum": [
+          "nao_gerado",
+          "gerando",
+          "gerado",
+          "falhou"
+        ],
+        "type": "string",
+        "description": "* `nao_gerado` - Não gerado\n* `gerando` - Gerando\n* `gerado` - Gerado\n* `falhou` - Falhou"
       },
       "History": {
         "type": "object",
@@ -19513,6 +19923,10 @@
           "agencia_nome": {
             "type": "string",
             "readOnly": true
+          },
+          "trial_expires_at": {
+            "type": "string",
+            "readOnly": true
           }
         }
       },
@@ -19693,6 +20107,30 @@
             "readOnly": true,
             "title": "Permissões do usuário",
             "description": "Permissões específicas para este usuário."
+          }
+        }
+      },
+      "PatchedDesignReferenceTom": {
+        "type": "object",
+        "description": "correção manual do tom do fundo — o único campo editável da referência.",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "readOnly": true
+          },
+          "tom_fundo": {
+            "nullable": true,
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TomFundoEnum"
+              },
+              {
+                "$ref": "#/components/schemas/BlankEnum"
+              },
+              {
+                "$ref": "#/components/schemas/NullEnum"
+              }
+            ]
           }
         }
       },
@@ -20462,6 +20900,10 @@
             "type": "string",
             "readOnly": true
           },
+          "sob_encomenda": {
+            "type": "string",
+            "readOnly": true
+          },
           "subject": {
             "type": "string",
             "maxLength": 2000
@@ -20507,6 +20949,19 @@
           "correction_description": {
             "type": "string",
             "nullable": true
+          },
+          "geracao_status": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/GeracaoStatusEnum"
+              }
+            ],
+            "readOnly": true
+          },
+          "geracao_erro": {
+            "type": "string",
+            "readOnly": true,
+            "maxLength": 300
           },
           "client": {
             "type": "integer"
@@ -21061,6 +21516,10 @@
             "type": "string",
             "readOnly": true
           },
+          "sob_encomenda": {
+            "type": "string",
+            "readOnly": true
+          },
           "subject": {
             "type": "string",
             "maxLength": 2000
@@ -21107,6 +21566,19 @@
             "type": "string",
             "nullable": true
           },
+          "geracao_status": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/GeracaoStatusEnum"
+              }
+            ],
+            "readOnly": true
+          },
+          "geracao_erro": {
+            "type": "string",
+            "readOnly": true,
+            "maxLength": 300
+          },
           "client": {
             "type": "integer"
           },
@@ -21123,6 +21595,8 @@
           "client",
           "created_at",
           "editorial_rules",
+          "geracao_erro",
+          "geracao_status",
           "id",
           "macro_objetivo_label",
           "media_link",
@@ -21131,6 +21605,7 @@
           "post_date",
           "post_time",
           "publications",
+          "sob_encomenda",
           "subject",
           "updated_at"
         ]
@@ -21688,6 +22163,14 @@
           "name",
           "user_permissions"
         ]
+      },
+      "TomFundoEnum": {
+        "enum": [
+          "claro",
+          "escuro"
+        ],
+        "type": "string",
+        "description": "* `claro` - Fundo claro\n* `escuro` - Fundo escuro"
       },
       "TriggerEventEnum": {
         "enum": [

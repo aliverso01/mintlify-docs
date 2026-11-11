@@ -55,7 +55,7 @@ As telas exclusivas da equipe ficam em `src/pages/Admin/`.
 | Grupo | Telas | O que resolvem |
 |---|---|---|
 | Clientes | `/admin/clients`, `/admin/users`, `/admin/trials` | Carteira (com filtro de suspensos por trial e do workflow MiggoAI), usuários (inclusive de agência) e o funil de trials, com as abas Visão geral e Funil de vendas. |
-| Conteúdo | `/admin/content/parados`, `/admin/design-references` | Posts parados na esteira; referências de grid, de títulos e copies e o acervo de imagens. |
+| Conteúdo | `/admin/content/parados`, `/admin/design-references` | Posts parados na esteira; referências de design, grids de clientes, grids de referência, referências de títulos e copies e o acervo de imagens, uma aba cada. |
 | Relacionamento | `/admin/conversations`, `/admin/message-flows`, `/admin/email-marketing`, `/admin/benefits`, `/admin/support` | WhatsApp (ManyChat), fluxos de mensagem, régua de e-mails do trial, benefícios de parceiros com fila de moderação e o suporte. |
 | Receita | `/admin/billing`, `/admin/plans` | Faturamento num módulo só, com abas na URL (`?aba=`): Visão geral, Faturas, Conciliação e Planos. A Conciliação junta as filas de assinaturas com anomalia, sem vínculo e cobranças órfãs do gateway. |
 | Operação | `/admin/team`, `/admin/logs`, `/admin/notifications` | Time e módulos de cada gestor, log das chamadas a APIs externas e histórico de notificações. |
@@ -72,6 +72,8 @@ O acervo é o banco de imagens interno da Miggo, usado pela seleção automátic
 - **Conferir como um cliente vê:** troca a lista para `GET /api/v1/media/acervo/elegiveis/?client_id=`, a mesma regra que a geração usa para escolher imagem.
 
 As rotas do acervo na Plataforma são só da gestão: cliente recebe `403`. O modelo e as regras estão em [Mídia e acervo](/plataforma/apps/media).
+
+**Referências** (`/admin/design-references`, `DesignReferences.tsx`). As referências visuais ficam em três abas servidas pelo mesmo painel (`GridReferencesPanel.tsx`, por `escopo`): posts de design curados pela equipe, células do grid de cada cliente (agrupadas pela coleção do grid) e grids de referência. Os filtros de formato, diagramação, tom do fundo e cliente dono são aplicados no servidor. No detalhe de uma referência de post, `DiagramacaoReferencia.tsx` mostra os blocos da diagramação sobre a imagem, o estilo da peça, o parecer do juiz e o wireframe enviado, com os botões para refazer, aprovar e reprovar.
 
 ## Área `/agency`
 

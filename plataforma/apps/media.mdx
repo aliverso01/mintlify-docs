@@ -28,6 +28,9 @@ O app `media` guarda os arquivos de mídia (fotos e vídeos) dos clientes — a 
 - Vídeo, arquivo ausente e imagem recusada pela OpenAI são descartados da fila. Erro temporário mantém a mídia na fila até 3 falhas.
 - Com `MIDIA_ASYNC=1` e fila ativa, cada análise vira uma task Celery que recebe só o `media_id`, sem retry (a análise é paga).
 - `--report` mostra contagens e amostras da fila sem chamar a IA.
+- A análise recebe o contexto do cliente (negócio, serviços, diferencial, público, região e a descrição que ele deu à foto) e devolve também `image_type` e `usable_as_reference`. Print de tela, conversa e documento saem com `usable_as_reference: false`, que é ressalva, não exclusão: a foto continua concorrendo na geração, e a equipe pode decidir por cima (`usable_override`).
+- **Tela do produto digital.** Quando o contexto diz que o negócio acontece num aplicativo, site ou plataforma (quem vende o produto ou presta o serviço dentro dele), a captura de tela dele sai como `image_type: tela_do_produto`, com `usable_as_reference: true`. Sem contexto da empresa, o código rebaixa a resposta para `captura_de_tela`. O MiggoAI lê esse tipo para mostrar a tela inteira num aparelho, em vez de recortá-la como foto.
+- **Releitura** (`POST media/<id>/analyze/`, `--force`): a foto já analisada é reservada e relida; se a nova leitura falhar, a anterior fica como estava.
 
 <Note>
 `ai_description` (análise da galeria) e `description` (texto do cliente, preenchido por IA no upload quando vazio) são campos diferentes, escritos por mecanismos diferentes.
@@ -44,6 +47,8 @@ O app `media` guarda os arquivos de mídia (fotos e vídeos) dos clientes — a 
 <Warning>
 Toda consulta de fotos elegíveis passa por `elegiveis_para`. Refazer o filtro à mão numa view nova é a forma mais fácil de vazar foto de um cliente para outro.
 </Warning>
+
+Foto ativa do acervo sem título nem descrição é analisada pela mesma visão da galeria (`acervo_analise.py`) e ganha descrição e palavras-chave; o texto da curadoria nunca é sobrescrito. O upload em lote e a importação de fonte externa disparam a análise depois do commit; o passivo sai pelo comando `analisar_acervo`.
 
 ## Fontes externas (Pixabay)
 
